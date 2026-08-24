@@ -1,0 +1,8 @@
+# Model weights are never committed. tgo downloads them into a cache.
+/models/
+/testdata/weights/
+*.safetensors
+*.gguf
+
+cover.out
+/dist/
