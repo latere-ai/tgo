@@ -18,59 +18,49 @@ changes.
 
 ## 1. What accel gives, exactly
 
-### 1.1 Today
+### 1.1 What is reachable today
 
 ```go
-type StateDesc struct { Name string; DType DType; Shape Shape }
-
 func NewState(b *Builder, d StateDesc) *State
-func ReadState(b *Builder, s *State) *Tensor
 func LayerState(b *Builder, s *State, layer int) *State
-func ScatterRows(b *Builder, s *State, rows *Tensor, ids *Tensor) *State
+func ScatterRows(b *Builder, s *State, rows, ids *Tensor) *State
 
 type AttentionOptions struct {
-    CurrentLengthName string  // u32 scalar: how much of the cache is real
-    ScaleName         string  // f32 scalar: 1/√d
-    BaseName          string  // u32 scalar: a prefill's first position
+    Lengths   *Tensor // u32, one entry per sequence
+    Pages     *Tensor // u32 page table, optional; nil means contiguous
+    Block     int     // positions per block, required with Pages
+    ScaleName string  // f32 scalar, 1/√d — a model constant, so a scalar
+    BaseName  string  // u32 scalar, a prefill's first position
 }
 func Attention(b *Builder, q *Tensor, k, v *State, opts AttentionOptions) *Tensor
 ```
 
 `State` is caller-owned mutable storage the planner never aliases. It is a
-**version**, not a handle: `ScatterRows` returns the next version, and reading
-an earlier one is refused. That is what turns write-then-read into an ordinary
-DAG edge rather than a rule the planner has to be told, and it is why tgo does
-not need to order anything by hand.
+**version**, not a handle: `ScatterRows` returns the next version and reading an
+earlier one is refused, which turns write-then-read into an ordinary DAG edge
+rather than a rule the planner is told. tgo therefore orders nothing by hand.
 
-Three constraints follow, and each is a row in [010](010-conformance.md):
+Since 2026-08-24 the cache may be **f16**, and `Pages` binds a **page table** —
+both asked for by tgo and both landed. What remains, verified by probe rather
+than by reading commits:
 
-- ~~`Attention` refuses anything but f32~~ — **closed 2026-08-24**: it accepts an
-  f16 cache and accumulates f32, which halves the numbers in §3;
-- there is no page table binding, and `tensor/internal/pagetable` is
-  **unexported** — accel 030's package comment says why: no exported operator
-  accepts one;
-- the per-sequence values are **scalars**, one per dispatch.
+| | state |
+| --- | --- |
+| capacity ≤ **128 positions**, paged or not | [C11](010-conformance.md), **blocking** |
+| a `LayerState` view at a non-zero offset is refused, by `Attention` and `ScatterRows` alike | [C12](010-conformance.md) |
+| `q`'s rank is the *phase*, so there is no batch axis | [C1](010-conformance.md) |
 
-### 1.2 After accel 043
+### 1.2 Paging is a binding, not a second cache
 
-```go
-type AttentionOptions struct {
-    ScaleName string   // unchanged: a model constant every row shares
-    Lengths   *Tensor  // u32, one per row
-    Positions *Tensor  // u32, one per row
-    Pages     *Tensor  // u32, the page table
-}
-```
+accel 043 §4 is explicit that a `State` addressed through a page table is the
+**same** `State`, and that a `PagedState` beside `State` would be the
+non-orthogonal growth 043 exists to avoid. `Pages` is nil-able: nil is a
+contiguous cache, which is the same thing with an identity table.
 
-`Attention` **already accepts f16 states** as of accel 701b645, so [C5](010-conformance.md)
-has closed and the f16 column of §3 is now the one tgo builds against. `State`
-does **not** gain a paged variant:
-043 §4 is explicit that a `State` addressed through a page table is the same
-`State`, and that a `PagedState` beside `State` would be exactly the
-non-orthogonal growth 043 exists to avoid.
-
-That matters to tgo more than it looks. It means **there is one cache type, not
-two**, so the migration in §6 is a binding change, not a second code path.
+That matters to tgo more than it looks. **There is one cache type and one code
+path**, and turning paging on is binding a tensor rather than choosing a
+different implementation. [005-D5](#decision-record) was written expecting to
+rebind, and rebinding is all it turned out to be.
 
 ## 2. Addressing
 
@@ -143,6 +133,20 @@ capacity is part of the launch geometry rather than a loop bound.
 Every table in §3 describes memory tgo cannot currently allocate, because the
 operator will not accept a $C$ large enough to need it.
 
+> **Paging does not escape it.** The check is on the state's capacity whether or
+> not a page table is bound — measured, not assumed:
+>
+> ```
+> REFUSED  paged cache of 4096 positions
+>          the cache holds 4096 positions and the decode kernel scores one per lane over 128
+> ```
+>
+> The point of a pool is that it serves many sequences without reserving the
+> worst case for each. A pool capped at 128 **total** positions cannot serve
+> one. So [C4](010-conformance.md) and [C5](010-conformance.md) are closed and
+> **inert**: halving a 128-position cache saves 18 KB. Both were the right
+> things to build and neither pays until C11 closes.
+
 Raising the workgroup does not fix it — 1024 lanes buys 1024 positions and is
 still short of any real conversation. The shape has to change to an online
 softmax that loops over positions with a running max and sum:
@@ -190,13 +194,18 @@ in f32 and **0.3 GB** paged in f16 — a factor of 322, and it is why
 [010 C4](010-conformance.md) is the register's most expensive row rather than
 C5.
 
-Two accel constraints produce the two halves of that factor independently:
+Two accel constraints produced the two halves of that factor. **Both are now
+closed**, and neither pays yet:
 
-- ~~**f32 only** doubles it.~~ **Closed.** 043 §5 accepted the argument — K and V
-  are *operands*, not accumulators, and $\text{softmax}(qK^\top/\sqrt{d})V$
-  accumulates in f32 whatever they are stored as — and `Attention` now takes an
-  f16 cache. tgo builds against the f16 column.
-- **contiguous only** multiplies it by $C/T$. 043 §4 binds `Pages`.
+- ~~**f32 only** doubles it.~~ Closed. 043 §5 accepted the argument — K and V are
+  *operands*, not accumulators, and $\text{softmax}(qK^\top/\sqrt{d})V$
+  accumulates in f32 whatever they are stored as.
+- ~~**contiguous only** multiplies it by $C/T$.~~ Closed. `Pages` binds a page
+  table.
+
+**So the design tgo builds is the last column**, and it is the one §2.3 says is
+unreachable. That is the whole state of this spec in one sentence: the cache tgo
+wants is fully expressible except for how big it may be.
 
 ## 4. What tgo does now
 
@@ -233,14 +242,19 @@ tgo has no batched path to write later, only a wider binding.
 
 Recorded now so it is not rediscovered:
 
-| what changes | from | to | state |
+| what changed | from | to | state |
 | --- | --- | --- | --- |
-| positions | scalar `Offset` on the plan | a bound u32 tensor | **done** |
+| positions | scalar `Offset` | a bound u32 tensor | **done** |
 | dtype | f32 states | f16 states | **done** |
-| cache length | scalar `CurrentLengthName` | `AttentionOptions.Lengths` | designed |
-| prefill base | scalar `BaseName` | `AttentionOptions.Positions` | designed |
-| addressing | `row = ℓC + t` | `row = pages[⌊t/B⌋]·B + t mod B` | designed |
+| cache length | scalar `CurrentLengthName` | `AttentionOptions.Lengths` | **done** |
+| addressing | `row = ℓC + t` | `row = pages[⌊t/B⌋]·B + t mod B` | **done** |
+| prefill base | scalar `BaseName` | per row | **not moving**: a prefill is one sequence, so there is no row for it to differ across. accel corrected its own table here, and the reasoning holds until batched prefill exists |
 | capacity | $C \le 128$ | unbounded | designed, [accel 044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md) |
+| layer views | one state per layer | a bound sub-range | open, [C12](010-conformance.md) |
+
+**Four of seven landed within a day of being asked for, and every one was a
+binding change.** That is [005-D5](#decision-record) paying off: tgo built no
+second path to switch to, and there was nothing to switch.
 
 Every row is a **binding** change. None is a structural one, because the plan's
 shape does not depend on which of these it reads — and that is exactly why
@@ -277,7 +291,7 @@ one, against the signatures accel has, and rebinds.
 | 005-D1 | ~~one state pair for the model, `LayerState` per layer~~ → **two states per layer, $2L$ total** | the one-pair design | **Amended 2026-08-24, and it was wrong as first written.** `Attention` refuses a layer view outright and says "use one state per layer". 72 states for a 36-layer model. [accel#9](https://github.com/golang-design/accel/issues/9) |
 | 005-D2 | context capacity is a session parameter defaulting to 4096 | the model's `max_position_embeddings` | a 32k default would reserve 9.66 GB before the first token |
 | 005-D3 | print the cache cost when capacity is raised | allocate and fail | the user learns the number when they ask, not from an OOM |
-| 005-D4 | no paging, no f16 cache; both filed upstream | a private page table in tgo | forbidden by [000 D1](000-decisions.md); the arithmetic *was* the filing. **Amended 2026-08-24:** accel 043 §4 and §5 adopt both. tgo still builds neither, because 043 is designed and unbuilt. |
-| 005-D5 | build one cache path against today's signatures and rebind | a paged path behind a flag, switched when 043 lands | 043 §4 makes paging a binding, not a second `State`; two paths would be two code paths for one mechanism |
+| 005-D4 | no paging, no f16 cache; both filed upstream | a private page table in tgo | forbidden by [000 D1](000-decisions.md); the arithmetic *was* the filing. **Amended 2026-08-24 (twice):** accel 043 adopted both, then landed both. tgo now builds a paged f16 cache — and gets nothing for it until [C11](010-conformance.md), because the cap applies to the pool ([§2.3](#23-the-ceiling-128-positions)) |
+| 005-D5 | build one cache path against today's signatures and rebind | a paged path behind a flag, switched when 043 lands | **Vindicated.** Four of the seven changes in §6 landed within a day, all as binding changes. A flagged second path would have been written and deleted without ever running |
 | 005-D6 | follow the "use one state per layer" instruction rather than route around it | reshape the cache to hide the refusal | the noise is visible and filed; a hidden workaround would not be |
 | 005-D7 | do not compose attention from primitives to beat the 128 ceiling | build score-MatMul / Softmax / value-MatMul in tgo | forbidden by [000 D1](000-decisions.md); accel 007 assigns the fallback to `Attention`, and composing it here would hide the register's most important row |

@@ -108,16 +108,26 @@ loses accuracy badly, and accel's f32 accumulation is the correct default.
 tensor operator reads it. Qwen3 ships bf16. The loader therefore converts, and
 [001 §3](001-weights.md) owns the rounding and the overflow rule.
 
-> **Amended 2026-08-24.** accel
-> [043 §5](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
-> accepts the argument in
-> [accel#5](https://github.com/golang-design/accel/issues/5) and designs `MatMul`
-> onto f32 operands, with the "done" condition being that *a transformer graph
-> built from f32 activations contains no `Cast` node*. The table above is
-> therefore the shape tgo builds against **today**, and the cast chain is
-> temporary. bf16 reads are not part of 043 and stay open as
-> [010 C7](010-conformance.md). The original table is kept rather than replaced,
-> because it is the argument that produced the change.
+> **Amended 2026-08-24, then corrected the same day.** accel 043 §5 accepted the
+> argument in [accel#5](https://github.com/golang-design/accel/issues/5) and
+> `MatMul` now takes f32 operands. **The cast chain survived it**, and the table
+> above still holds.
+>
+> `MatMul` requires the two operands to *share* a dtype — one kernel reads both.
+> A transformer's activations are f32 and its weights are f16 or int8, because
+> decision 5 makes f32 weights the choice not to load the model. So f32 operands
+> help only a model storing f32 weights, and `QuantMatMul` still requires f16
+> activations either way.
+>
+> What would close it is a **mixed** GEMM: f32 activations against f16 or int8
+> weights, accumulating f32 — the shape every inference stack uses, and the one
+> the original report should have named instead of "f16-only". Refiled on the
+> same issue. bf16 stays open as [010 C7](010-conformance.md), and is worse than
+> recorded: `Cast` cannot widen bf16 either, so the conversion is entirely the
+> host's.
+>
+> The lesson is [010 §2.1](010-conformance.md)'s: a report being accepted is not
+> a cost being removed.
 
 ## 5. Weights are f16 or int8, chosen by size, and the choice is arithmetic
 
@@ -199,15 +209,17 @@ costs.
 > bases, sampling draws and the page table onto tensor operands. `RoPE` has
 > already changed. The rest is designed and unbuilt.
 >
-> This does not make v0 batched. The **design** is no longer the blocker; the
-> **code** is, and [008](008-scheduler.md) now blocks on 043's implementation
-> rather than on its absence. What it does change is the shape tgo must not
-> foreclose, which [008 §5](008-scheduler.md) already listed and which 043 makes
-> concrete: a `Positions` tensor rather than an offset scalar, and a `State`
-> that is the same `State` whether or not a page table is bound to it. Paging is
-> not a second cache type, so tgo does not get a second cache path.
+> **Amended again, later the same day.** 043 landed. `RoPE` takes positions,
+> `Attention` takes `Lengths`, `Pages` and an f16 cache. tgo can now build a
+> paged, narrow KV cache, which is exactly what this decision said it could not.
 >
-> The paragraph above is kept, not replaced. It is why 043 exists.
+> **v0 is still not batched, for a different reason.** `q`'s rank is the *phase*
+> — rank 3 means a prefill — so a batched decode has no axis to live on
+> ([010 C1](010-conformance.md)). And the paged cache is **inert**: the
+> 128-position cap applies to the pool, so a page table over a pool that cannot
+> hold one sequence buys nothing ([005 §2.3](005-kv-cache.md)).
+>
+> The paragraphs above are kept, not replaced. They are why 043 exists.
 
 ## 8. No test downloads weights
 

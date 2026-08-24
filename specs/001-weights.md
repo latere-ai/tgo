@@ -215,20 +215,52 @@ flowchart LR
   E -.released.-> G["scratch freed<br/>before tensor t+1"]
 ```
 
-Peak host bytes are bounded by
+Peak host bytes were bounded by
 
 $$\max_t \big(\, 4 \cdot |t| \;+\; 4 \cdot |t| \,\big) = 8 \cdot \max_t |t|$$
 
-— the f32 scratch plus the transposed f32 scratch, for the largest single tensor.
-For Qwen3-4B that largest tensor is the embedding table at $V \times d$
-elements, so the loader's peak is about **3.1 GB** of host scratch for a model
-whose device footprint is 4 GB at int8.
+— the f32 scratch plus the transposed f32 scratch — which for Qwen3-4B's
+embedding table is about **3.1 GB** of host scratch for a model occupying 4 GB
+on the device.
 
-That is worth two mitigations, neither of which is v0 and both of which are
-recorded so the number is not mistaken for a floor: transposing in place for a
-square-blocked tile rather than into a second buffer halves it, and
-[010 C10](010-conformance.md) — importing host memory — removes the upload copy
-entirely on unified memory.
+### 7.1 The final copy no longer exists
+
+tgo asked accel for a buffer *over* host memory the caller owns
+([accel#7](https://github.com/golang-design/accel/issues/7)). accel declined
+that shape, correctly — a buffer over caller memory is a promise about a
+lifetime accel cannot see — and pointed the problem the other way:
+
+```go
+func (b *Buffer) Access(fn func([]byte) error) error
+```
+
+The caller writes **into** device memory, for the duration of the call, on a
+buffer from a host-visible pool. So the converted plane is produced directly
+where it will live:
+
+```
+for each tensor t:
+    buf := device buffer for t
+    buf.Access(func(dst []byte) error {
+        return convert(shard[t], dst)   // bf16 -> f16 or int8, transposed, in place
+    })
+```
+
+The f16 or int8 output buffer is gone from host memory entirely, and only the
+f32 working scratch for the transpose remains. **This is a better answer than
+the one asked for**, and it is the kind of thing worth recording: the request
+named a mechanism, and the mechanism it named was the one with the hard problem
+in it.
+
+`Access` refuses on a device-local pool — reported rather than discovered — so
+the loader allocates weight buffers from a shared pool and falls back to
+`Queue.WriteBuffer` where it cannot, which is the honest shape on a discrete
+GPU.
+
+Remaining: the transpose still needs somewhere to put its output, since it is
+not an in-place permutation for a non-square matrix. Tiling it would bound that
+to a tile rather than a tensor. Not v0, and recorded so the number is not
+mistaken for a floor.
 
 **Open, and not resolved here:** whether accel can map a file-backed buffer
 without a host copy at all. `accel.Buffer` is created from a descriptor and
@@ -254,3 +286,5 @@ weights. The loader here takes a local directory and nothing else.
 | 001-D5 | the int8 error bound is measured on real blocks, post-transpose | a hand-tuned tolerance | the assertion is derived and cannot be quietly raised |
 | 001-D6 | the reader treats the file as hostile and refuses by name | trust the header | every §6 row is a unit test needing no model |
 | 001-D7 | convert and upload shard by shard | load the model into host memory first | peak host memory is one shard plus one tensor |
+| 001-D8 | convert **into** device memory via `Buffer.Access` | convert to a host slice, then upload | the converted plane never exists on the host. accel declined the buffer-over-caller-memory shape tgo asked for and offered this, which needs no lifetime promise ([§7.1](#71-the-final-copy-no-longer-exists)) |
+| 001-D9 | allocate weight buffers from a host-visible pool, falling back to `Queue.WriteBuffer` | assume `Access` always works | `Access` refuses a device-local pool by design, so the fallback is the honest shape on a discrete GPU |
