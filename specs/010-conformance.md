@@ -41,9 +41,9 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed, differently** | none needed; `Buffer.Access` writes converted bytes straight into device memory |
 | C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed. accel 044 shipped the tiling loop; 4096 verified |
 | **C13** | **a paged *prefill*** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **open — blocking 016** | none. `Attention` **accepts `Pages` on a prefill, ignores it, and returns a wrong answer** |
-| C14 | an f16 `GatherRows` | 010, 025 | — | open | the embedding plane must be f32 (1.56 GB on Qwen3-4B) or int8 |
-| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | — | open | int8 decode takes the per-element kernel; the matvec selection is gated on f16 |
-| C16 | a dispatch mixing prefill chunks and decode steps | 040 | — | open | chunked prefill mitigates latency and recovers no throughput ([008 §5](008-scheduler.md)) |
+| C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | open | the embedding is f32 (1.56 GB on Qwen3-4B) or int8; a tied head costs ~3× the file tensor |
+| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | open | int8 decode takes the per-element kernel; the matvec selection is gated on f16 |
+| C16 | a dispatch mixing prefill chunks and decode steps | 040 | — | open | accel 040 owns it; chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
 | C12 | binding a `LayerState` view to `Attention` or `ScatterRows` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states for 36 layers. Layer 0 works; every layer at a non-zero offset is refused |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
