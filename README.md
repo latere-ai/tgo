@@ -64,7 +64,7 @@ Lessons taken deliberately from [ollama](https://github.com/ollama/ollama),
 | Qwen3 dense, from safetensors | f16 or int8, chosen by what fits | designed |
 | Byte-level BPE, streaming decode | pure Go, no `tokenizers` dependency | designed |
 | Chat templates | per model, with user text that cannot forge a turn | designed |
-| OpenAI-compatible server | `/v1/chat/completions`, SSE, logprobs | designed |
+| OpenAI, Anthropic and Responses APIs | three wire dialects, one adapter, via `llmdialect` | designed |
 | Paged KV, continuous batching | vLLM's contribution | blocked on accel |
 | Prefix reuse | sglang's RadixAttention | blocked on paging |
 | Constrained decoding | a JSON schema compiled to a token mask | designed, after batching |
@@ -85,8 +85,8 @@ defer m.Close()
 s, _ := m.NewSession()
 defer s.Close()
 
-stream, _ := s.Chat(ctx, []tgo.Message{
-	{Role: tgo.User, Content: "Why is the sky blue?"},
+stream, _ := s.Chat(ctx, []chat.Message{
+	{Role: chat.User, Blocks: []chat.Block{{Type: chat.BlockText, Text: "Why is the sky blue?"}}},
 }, tgo.Policy{Temperature: 0.7, TopP: 0.8, MaxTokens: 512})
 
 for stream.Next() {

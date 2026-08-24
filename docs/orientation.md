@@ -43,6 +43,21 @@ a limit in tgo — a maximum context length, a precision that is not offered —
 is almost always accel's limit, and it is written down with the reason in
 [`../specs/010-conformance.md`](../specs/010-conformance.md).
 
+## Speaking to it
+
+tgo serves three wire APIs on top of the same engine, so most clients work
+unchanged:
+
+| you send | route |
+| --- | --- |
+| OpenAI Chat Completions | `/v1/chat/completions` |
+| Anthropic Messages | `/v1/messages` |
+| OpenAI Responses | `/v1/responses` |
+
+They are translated through one neutral request shape rather than handled
+separately, so a feature works the same way whichever you use, and a field one
+API has and another lacks is reported rather than dropped quietly.
+
 ## Backends
 
 | backend | where | status |
@@ -90,8 +105,9 @@ capacity.
   knows, rather than run through a generic path that produces fluent nonsense.
 - **Truncate your context.** If a conversation exceeds the cache, tgo says so.
   It does not silently drop the beginning.
-- **Ignore a request field.** A server that quietly ignores a setting you sent
-  has answered a different question than you asked.
+- **Ignore a request field.** A setting that would change the answer is refused
+  by name. One that cannot change the answer runs anyway, and tgo tells you it
+  could not honour it, in a response header rather than in silence.
 
 ## Where to go next
 

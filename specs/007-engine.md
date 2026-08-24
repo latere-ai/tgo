@@ -39,7 +39,8 @@ func (m *Model) Close() error
 type Session struct{ /* ... */ }
 
 // Chat renders messages through the model's template and generates.
-func (s *Session) Chat(ctx context.Context, msgs []Message, p Policy) (*Stream, error)
+// Message is chat.Message: typed blocks, not a string. See 003 section 3.1.
+func (s *Session) Chat(ctx context.Context, msgs []chat.Message, p Policy) (*Stream, error)
 
 // Complete generates from raw text, with no template.
 func (s *Session) Complete(ctx context.Context, prompt string, p Policy) (*Stream, error)
@@ -51,7 +52,8 @@ func (s *Session) Close() error
 type Stream struct{ /* ... */ }
 
 func (s *Stream) Next() bool        // advances; false at end or error
-func (s *Stream) Text() string      // the incremental text of the current token
+func (s *Stream) Event() Event      // typed: TextDelta, ThinkingDelta, ToolArgsDelta, BlockStart/Stop
+func (s *Stream) Text() string      // the text delta; empty for non-text events
 func (s *Stream) Err() error
 func (s *Stream) Usage() Usage      // prompt and completion token counts
 
@@ -78,6 +80,13 @@ place accel's shape will move.
 obliges a caller to drain it or leak a goroutine, and an iterator makes early
 return the normal case. Internally generation *is* a channel, which is
 [008 §7](008-scheduler.md)'s fourth hook.
+
+**`Event` is typed rather than a string** because `Text()` alone cannot tell a
+caller whether the current token is inside a thinking block, which is the one
+thing a chat UI must know in order to render it. `Text()` stays for callers who
+do not care. The event kinds map one to one onto the IR
+[009 §5](009-server.md) encodes, which is what keeps the server's adapter a
+translation rather than a state machine.
 
 ## 2. The objects
 
@@ -229,3 +238,4 @@ a user's context is unanswerable.
 | 007-D5 | a failed step makes the session unusable | reset and continue | a partial cache write is not recoverable |
 | 007-D6 | `Stream` is an iterator publicly, a channel internally | a channel in the public API | early return does not leak; [008 §7](008-scheduler.md)'s hook survives |
 | 007-D7 | the plan cache, KV layout and builders stay unexported | export them for advanced users | they are where accel's shape moves; [000 D10](000-decisions.md) |
+| 007-D8 | `Chat` takes block-structured messages and `Stream` yields typed events | `[]Message` with `Content string`; `Text()` alone | [003-D6](003-chat-template.md) forces the request side; a UI cannot render thinking without the response side |
