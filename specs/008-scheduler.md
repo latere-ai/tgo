@@ -1,5 +1,5 @@
 ---
-title: "Continuous batching: the design, and the three accel gaps that block it"
+title: "Continuous batching: slots, admission, and the upstream change it now waits on"
 status: blocked
 layer: engine
 depends_on:
@@ -7,132 +7,159 @@ depends_on:
   - 005-kv-cache.md
   - 007-engine.md
 blocked_on:
-  - "accel specs/040-batch-scheduler.md"
-  - "accel specs/010-kernel-corpus.md"
-  - "accel specs/039-sampling-policy.md"
+  - "accel specs/043-per-row-values.md (designed; implementation in flight)"
 ---
 
 # Continuous batching
 
-**Status: blocked, deliberately.** This spec exists so that the parts which are
-cheap today are not made expensive by accident, and so the gaps have a written
-argument attached to them. No code in this repository implements it.
+**Status: blocked, and the reason changed on 2026-08-24.**
+
+It was blocked because accel had no design for per-row values. tgo filed four
+reports; accel
+[043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
+answered all four with one decision, and `RoPE` has already changed. So the
+design is no longer the blocker — **the code is**, and this spec now waits on
+043's implementation rather than on its absence.
+
+Nothing in this repository implements batching. This spec exists so that the
+parts which are cheap today are not made expensive by accident, and so that when
+043 lands the work is a binding change rather than a redesign.
 
 ## 1. Why it is the thing worth having
 
-A decode step is memory-bound: it reads every weight to produce one token. Two
-sequences decoding together read the weights **once** and produce two tokens.
-Throughput scales close to linearly in batch size until the arithmetic becomes
-the limit, which for a 4B model at int8 is far above the batch sizes a
-single-device server sees.
+A decode step is memory-bound: it reads **every weight** to produce **one
+token**. For a 4B model at int8 that is 4 GB of traffic per token. Two sequences
+decoding together read those 4 GB **once** and produce two tokens.
 
-Static batching wastes it back: a batch that starts together finishes together,
-so a 20-token answer occupies a slot until the 800-token answer beside it is
+Let $W$ be the weight bytes, $A$ the per-sequence activation and cache traffic,
+and $\beta$ the achievable bandwidth. One step at batch size $B$ costs
+
+$$t(B) \approx \frac{W + B\cdot A}{\beta}, \qquad \text{throughput} = \frac{B}{t(B)} = \frac{B\beta}{W + BA}$$
+
+Since $A \ll W$ at realistic context lengths, throughput is close to linear in
+$B$ until $BA \sim W$. For the numbers above — $W = 4$ GB, $A$ on the order of
+tens of MB — that crossover is far above the batch sizes a single-device server
+sees. **Batching is not an optimisation at the margin; it is most of the
+hardware.**
+
+Static batching gives it back: a batch that starts together finishes together,
+so a 20-token answer holds its slot until the 800-token answer beside it is
 done. Continuous batching — vLLM's contribution — admits a new sequence into a
 slot the moment one leaves.
 
-## 2. The design, stated for when it is buildable
+## 2. Slots: membership is contents, batch size is structure
 
-**Slots.** A fixed $[0, \text{maxBatch})$. A slot owns a row of the q tensor, a
-row of the output, a page-table row, and an entry in `lengths`. Membership
-changes are *contents* — rebind, no recompile. The batch **size** is structure:
-it is a leading dimension on every port, so changing it is a different plan and
-costs a drain. **The design never changes size.** Idle slots are parked on a
-zero-length sequence and cost one wasted row.
+A **slot** is an index in $[0, B_{\max})$. It owns a row of `q`, a row of `out`,
+a row of `positions`, an entry in `lengths`, and a page-table row. The KV blocks
+are addressed *through* the page table, so they never move — which is what makes
+a slot swap free.
 
-**Admission.** A request is admitted when a slot is free *and* the KV pool can
-hold its prompt plus a reserve for the answer. Admitting without the reserve is
-how a server deadlocks: every slot full, none able to grow.
+Against accel 003's four kinds of variation:
 
-**Eviction.** Recompute rather than swap. A preempted sequence drops its blocks
-and re-prefills on readmission, which costs $O(T)$ once against a swap's
-$O(T)$ transfer both ways plus the host memory.
+| change | which variation | cost |
+| --- | --- | --- |
+| a sequence leaves, another takes its slot | **contents**: `lengths`, the page-table row, `positions`, the scatter id | free; no rebind, no recompile |
+| a sequence grows by a block | **contents**: one page-table entry | free |
+| the batch gains or loses a *member count* | none of the four — batch is a leading dimension on every port | a different plan, and a drain |
 
-**Chunked prefill.** A long prompt is split so a prefill never starves the
-decode steps sharing its step. Without it, one 8k prompt stalls every other
-sequence for the length of its forward pass.
+**The design never changes $B_{\max}$.** Idle slots are parked on a zero-length
+sequence and cost one wasted row of arithmetic. accel 040 records the trap
+precisely: `BatchedDims.Batch` is declared and never read, so a scheduler that
+"shrinks the batch" by writing it runs the dropped slot anyway — and that slot's
+`out` row still holds what the previous step left there, so the model emits a
+**repeat of the last token** rather than obvious garbage.
 
-## 3. The three gaps, and why each is silent
+## 3. Admission
 
-Every one of these produces output that is well-shaped, finite, and plausible.
-That is what makes them worth writing down rather than discovering.
+A request is admitted when a slot is free **and** the block pool can hold its
+prompt plus a reserve for the answer.
 
-### Gap 1 — batched paged attention is not at the tensor layer
+$$\text{blocks needed} = \left\lceil \frac{T_\text{prompt} + R}{B_\text{block}} \right\rceil$$
 
-`tensor.Attention` selects the decode and prefill kernels only. The batched and
-paged kernels exist under accel's `internal/testkernels` and nothing in
-`tensor/` references them. There is no exported operator that binds `pages` and
-`lengths`.
+with $R$ the reserve. Admitting on a free slot alone is how a server deadlocks:
+every slot occupied, the pool empty, and no sequence able to grow — so nothing
+finishes and nothing can be evicted into progress.
 
-**Owner:** accel 010 (registry), 030 (paging).
-**Consequence if ignored:** there is no batched attention to call. This one is
-not silent; it is simply absent. It is listed first because the other two only
-matter once it exists.
+$R$ is a policy number, not a derived one. Setting it to the request's
+`max_tokens` is safe and admits too little; setting it to zero maximises
+occupancy and deadlocks. The design takes $R$ as configuration with a documented
+default and **reports rejected admissions**, because a server that quietly
+admits fewer requests than it could is indistinguishable from a slow one.
 
-### Gap 2 — `RoPE` conflates the row index with the position
+## 4. Eviction: recompute, not swap
 
-`RoPE` computes $\text{pos} = r + \texttt{Offset}$ with `Offset` a scalar. In a
-batched decode $r$ is the **slot index**, so slot 0 rotates at `Offset`, slot 1
-at `Offset+1`, and exactly one member is rotated at its own cache length.
+A preempted sequence drops its blocks and re-prefills on readmission.
 
-**Owner:** accel 010, 025.
-**What it needs:** positions as a tensor binding, one entry per row.
-**Consequence if ignored:** every member but one attends with wrong positional
-phase. Output stays fluent and loses long-range coherence.
+| | cost |
+| --- | --- |
+| recompute | one prefill of $T$ tokens, on readmission |
+| swap to host | $T \cdot 288$ KB out and back, plus host memory for every swapped sequence |
 
-### Gap 3 — one `Draw` shared across the batch
+Recompute wins because prefill is compute-bound and parallel over $T$, while a
+swap is two serial transfers over a bus, and because it needs no host mirror of
+the cache. vLLM supports both and recommends recompute for exactly this reason.
 
-`SampleDims.Draw` is a scalar in the uniform block, and `SampleCategorical` is
-`workgroup=1` writing `out[0]`. Widening the scalar keeps accel 028's
-reproducibility and destroys independence.
+**Victim choice is last-arrived-first-evicted**, which bounds the worst-case
+latency of the sequences already in flight rather than spreading the damage.
 
-**Owner:** accel 028, 039.
-**What it needs:** one row and one independent draw per slot.
-**Consequence if ignored:** two sequences with similar distributions emit the
-same token. Every existing test still passes.
+## 5. Chunked prefill
 
-### And a fourth, from this repository
+A prefill and a decode step cannot share a dispatch — different shapes, different
+kernels. So a long prompt either runs alone, stalling every decoding sequence
+for the length of its forward pass, or is split.
 
-**The block pool is unexported.** `tensor/internal/pagetable` is internal
-because no exported operator takes a page table. Without it there is no paged
-cache, so §2's slots have nothing to address through, and the cache stays
-contiguous with the cost in [005 §2](005-kv-cache.md).
+Splitting a 8192-token prompt into chunks of $c$ means the decode steps beside
+it wait at most one chunk's forward pass. The chunk size trades prefill
+efficiency (larger $c$ is a better GEMM) against decode latency (smaller $c$ is
+a shorter stall), and the useful range is 512–2048.
 
-**Owner:** accel 030.
-
-## 4. What tgo does now
-
-Holds one named, skipping test per gap in [010](010-conformance.md), each
-naming the accel spec that owns it. When a gap closes, its test stops skipping
-and this spec moves from `blocked` to `drafted`.
-
-## 5. What is cheap now and would be expensive later
-
-Recorded so the shape is not foreclosed:
-
-- The KV cache is addressed through a **`Session`** rather than by a global
-  offset, so a page table can replace the addressing without touching callers.
-- The RoPE offset is a **named scalar** on the plan, so it becomes a bound
-  tensor without changing the builder's structure.
-- The sampler consumes **one draw per step per sequence** already
-  ([006-D2](006-sampling.md)), so widening to per-slot draws is a shape change,
-  not a semantic one.
-- `Generate` streams over a **channel**, so a scheduler can drive many of them
-  without the API changing.
+Chunked prefill needs a prefill whose first query token is not position 0, so
+its causal mask hides the right thing. accel's `BaseName` scalar does that
+today; 043 turns it into `AttentionOptions.Positions`. Either way the mechanism
+exists — chunked prefill is the one part of this spec that is **not** blocked,
+and it is still not built, because a scheduler with one sequence has nothing to
+stall.
 
 ## 6. Prefix reuse depends on paging, not on policy
 
 sglang's RadixAttention keys a trie on token prefixes and shares the KV blocks
-beneath. Sharing blocks needs blocks. Over [005](005-kv-cache.md)'s contiguous
+beneath a common prefix. Two requests with the same 900-token system prompt
+prefill it once.
+
+**Sharing blocks needs blocks.** Over [005 §2.1](005-kv-cache.md)'s contiguous
 per-session cache the only way to share a prefix is to copy it, which costs most
-of what the sharing saves. So prefix reuse is downstream of gap 4, and it is
-recorded here rather than planned as a tgo feature.
+of what the sharing saves. So prefix reuse is downstream of 043's `Pages`
+binding, and recording that is the point: it is otherwise natural to plan prefix
+caching as a tgo feature and discover late that it is an accel one.
+
+The refcounting it needs — a block freed only when the last sequence referencing
+it leaves — is tgo's, and it is the reason the trie is not simply a cache with
+an LRU.
+
+## 7. What is cheap now and would be expensive later
+
+The four hooks tgo keeps live in v0, at a cost of nothing:
+
+| hook | v0 shape | why |
+| --- | --- | --- |
+| the cache is addressed through a `Session` | one session, one cache | a page table replaces the addressing without touching callers |
+| positions are a **bound tensor**, not a scalar | a one-row tensor | already true as of accel's current tree; widening is a shape change |
+| one draw consumed per step per sequence | one sequence | [006-D2](006-sampling.md); per-slot draws become a shape change, not a semantic one |
+| `Generate` streams over a channel | one stream | a scheduler drives many without the API moving |
+
+## 8. What tgo does now
+
+Holds one named, skipping test per [010](010-conformance.md) register row, each
+naming the accel spec that owns it. When 043's implementation lands, those tests
+stop skipping and this spec moves from `blocked` to `drafted`.
 
 ## Decision record
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
-| 008-D1 | fixed batch size, membership is contents | resize the batch per step | membership changes are free; size changes cost a drain |
-| 008-D2 | recompute on preemption | swap KV to host | no host KV mirror; $O(T)$ once |
-| 008-D3 | admission reserves answer space | admit on free slot alone | a full pool cannot deadlock |
-| 008-D4 | keep the four shape hooks in §5 live in v0 | build them when the gaps close | v0 costs nothing for them; the retrofit stays local |
+| 008-D1 | fixed $B_{\max}$; membership is contents | resize the batch per step | membership changes are free; a size change costs a drain. accel 040's `Batch` trap makes shrinking actively wrong |
+| 008-D2 | recompute on preemption | swap KV to host | no host mirror; prefill is parallel, a swap is two serial transfers |
+| 008-D3 | admission reserves answer space | admit on a free slot alone | a full pool cannot deadlock; rejections are reported |
+| 008-D4 | keep §7's four hooks live in v0 | build them when 043 lands | v0 pays nothing; the retrofit stays a binding change |
+| 008-D5 | last-arrived-first-evicted | round-robin or longest-running | bounds the latency of sequences already in flight rather than spreading the damage |
+| 008-D6 | blocked on 043's *implementation*, not its design | build against the designed signatures now | accel 043 is drafted and partly in flight; building against unlanded signatures is building against nothing |

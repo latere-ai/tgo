@@ -108,6 +108,17 @@ loses accuracy badly, and accel's f32 accumulation is the correct default.
 tensor operator reads it. Qwen3 ships bf16. The loader therefore converts, and
 [001 §3](001-weights.md) owns the rounding and the overflow rule.
 
+> **Amended 2026-08-24.** accel
+> [043 §5](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
+> accepts the argument in
+> [accel#5](https://github.com/golang-design/accel/issues/5) and designs `MatMul`
+> onto f32 operands, with the "done" condition being that *a transformer graph
+> built from f32 activations contains no `Cast` node*. The table above is
+> therefore the shape tgo builds against **today**, and the cast chain is
+> temporary. bf16 reads are not part of 043 and stay open as
+> [010 C7](010-conformance.md). The original table is kept rather than replaced,
+> because it is the argument that produced the change.
+
 ## 5. Weights are f16 or int8, chosen by size, and the choice is arithmetic
 
 A model must fit. With $P$ parameters and $b$ bytes per stored weight the
@@ -179,6 +190,24 @@ comment. So the cache tgo can build is one contiguous `tensor.State` per layer,
 sized for the longest sequence it will ever serve. That is a fourth gap, it is
 the one that costs the most memory, and [005](005-kv-cache.md) states what it
 costs.
+
+> **Amended 2026-08-24.** All three gaps above, plus the fourth, are one
+> decision. accel
+> [043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
+> names it — *a scalar is a value every row of a dispatch shares; a value that
+> differs per row is a tensor* — and moves positions, cache lengths, prefill
+> bases, sampling draws and the page table onto tensor operands. `RoPE` has
+> already changed. The rest is designed and unbuilt.
+>
+> This does not make v0 batched. The **design** is no longer the blocker; the
+> **code** is, and [008](008-scheduler.md) now blocks on 043's implementation
+> rather than on its absence. What it does change is the shape tgo must not
+> foreclose, which [008 §5](008-scheduler.md) already listed and which 043 makes
+> concrete: a `Positions` tensor rather than an offset scalar, and a `State`
+> that is the same `State` whether or not a page table is bound to it. Paging is
+> not a second cache type, so tgo does not get a second cache path.
+>
+> The paragraph above is kept, not replaced. It is why 043 exists.
 
 ## 8. No test downloads weights
 
