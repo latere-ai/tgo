@@ -38,7 +38,6 @@ const threshold = 90.0
 // enough that its coverage would measure the test harness rather than the code.
 var exempt = map[string]string{
 	"internal/covercheck": "this program; it gates coverage and is not gated by it",
-	"internal/speclint":   "a test-only linter over the spec tree",
 	"cmd/tgo":             "argument parsing and process wiring; the packages under it carry the logic",
 }
 
@@ -112,7 +111,7 @@ func main() {
 	}
 	sort.Strings(pkgs)
 
-	failed := false
+	failed, measured := false, 0
 	for _, pkg := range pkgs {
 		var total, covered int
 		for _, b := range blocks[pkg] {
@@ -130,6 +129,7 @@ func main() {
 			fmt.Printf("  %-44s %6.1f%%  exempt: %s\n", short(pkg), pct, why)
 			continue
 		}
+		measured++
 		mark := "ok  "
 		if pct < threshold {
 			mark = "FAIL"
@@ -142,7 +142,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\ncoverage below %.0f%% in one or more packages\n", threshold)
 		os.Exit(1)
 	}
-	fmt.Printf("\nevery package at or above %.0f%%\n", threshold)
+
+	// A gate that passes because it measured nothing is worse than no gate: it
+	// reports green over an empty tree and keeps reporting green as the tree
+	// fills up, until somebody notices the number never moved. Every package
+	// being exempt is the shape that produces it, and it is the shape this
+	// repository was in at M0.
+	if measured == 0 {
+		fmt.Fprintf(os.Stderr, "\nno non-exempt package was measured; the gate would "+
+			"pass vacuously. Either the tests did not run, or every package is "+
+			"exempt -- both are failures rather than a green build.\n")
+		os.Exit(1)
+	}
+	fmt.Printf("\nevery package at or above %.0f%% (%d measured)\n", threshold, measured)
 }
 
 // exemptFor reports whether a package is exempt, and why.
