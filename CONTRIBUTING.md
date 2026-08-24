@@ -76,7 +76,10 @@ GOOS/GOARCH pairs.
 
 ## Dependencies
 
-tgo's core is stdlib plus `golang.design/x/accel`. `tgo/server` adds
+tgo's core is stdlib, `golang.design/x/accel`, and
+`golang.org/x/text/unicode/norm` for Unicode NFC — which the tokenizer cannot be
+correct without and the standard library does not provide
+([002-D10](specs/002-tokenizer.md)). `tgo/server` adds
 `latere.ai/x/pkg/llmdialect` and nothing else.
 
 That module carries a large dependency set of its own, and none of it reaches

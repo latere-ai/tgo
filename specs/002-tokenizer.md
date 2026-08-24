@@ -226,6 +226,7 @@ vocabulary, plus the fixed vectors from the real one. Neither needs a model.
 | --- | --- | --- | --- |
 | 002-D1 | true BPE by global merge rank, **ties broken leftmost** | greedy longest-match; an unstated tie rule | ids match the reference. The tie rule is a `<` versus `<=` coin flip that diverges on 3.7% of short strings and fires on every double space |
 | 002-D9 | NFC-normalize before splitting | skip it, as the four-part table implied | the reference normalizes; skipping it gives different ids for the same visible text |
+| 002-D10 | take `golang.org/x/text/unicode/norm` for NFC | a hand-rolled table; leave the seam as identity | NFC needs the decomposition tables, combining classes, composition exclusions and Hangul rules, none of which is in the standard library. x/text is pure Go with no cgo, so [000 D2](000-decisions.md) — which is about cgo, not dependencies — is untouched. **The state it replaced was worse than either**: the loader refused NFKC because it "changes ids" and then accepted NFC and ran the identity, so the file claimed normalization the ids did not have |
 | 002-D2 | naive $O(n^2)$ merge in v0 | a heap from the start | pieces are short; the heap needs a benchmark, and a long unsplittable run is a fuzz seed |
 | 002-D3 | added tokens matched before BPE, never merged into | let specials reach the BPE | turn boundaries survive; enables [003-D4](003-chat-template.md) |
 | 002-D4 | a stateful streaming decoder holding back partial UTF-8 | decode each token independently | every CJK character and emoji would otherwise emit U+FFFD |
