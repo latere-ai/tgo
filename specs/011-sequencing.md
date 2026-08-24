@@ -35,7 +35,7 @@ of a broken model.
 | M6 | KV cache + decode loop ([005](005-kv-cache.md), [007](007-engine.md)) | prefill-then-decode equals token-by-token; padded prefill leaves the cache clean. **Capped at 128 positions until [010 C11](010-conformance.md) closes** |
 | M7 | sampling ([006](006-sampling.md)) | order tests pass; stream reproducibility holds across a policy change |
 | M8 | CLI | `tgo run` generates from a local checkpoint |
-| M9 | server ([009](009-server.md)) | handler suite against the fake engine; one real end-to-end |
+| M9 | server ([009](009-server.md)) | handler suite against the fake engine; one golden per dialect; one real end-to-end |
 | M10 | conformance report ([010](010-conformance.md)) | the register table is generated from the tests; §3 numbers measured |
 | M11 | real weights | a Qwen3 dense checkpoint is coherent at f16 and int8, on both backends |
 

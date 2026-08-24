@@ -79,7 +79,7 @@ teaches nobody why the obvious thing was not done.
 | [006](006-sampling.md) | drafted | composition order, and reproducibility as a stream |
 | [007](007-engine.md) | drafted | sessions, plans, buckets, the decode loop |
 | [008](008-scheduler.md) | **blocked** | continuous batching, and the accel gaps that block it |
-| [009](009-server.md) | drafted | the OpenAI-compatible surface |
+| [009](009-server.md) | drafted | three wire dialects over one neutral request |
 | [010](010-conformance.md) | drafted | **what tgo proves about accel**, and the register of gaps |
 | [011](011-sequencing.md) | living | build order, and what actually landed |
 | [012](012-gguf.md) | **blocked** | GGUF, and the kernel accel must register first |

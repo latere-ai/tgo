@@ -256,17 +256,21 @@ a sampling policy. The plan cache, the KV block pool, the graph builders and the
 scheduler are internal, because every one of them is a place where accel's
 shape will move under us.
 
-The HTTP surface is OpenAI-compatible where that is unambiguous, and says so
-where it is not. Compatibility is a serialisation decision, not an architectural
-one, and it does not reach into the engine.
+The HTTP surface speaks three wire dialects — OpenAI Chat Completions, Anthropic
+Messages, and OpenAI Responses — through one neutral request shape, and says so
+where a dialect asks for something tgo does not do. **Compatibility is a
+serialisation decision, not an architectural one, and it does not reach into the
+engine.** That is what makes three cost one adapter rather than three parsers;
+[009 §2](009-server.md) has the boundary.
 
 ---
 
 ## What v0 is
 
 One model family (Qwen3 dense), from safetensors, on the CPU backend and Metal,
-one sequence at a time, through a CLI and an OpenAI-compatible server, with a
-conformance suite that reports what accel cannot yet do.
+one sequence at a time, through a CLI and a server speaking the OpenAI,
+Anthropic and Responses APIs, with a conformance suite that reports what accel
+cannot yet do.
 
 **Done means:** a Qwen3 dense checkpoint produces coherent text at both f16 and
 int8, on both backends, with the tokenizer round-tripping and the chat template
