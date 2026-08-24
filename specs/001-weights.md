@@ -32,6 +32,55 @@ The format is trivially parseable and that is the point of choosing it. It is
 also **untrusted input** — a checkpoint is a file someone downloaded. §6 states
 what the reader refuses.
 
+### 1.1 The header grammar
+
+```
+file    := u64le(n) json[n] data[...]
+json    := { name: entry, ..., "__metadata__": {...}? }
+entry   := { "dtype": D, "shape": [int...], "data_offsets": [begin, end] }
+D       := "F64"|"F32"|"F16"|"BF16"|"I64"|"I32"|"I16"|"I8"|"U8"|"BOOL"
+```
+
+`begin` and `end` are relative to the end of the header, half-open, and in
+bytes. `__metadata__` is a string map and is not a tensor; a reader that treats
+it as one fails on every real checkpoint.
+
+## 1.2 The Go surface
+
+```go
+package safetensors
+
+// Open maps a file and parses its header. It reads no tensor data.
+func Open(path string) (*File, error)
+
+type File struct{ /* ... */ }
+
+func (f *File) Names() []string
+func (f *File) Entry(name string) (Entry, bool)
+func (f *File) Bytes(name string) ([]byte, error)  // the raw plane, no conversion
+func (f *File) Close() error
+
+type Entry struct {
+    DType DType
+    Shape []int
+    Begin, End int64
+}
+
+// Repo is a model directory: config, tokenizer, and one or more shards.
+func OpenRepo(dir string) (*Repo, error)
+
+type Repo struct{ /* ... */ }
+
+func (r *Repo) Config() json.RawMessage
+func (r *Repo) Tensor(name string) (Entry, *File, bool)  // resolves through the index
+func (r *Repo) Names() []string
+```
+
+`Bytes` returns the raw plane. **Conversion is not here**: it belongs to the
+loader, which knows the target precision and the transpose flag, and keeping
+them apart means the reader is testable against a synthesised header with no
+model and no accel.
+
 ## 2. What accel wants
 
 A `tensor.Weight` port bound to an `accel.BufferView` of a specific dtype, in
@@ -75,6 +124,17 @@ tensor saturates more than a threshold fraction of its weights, because that
 means the checkpoint is not in the range f16 can hold and the int8 path is not a
 fix for it either. Trained transformer weights are almost entirely within
 $[-1, 1]$, so a nonzero count is a signal, not routine.
+
+```
+for each element w:
+    f32 := bf16bits(w) << 16                    # exact
+    if |f32| > 65504:  f16 := sign * 65504      # saturate, count++
+    elif |f32| < 2^-14: f16 := 0                # flush subnormals
+    else:              f16 := roundTiesToEven(f32)
+```
+
+The threshold is a fraction, not a count, because a 1.5-billion-element
+embedding table and a 2560-element norm gain cannot share an absolute one.
 
 > This is the first thing to check when a converted model produces noise, and
 > the reason the count is surfaced rather than logged at debug level.
@@ -144,6 +204,31 @@ Weights are read shard by shard, converted, uploaded, and the host copy
 released, so peak host memory is one shard plus one converted tensor rather than
 the whole model. The device holds the whole model, which is the number in
 [000 §5](000-decisions.md).
+
+```mermaid
+flowchart LR
+  A["shard k<br/>mapped"] --> B["tensor t<br/>bf16 bytes"]
+  B --> C["f32 scratch<br/>[N,K]"]
+  C --> D["transpose<br/>[K,N]"]
+  D --> E["f16 or i8+scales"]
+  E --> F["accel.Buffer<br/>resident"]
+  E -.released.-> G["scratch freed<br/>before tensor t+1"]
+```
+
+Peak host bytes are bounded by
+
+$$\max_t \big(\, 4 \cdot |t| \;+\; 4 \cdot |t| \,\big) = 8 \cdot \max_t |t|$$
+
+— the f32 scratch plus the transposed f32 scratch, for the largest single tensor.
+For Qwen3-4B that largest tensor is the embedding table at $V \times d$
+elements, so the loader's peak is about **3.1 GB** of host scratch for a model
+whose device footprint is 4 GB at int8.
+
+That is worth two mitigations, neither of which is v0 and both of which are
+recorded so the number is not mistaken for a floor: transposing in place for a
+square-blocked tile rather than into a second buffer halves it, and
+[010 C10](010-conformance.md) — importing host memory — removes the upload copy
+entirely on unified memory.
 
 **Open, and not resolved here:** whether accel can map a file-backed buffer
 without a host copy at all. `accel.Buffer` is created from a descriptor and
