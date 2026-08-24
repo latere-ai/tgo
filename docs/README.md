@@ -5,15 +5,12 @@ contributors live in [`../specs/`](../specs/) and are written for a different
 reader — they argue about tradeoffs, and this does not.
 
 > [!NOTE]
-> **tgo is not implemented yet.** The pages that would tell you how to install
-> it, pull a model and serve it do not exist, because the commands they would
-> describe do not exist. Writing them now would produce instructions that are
-> wrong in ways nobody could check.
+> **tgo does not run yet.** The pages that would tell you how to install it,
+> pull a model and serve it are missing because the commands they describe do
+> not exist. Writing them now would give you instructions nobody could check.
 >
-> [`orientation.md`](orientation.md) is here today, because what tgo *is* and
-> how it fits together is true regardless of how much of it runs.
-> [`../specs/011-sequencing.md`](../specs/011-sequencing.md) says what is
-> finished.
+> [Orientation](orientation.md) is here today, because what tgo is and what it
+> costs to run are true regardless of how much of it is built.
 
 ## Now
 
@@ -22,13 +19,12 @@ reader — they argue about tradeoffs, and this does not.
 
 ## With the code
 
-| page | arrives at |
+| page | what it will cover |
 | --- | --- |
-| Quickstart — install, pull a model, generate | M8 |
-| Models — what is supported, precision, memory | M8 |
-| Serving — the HTTP API, streaming, concurrency | M9 |
-| Performance — what to expect and how to measure it | M10 |
-| Troubleshooting | M10 |
+| Quickstart | install, fetch a model, generate your first tokens |
+| Models | which models run, choosing precision, how much memory each needs |
+| Serving | the HTTP API, streaming, running it behind something |
+| Performance | what to expect, and how to measure it on your own machine |
+| Troubleshooting | when a model will not load, or the output looks wrong |
 
-The milestones are in
-[`../specs/011-sequencing.md`](../specs/011-sequencing.md).
+Each arrives with the code it describes.

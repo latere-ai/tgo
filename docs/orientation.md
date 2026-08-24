@@ -38,10 +38,11 @@ accel compiles it and runs it. That is why the same model runs on the CPU
 backend and on Metal with no per-backend code — and why, when a backend is added
 to accel, tgo gets it without changes.
 
-**accel decides what is possible.** tgo writes no GPU code at all. Where you see
-a limit in tgo — a maximum context length, a precision that is not offered — it
-is almost always accel's limit, and it is written down with the reason in
-[`../specs/010-conformance.md`](../specs/010-conformance.md).
+**The layer below decides what is possible.** tgo writes no GPU code at all, so
+a limit you meet — a precision that is not offered, a feature that is not there
+yet — is usually accel's limit rather than a shortcut tgo took. Every one of
+them is written down with its reason and its cost, so a limit is something you
+can plan around instead of something you discover.
 
 ## Speaking to it
 
@@ -96,9 +97,21 @@ use — so asking for a 32k context reserves 32k worth of memory whether or not
 your conversation gets there.
 
 tgo defaults to a modest context and **tells you what a larger one costs before
-allocating it**. The arithmetic is in
-[`../specs/005-kv-cache.md`](../specs/005-kv-cache.md) if you want to plan
-capacity.
+allocating it**, so you find out when you ask rather than when it fails.
+
+To plan capacity, the cache costs about **288 KB per token** for a 4B model, on
+top of the weights:
+
+| context you ask for | cache |
+| --- | --- |
+| 2048 | 0.6 GB |
+| 4096 | 1.2 GB |
+| 8192 | 2.4 GB |
+| 32768 | 9.7 GB |
+
+That is per conversation, and it is reserved whether or not the conversation
+gets that long. A larger model has proportionally more layers and heads, so
+scale it by the model's size.
 
 ## Prompt caching
 
@@ -135,6 +148,7 @@ Two things worth knowing:
 
 ## Where to go next
 
-- [`../specs/011-sequencing.md`](../specs/011-sequencing.md) — what is finished.
-- [`../specs/000-decisions.md`](../specs/000-decisions.md) — the ten decisions
-  the whole thing rests on, each with what was rejected and why.
+- [The documentation index](README.md) — the guides, and when each arrives.
+- If you want to know *why* tgo is built the way it is, the design lives in
+  [`../specs/`](../specs/). It is written for people changing tgo rather than
+  using it, and you should not need it to run a model.

@@ -13,88 +13,44 @@
 
 ---
 
-tgo is an inference framework built on
-[accel](https://github.com/golang-design/accel), which runs compute on the GPU
-from Go with `CGO_ENABLED=0`. One binary, cross-compiled anywhere, with no
-runtime to install beside it.
+tgo runs open-weight language models from Go. It builds to **one static binary**
+with `CGO_ENABLED=0` — no C++ runtime, no Python, no vendor SDK, and nothing to
+install beside it. You cross-compile it the way you cross-compile any Go
+program.
 
 > [!IMPORTANT]
-> **Design complete. Nothing is implemented.** Every spec in [`specs/`](specs/)
-> is written and reviewable; there is no working code yet.
+> **tgo does not run yet.** The design is complete and reviewable; the code is
+> not written. There is nothing to install and nothing to try.
 >
-> v0 *was* blocked upstream — accel's attention refused a KV cache longer than
-> 128 positions, shorter than a system prompt. tgo filed it, wrote the design,
-> and accel shipped it.
->
-> **Nothing between here and serving a model is waiting on accel**, and that is
-> measured rather than asserted: the whole Qwen3-4B graph — 36 layers, a 151936
-> vocabulary, a 4096-position cache — compiles against accel today, as four
-> plans (prefill and decode, f16 and int8) of up to 730 nodes and 1013 kernel
-> selections. Prefix caching is expressible too. The only thing still blocked
-> upstream is continuous batching, which is post-v0. What is *not* proven is
-> that the numbers would be right; that needs the parity oracle, which needs
-> code. [`specs/011-sequencing.md`](specs/011-sequencing.md) has the table.
+> This page describes what tgo will do. [`docs/`](docs/) explains how it fits
+> together, and [`specs/`](specs/) is the design itself.
 
-## Why this exists
+## Why you might want it
 
-Two reasons, and the second is the load-bearing one.
+If you already run Python happily, [vLLM](https://github.com/vllm-project/vllm)
+is faster and far more complete today, and you should use it.
 
-**Go should be able to run a model.** Today that means shelling out to a C++
-process or binding to one. tgo is the same job in one static binary.
+tgo is for the case where that is awkward: shipping a model inside a Go service,
+running on a machine you cannot install a toolchain on, or cross-compiling a
+binary for a platform you do not build on. One file, no runtime, no version
+matrix.
 
-**tgo is accel's validating consumer.** accel is a young library, and the way a
-young library finds out which of its abstractions survive is that something real
-tries to use them. So tgo writes **no kernels and no device code**. When accel
-cannot express something, tgo does not route around it — it files the gap, keeps
-a named failing test, and waits.
+## What it will do
 
-That is not a policy for its own sake. In the first days of design it produced
-**ten issues** on accel. Five turned out to be
-[one decision seen five times](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md):
-*a scalar is a value every row of a dispatch shares; a value that differs per
-row is a tensor.* No single one of those five looked like a design decision from
-inside accel. Together they were one, and the fix removed API surface rather
-than adding it.
+| | |
+| --- | --- |
+| **Models** | Qwen3 dense, from Hugging Face safetensors |
+| **Precision** | f16 or int8, chosen by what fits your machine, and always overridable |
+| **Devices** | CPU everywhere, Metal on Apple silicon; more as they arrive |
+| **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
+| **Serving** | streaming, logprobs, seeded reproducible output, and prompt caching that reuses work across turns and requests |
+| **As a library** | open a model, hold a conversation, stream tokens |
 
-A sixth — attention capped at 128 positions, which made no model servable — tgo
-filed, designed, and accel implemented. The tenth is the interesting one:
-`Attention` *accepted* a page table on a prefill and silently ignored it. Every
-finding before it was a refusal; that one returned a fluent wrong answer, and it
-took a probe asserting a value rather than reading an error to see it. It is
-fixed, and it is why tgo's register is decided by measurement.
+Continuous batching — running many conversations in one step — is designed and
+waiting on work in the layer below. Until it lands, tgo serves one conversation
+at a time well rather than many badly, and says so in its metrics.
 
-**Ten of the eleven issues are now closed, and six register rows are still
-open.** That is not a complaint: each fix matched its issue's title, and four of
-those titles named a symptom rather than the cost. It is the reason the register
-records *capabilities* rather than tickets — a title is a summary, and only a
-capability is testable.
-
-The register of what accel cannot do yet — with the arithmetic for each — is
-[`specs/010-conformance.md`](specs/010-conformance.md). **It is this project's
-primary output.**
-
-## What is planned
-
-Lessons taken deliberately from [ollama](https://github.com/ollama/ollama),
-[vLLM](https://github.com/vllm-project/vllm) and
-[sglang](https://github.com/sgl-project/sglang):
-
-| | | status |
-| --- | --- | --- |
-| Qwen3 dense, from safetensors | f16 or int8, chosen by what fits | designed |
-| Byte-level BPE, streaming decode | pure Go, no `tokenizers` dependency | designed |
-| Chat templates | per model, with user text that cannot forge a turn | designed |
-| OpenAI, Anthropic and Responses APIs | three wire dialects, one adapter, via `llmdialect` | designed |
-| Paged KV cache | vLLM's contribution | designed |
-| Continuous batching | many sequences per step | blocked on accel |
-| Prefix caching | reuse an earlier turn's KV, and a system prompt across requests | designed |
-| Constrained decoding | a JSON schema compiled to a token mask | designed, after batching |
-| GGUF | needs a super-block kernel accel does not register | blocked |
-
-## The shape it will have
-
-Designed in [`specs/007-engine.md`](specs/007-engine.md). **This does not run
-yet.**
+## What using it will look like
 
 ```go
 m, err := tgo.Open("./Qwen3-4B", tgo.WithPrecision(tgo.Int8))
@@ -118,25 +74,32 @@ if err := stream.Err(); err != nil {
 }
 ```
 
-## Reading it
+Or as a server, which speaks three APIs on the same model:
 
-| you are | start at |
-| --- | --- |
-| evaluating the design | [`specs/000-decisions.md`](specs/000-decisions.md) — ten decisions, each with what was rejected |
-| wondering what works | [`specs/011-sequencing.md`](specs/011-sequencing.md) |
-| interested in the accel side | [`specs/010-conformance.md`](specs/010-conformance.md) |
-| going to contribute | [`specs/README.md`](specs/README.md), then [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| going to use it | [`docs/`](docs/) — an index and an orientation page today; guides arrive with the code |
+```sh
+tgo serve ./Qwen3-4B
+```
 
-## The one rule
+## How it is built, and why that matters to you
 
-tgo does not write kernels. A patch that works around a missing accel operator
-with private device code will be turned down however good it is, because the gap
-it hides is the output this project exists to produce.
+tgo does the model; [accel](https://github.com/golang-design/accel) does the
+GPU. tgo contains no GPU code at all — when it needs something accel cannot do,
+it reports the gap upstream and waits rather than working around it.
 
-The path for a missing operator is: a test that names it, a row in
-[`specs/010-conformance.md`](specs/010-conformance.md), and an issue on
-[accel](https://github.com/golang-design/accel) citing the spec that owns it.
+That is worth knowing for two reasons. It is why tgo gains a backend the moment
+accel does, without changes. And it is why the status above is honest: a limit
+you meet in tgo is a real limit, written down with the reason, rather than a
+sharp edge nobody mapped.
+
+## Documentation
+
+- **[Orientation](docs/orientation.md)** — what tgo is, what runs where, and what
+  it costs in memory. Written for people running models.
+- **[docs/](docs/)** — the index. Quickstart, model and serving guides arrive
+  with the code they describe.
+- **[specs/](specs/)** — the design, written for contributors: what was decided,
+  what was rejected, and why.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — start here to work on tgo.
 
 ## License
 
