@@ -146,6 +146,55 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-24 — Wave 1 shipped, Wave 2 started
+
+**Verdict at the start of the wave: build.** [§2](#2-readiness-build-now-and-what-the-targets-actually-are)
+has the evidence. Re-checked before Wave 2: accel has moved on to graphics work
+so the tensor layer is stable, tgo builds and tests clean against it, and the
+four open upstream issues
+([#6](https://github.com/golang-design/accel/issues/6),
+[#16](https://github.com/golang-design/accel/issues/16),
+[#17](https://github.com/golang-design/accel/issues/17),
+[#18](https://github.com/golang-design/accel/issues/18)) block neither Wave 2
+nor Wave 3.
+
+**What the field survey found**, since the targets turned out to be misnamed:
+the Qwen3 dense line has no 3B (the target is 4B); Qwen3.8-27B is real and is
+**not dense** — 48 of its 64 layers are linear attention ([018](018-hybrid-models.md),
+[accel#17](https://github.com/golang-design/accel/issues/17)); and MoE is most of
+what ships at single-machine sizes, which accel has no routed GEMM for
+([accel#18](https://github.com/golang-design/accel/issues/18)). Both were filed
+as questions rather than proposals.
+
+**Wave 1 shipped**: `bench` 100.0%, `chat` 100.0%, `tokenizer` 99.1%,
+`safetensors` 97.7%. Every gate green including `-race`, and the coverage floor
+now measures five packages.
+
+**What the parallel review pass earned**, since it doubles the cost and has to
+pay for itself:
+
+- `chat`'s reviewer mutation-tested fourteen edits, found three blind spots, and
+  verified the goldens came from the reference by rendering the real Qwen3
+  template with Jinja2 over 47 cases — all byte-identical.
+- `tokenizer`'s reviewer found `post_processor` and `decoder` were never read. A
+  Llama-3-style file would have loaded and encoded every prompt **without its
+  BOS token**, silently. Both are now refused by name.
+- One real defect, escalated rather than hidden: NFC was an identity seam while
+  the loader *refused* NFKC because it "changes ids". Accepting a declared
+  normalizer and not running it is the same silent divergence that refusal
+  exists to prevent. Resolved by taking `x/text/unicode/norm`
+  ([002-D10](002-tokenizer.md)) — pure Go, no cgo, so
+  [000 D2](000-decisions.md) is untouched.
+
+**A real checkpoint is on disk**: Qwen3-0.6B at `~/.cache/openllms-e2e/model`,
+1.5 GB of bf16 safetensors. It carries `head_dim: 128` against
+`hidden_size/num_attention_heads` of 64 — exactly the case
+[004 §5](004-model-graph.md) says never to infer, now testable rather than
+argued. Tests that read it are gated behind `TGO_MODEL` and never run in CI
+([000 D8](000-decisions.md)).
+
+**Wave 2 started**: `weights`, `nn`, `internal/oracle`, `model`.
+
 ### 2026-08-24 — the forward pass compiles, and the casts are gone
 
 Not a milestone; a measurement, taken because the README claimed "nothing between
