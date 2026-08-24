@@ -70,6 +70,40 @@ flowchart LR
   R --> C1 & C2 & C3
 ```
 
+### 2.1 What the dependency actually costs
+
+Measured, because the module it lives in looks alarming: `latere.ai/x/pkg`
+requires golang-migrate, the full OpenTelemetry SDK and its OTLP exporters,
+goldmark, `go-yaml` and `oauth2`.
+
+**None of it reaches a consumer.** Importing `llmdialect` and its three frontends
+gives:
+
+```
+$ cat go.mod
+require latere.ai/x/pkg v0.41.0        # one require
+
+$ wc -l go.sum
+2                                       # the module and its go.mod
+
+$ go list -deps .   # non-stdlib only
+latere.ai/x/pkg/llmdialect
+latere.ai/x/pkg/llmdialect/ir
+latere.ai/x/pkg/llmdialect/{anthropic,openaichat,openairesp}
+latere.ai/x/pkg/llmdialect/internal/sse
+```
+
+Go's module graph pruning carries only the requirements of the packages actually
+imported, and llmdialect's subtree is **stdlib-only**. It also cannot break
+[000 D2](000-decisions.md): nothing there imports `C`.
+
+**That is a property of llmdialect's current imports, not a promise it makes.**
+One OTEL import added upstream would arrive in tgo on the next `go get`, and the
+first symptom would be a slower build rather than an error. So
+[009-D14](#decision-record) puts a footprint check in CI from M9: the non-stdlib
+build list must match an allowlist, and growing it is a decision someone makes on
+purpose.
+
 **`llmdialect` is a dependency of `tgo/server`, not of `tgo`.** A caller
 embedding tgo as a library gets the engine and does not inherit the dialect
 layer, its IR types, or its release cycle. The mapping `ir.Request` →
@@ -326,5 +360,6 @@ what proves the fake engine's contract matches the real one.
 | 009-D12 | subtract the fields tgo honours from `llmdialect`'s loss list | emit `Loss.Fields()` verbatim | the IR is narrower than `Policy`, so the header would report honoured knobs as dropped ([§4.1](#41-irrequest-is-narrower-than-policy-so-the-loss-list-must-be-corrected)) |
 | 009-D13 | tgo owns a per-dialect error encoder | expect `Frontend` to cover errors | `Frontend` has no error path and the dialects genuinely differ; ollama hand-writes both ([§5.1](#51-errors-need-a-per-dialect-encoder-which-the-frontend-half-does-not-give)) |
 | 009-D9 | serve three dialects via `llmdialect`'s `Frontend` half | OpenAI Chat only; reimplement the dialects in tgo | three surfaces for one adapter. `Backend` is a gateway's half and tgo never uses it |
-| 009-D10 | `llmdialect` is a `tgo/server` dependency, not a core one | make `ir.Request` the engine's argument | a library embedder inherits neither the IR types nor another module's release cycle |
+| 009-D10 | `llmdialect` is a `tgo/server` dependency, not a core one | make `ir.Request` the engine's argument | a library embedder inherits neither the IR types nor the dialect layer. **Verified 2026-08-24:** `latere.ai/x/pkg` is one module carrying golang-migrate, the OTEL SDK, goldmark and oauth2 — and none of it reaches a consumer. Go's module graph pruning keeps a consumer's `go.sum` at two lines and links **stdlib only** beside llmdialect's own packages ([§2.1](#21-what-the-dependency-actually-costs)) |
+| 009-D14 | gate the dependency footprint in CI from M9 | trust that llmdialect stays stdlib-only | the property that makes D10 true is a property of llmdialect's *current* imports, not a promise; one OTEL import upstream would land in tgo silently on the next upgrade |
 | 009-D11 | messages and stream events are **blocks**, a strict subset of `ir.Block` | `Content string` | forced by [003-D4](003-chat-template.md): stripping prior thinking from a string is a textual boundary, and textual boundaries can be forged |

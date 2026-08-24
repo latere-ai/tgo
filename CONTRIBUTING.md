@@ -74,6 +74,20 @@ go test -coverprofile=cover.out -coverpkg=./... ./... && go run ./internal/cover
 CI runs all of these plus a cgo-free grep and a cross-compile across ten
 GOOS/GOARCH pairs.
 
+## Dependencies
+
+tgo's core is stdlib plus `golang.design/x/accel`. `tgo/server` adds
+`latere.ai/x/pkg/llmdialect` and nothing else.
+
+That module carries a large dependency set of its own, and none of it reaches
+tgo — Go's module graph pruning keeps a consumer's build list to llmdialect's
+stdlib-only subtree ([009 §2.1](specs/009-server.md)). **This holds because of
+what llmdialect currently imports, not because of a guarantee**, so from M9 CI
+checks the non-stdlib build list against an allowlist.
+
+Adding a dependency means editing that allowlist, in the same commit, with the
+reason. A `go.sum` that grows without one is the review comment.
+
 ## Commits
 
 One logical change per commit, staged explicitly — not `git add -A`. The message
