@@ -33,13 +33,17 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
 | C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | open | host sampling. The per-row kernels landed in the corpus; `tensor` exports no sampling operator at all |
 | C4 | a paged KV cache | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed; `AttentionOptions.Pages` + `Block` |
-| C5 | an f16 KV cache that can be **written** | 007, 010, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **reopened** | f32. `Attention` reads f16, `ScatterRows` writes f32 only, and prefill over f16 is refused — so a model cannot populate one |
+| C5 | an f16 KV cache that can be **written**, or paged | 007, 010, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **reopened** | f32. `Attention` *reads* f16; `ScatterRows` writes f32 only, prefill over f16 is refused, and paged+f16 is refused — so f16 is read-only and excludes paging |
 | C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | open | host, before submission; a 608 KB logits readback per token |
 | C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | open | convert on the host at load; [001 §3](001-weights.md) |
 | C8 | **f32 activations against f16 or int8 weights** | 010 | [#5](https://github.com/golang-design/accel/issues/5) | open, narrowed | `Cast` before every projection: 7 per layer, 252 per forward pass |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
 | C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed, differently** | none needed; `Buffer.Access` writes converted bytes straight into device memory |
-| **C11** | **a KV cache longer than 128 positions** | 007, 010, **044** | [#8](https://github.com/golang-design/accel/issues/8) | **open — blocking** | none |
+| C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed. accel 044 shipped the tiling loop; 4096 verified |
+| **C13** | **a paged *prefill*** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **open — blocking 016** | none. `Attention` **accepts `Pages` on a prefill, ignores it, and returns a wrong answer** |
+| C14 | an f16 `GatherRows` | 010, 025 | — | open | the embedding plane must be f32 (1.56 GB on Qwen3-4B) or int8 |
+| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | — | open | int8 decode takes the per-element kernel; the matvec selection is gated on f16 |
+| C16 | a dispatch mixing prefill chunks and decode steps | 040 | — | open | chunked prefill mitigates latency and recovers no throughput ([008 §5](008-scheduler.md)) |
 | C12 | binding a `LayerState` view to `Attention` or `ScatterRows` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states for 36 layers. Layer 0 works; every layer at a non-zero offset is refused |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
@@ -49,10 +53,25 @@ copy. As of **2026-08-24**.
 
 ### How a row's state is decided
 
-**By a probe, not by a commit message.** These states were re-derived by
-recording the graph tgo intends to build against the accel that is checked out
-and reading what it refuses. That is not ceremony — it changed three verdicts
-that reading commits had got wrong:
+**By a probe that asserts a value, not by reading what an operator refuses.**
+
+The rule used to be "record the graph and read the refusal", and **that rule is
+what produced C13's false green.** A paged prefill compiled, so the probe
+recorded it as working, and [016 §9](016-prefix-cache.md) said cross-request
+prefix sharing "is expressible today". It is not. A refusal-based probe is blind
+to the accept-and-silently-wrong class, which is the class that matters most.
+
+**The rule now:** a probe binds real buffers, asserts the **output** against the
+host oracle of [§5](#5-the-parity-oracle), records `Plan.Selections()`, and —
+where an option is optional — **varies it and checks the output moves.** An
+option that changes nothing is either honoured and irrelevant, or ignored.
+
+An operator that accepts and computes the wrong thing is not a new register
+state. It is [§1](#1-two-directions)'s **downward** direction — accel not doing
+what it says — and it goes to the oracle, not to a fifth column.
+
+The re-derivation also changed three verdicts that reading commits had got
+wrong:
 
 - **C8 looked closed and is not.** `MatMul` gained f32 operands, but it requires
   the two operands to *share* a dtype. A transformer's activations are f32 and
@@ -89,15 +108,22 @@ operator that looks free. The host-side transpose is the right answer, not a
 workaround. It stays in the table because it constrains what tgo can do at graph
 time, which is what this table is for.
 
-**C11 is different in kind from every other row.** The rest are costs — tgo runs
-more slowly, or uses more memory, or emits more dispatches. C11 has no
-workaround and no degraded mode: `Attention` refuses a cache large enough to
-hold a system prompt, so there is no context length at which a model is
-servable. Everything downstream of [011 M6](011-sequencing.md) is gated on it,
-including every number in §3, because a measurement taken at 128 positions
-describes nothing.
+**C11 closed on 2026-08-24.** It was the tree's headline blocker — a cache
+capped at 128 positions, shorter than a system prompt. accel
+[044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md)
+shipped the tiling loop and a 4096-position cache is verified working. Nothing
+in tgo is blocked on cache size any more.
 
-It is listed last because it was found last. It is first in priority.
+**C13 replaces it as the blocking row, and it is worse in kind.** Every other
+row in this table is a *refusal*: tgo asks for something and is told no. C13 is
+an **acceptance**. `Attention` takes `Pages` on a prefill, drops it, reads the
+cache contiguously, and returns a fluent wrong answer — measured at a worst
+absolute difference of 0.74 between an identity and a reversed page table, with
+`Selections()` naming the contiguous kernel both times.
+
+Since a paged decode is only useful over blocks a paged prefill wrote, this
+makes cross-request prefix sharing inexpressible, so it blocks
+[016](016-prefix-cache.md) and [011 M10b](011-sequencing.md).
 
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
@@ -231,4 +257,5 @@ that is the same failure this project exists to catch in accel.
 | 010-D3 | tolerances are derived and commented with their term; a raised tolerance is a finding | tune until green | a numerics regression cannot be absorbed |
 | 010-D4 | tier 3 never runs in CI | a nightly with a download | CI stays offline and under a minute |
 | 010-D5 | the oracle is float64 and presumed right on disagreement | float32, matching the device | it is the simpler program; matching the device would import the device's bugs |
+| 010-D7 | a probe asserts a value against the oracle and varies optional bindings | record the graph and read the refusal | the refusal-based rule was blind to C13 and reported a false green in its own spec |
 | 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |

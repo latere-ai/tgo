@@ -216,8 +216,9 @@ costs.
 > **v0 is still not batched, for a different reason.** `q`'s rank is the *phase*
 > — rank 3 means a prefill — so a batched decode has no axis to live on
 > ([010 C1](010-conformance.md)). And the paged cache is **inert**: the
-> 128-position cap applies to the pool, so a page table over a pool that cannot
-> hold one sequence buys nothing ([005 §2.3](005-kv-cache.md)).
+> the *prefill* path drops the page table it accepts, so blocks a paged decode
+> would read were never written by a paged prefill ([010 C13](010-conformance.md),
+> [accel#10](https://github.com/golang-design/accel/issues/10)).
 >
 > The paragraphs above are kept, not replaced. They are why 043 exists.
 
@@ -276,15 +277,20 @@ cannot yet do.
 int8, on both backends, with the tokenizer round-tripping and the chat template
 matching the reference byte for byte.
 
-> **v0 is gated upstream, as of 2026-08-24.** `tensor.Attention` refuses a KV
-> cache longer than **128 positions** — the decode kernel's workgroup width —
-> and the check binds prefill too. A 128-token context is shorter than a system
-> prompt, so "done" as stated above is currently unreachable for reasons that
-> are entirely in accel. It is [010 C11](010-conformance.md) and
-> [accel#8](https://github.com/golang-design/accel/issues/8).
+> **v0 was gated upstream and is not any more, as of 2026-08-24.**
+> `tensor.Attention` refused a KV cache longer than **128 positions**, shorter
+> than a system prompt, which made the goal above unreachable for reasons
+> entirely in accel. accel
+> [044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md)
+> shipped the tiling loop; a 4096-position cache is verified working, and
+> nothing in tgo is blocked on cache size.
 >
-> Everything before [011 M6](011-sequencing.md) — the tokenizer, templates, the
-> loader, the `nn` blocks, the oracle, the forward pass on synthetic configs —
-> is unaffected and is where the work goes meanwhile. That is not a
-> consolation: those are the milestones that carry the coverage gate, and they
-> are what makes the eventual end-to-end run a measurement rather than a demo.
+> **What is still blocked is narrower.** A paged *prefill* silently ignores its
+> page table ([010 C13](010-conformance.md)), so cross-request prefix sharing is
+> not expressible — that blocks [016](016-prefix-cache.md), not v0. Batched
+> decode ([C1](010-conformance.md)) still has no axis to live on, which is
+> decision 7. Neither stops a single sequence being served end to end.
+>
+> This paragraph is kept in its amended form rather than deleted, because the
+> register's whole claim is that a row leaves only when its test says so, and
+> the same discipline applies to the prose.

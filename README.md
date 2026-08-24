@@ -20,13 +20,13 @@ runtime to install beside it.
 
 > [!IMPORTANT]
 > **Design complete. Nothing is implemented.** Every spec in [`specs/`](specs/)
-> is written and reviewable; there is no working code yet. v0 is also **gated
-> upstream**: `accel`'s attention operator refuses a KV cache longer than 128
-> positions, which is shorter than a system prompt. That is
-> [accel#8](https://github.com/golang-design/accel/issues/8), it has no
-> workaround, and it is the single thing between here and serving a model.
-> [`specs/011-sequencing.md`](specs/011-sequencing.md) is where things actually
-> stand.
+> is written and reviewable; there is no working code yet.
+>
+> v0 *was* blocked upstream — accel's attention refused a KV cache longer than
+> 128 positions, shorter than a system prompt. tgo filed it, wrote the design,
+> and accel shipped it: a 4096-position cache is verified working, and **nothing
+> between here and serving a model is waiting on accel.**
+> [`specs/011-sequencing.md`](specs/011-sequencing.md) is where things stand.
 
 ## Why this exists
 
@@ -41,13 +41,19 @@ tries to use them. So tgo writes **no kernels and no device code**. When accel
 cannot express something, tgo does not route around it — it files the gap, keeps
 a named failing test, and waits.
 
-That is not a policy for its own sake. In the first day of design it produced
-**nine issues** on accel, five of which turned out to be
+That is not a policy for its own sake. In the first days of design it produced
+**ten issues** on accel. Five turned out to be
 [one decision seen five times](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md):
 *a scalar is a value every row of a dispatch shares; a value that differs per
 row is a tensor.* No single one of those five looked like a design decision from
 inside accel. Together they were one, and the fix removed API surface rather
 than adding it.
+
+A sixth — attention capped at 128 positions, which made no model servable — tgo
+filed, designed, and accel implemented. The tenth is the interesting one:
+`Attention` *accepts* a page table on a prefill and silently ignores it. Every
+finding before it was a refusal; that one returns a fluent wrong answer, and it
+took a probe that asserted a value rather than reading an error to see it.
 
 The register of what accel cannot do yet — with the arithmetic for each — is
 [`specs/010-conformance.md`](specs/010-conformance.md). **It is this project's
@@ -66,7 +72,8 @@ Lessons taken deliberately from [ollama](https://github.com/ollama/ollama),
 | Chat templates | per model, with user text that cannot forge a turn | designed |
 | OpenAI, Anthropic and Responses APIs | three wire dialects, one adapter, via `llmdialect` | designed |
 | Paged KV, continuous batching | vLLM's contribution | blocked on accel |
-| Prefix caching | reuse the KV of a shared system prompt or an earlier turn | designed |
+| Prefix caching | reuse an earlier turn's KV within a session | designed |
+| Cross-request prefix sharing | one system prompt, many requests | blocked on accel |
 | Constrained decoding | a JSON schema compiled to a token mask | designed, after batching |
 | GGUF | needs a super-block kernel accel does not register | blocked |
 

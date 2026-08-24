@@ -119,60 +119,28 @@ flowchart LR
 Only the **last** block of a sequence is partly used, so waste is bounded by
 $B-1$ positions per sequence rather than $C - T$.
 
-### 2.3 The ceiling: 128 positions
+### 2.3 The ceiling that used to be here
 
-`Attention` refuses any cache longer than the decode kernel's workgroup width,
-and that width is **128**:
+`Attention` refused any cache longer than the decode kernel's workgroup width of
+**128 positions**, and the check bound prefill too. A 128-token context is below
+a system prompt's overhead, so every number in §3 described memory tgo could not
+allocate.
 
-$$C \le \texttt{AttentionDecodeKernel.WorkgroupSize.X} = 128$$
+**Closed on 2026-08-24.** accel
+[044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md)
+replaced the lane-per-position geometry with a tiling loop carrying a running
+maximum, denominator and output accumulator, so capacity left the launch geometry
+entirely. A 4096-position cache is verified working. tgo asked for it in
+[accel#8](https://github.com/golang-design/accel/issues/8) and wrote the design;
+accel implemented it with five recorded deviations.
 
-The check sits above the prefill branch, so it binds prefill too. The kernel
-gives each query head a workgroup and **each lane one cached position**, so
-capacity is part of the launch geometry rather than a loop bound.
-
-**This is the wall, and it is not a cost like the rest of this spec.** A
-128-token context is below the chat template's overhead for a system prompt.
-Every table in §3 describes memory tgo cannot currently allocate, because the
-operator will not accept a $C$ large enough to need it.
-
-> **Paging does not escape it.** The check is on the state's capacity whether or
-> not a page table is bound — measured, not assumed:
->
-> ```
-> REFUSED  paged cache of 4096 positions
->          the cache holds 4096 positions and the decode kernel scores one per lane over 128
-> ```
->
-> The point of a pool is that it serves many sequences without reserving the
-> worst case for each. A pool capped at 128 **total** positions cannot serve
-> one. So [C4](010-conformance.md) and [C5](010-conformance.md) are closed and
-> **inert**: halving a 128-position cache saves 18 KB. Both were the right
-> things to build and neither pays until C11 closes.
-
-Raising the workgroup does not fix it — 1024 lanes buys 1024 positions and is
-still short of any real conversation. The shape has to change to an online
-softmax that loops over positions with a running max and sum:
-
-$$m_i = \max(m_{i-1}, s_i), \quad
-\ell_i = \ell_{i-1}e^{m_{i-1}-m_i} + e^{s_i-m_i}, \quad
-o_i = o_{i-1}e^{m_{i-1}-m_i} + e^{s_i-m_i}v_i$$
-
-so that $C$ leaves the geometry entirely.
-
-**This is now designed upstream** as
-[accel 044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md),
-which also records the ordering that matters to tgo: the f16 variant and a paged
-kernel are the *same* tiling loop, so three registered kernels pass through one
-rewrite. Filed as [accel#8](https://github.com/golang-design/accel/issues/8) and
-[010 C11](010-conformance.md). 044 §6 keeps on the table the fallback accel 007
-already specifies — the composed score-`MatMul` / `Softmax` / value-`MatMul` graph, which
-007 calls the correctness reference and which `Contiguous` now makes
-expressible.
-
-**tgo does not build that composition.** It is precisely the route-around that
-[000 D1](000-decisions.md) forbids, accel 007 assigns the choice to `Attention`,
-and a consumer that quietly composes its own attention stops reporting the gap
-that matters most.
+**What replaced it is narrower and worse in kind.** A paged *prefill* accepts
+`Pages`, drops it, and reads the cache contiguously — an acceptance rather than a
+refusal, measured at a worst absolute difference of 0.74 between an identity and
+a reversed page table. [010 C13](010-conformance.md),
+[accel#10](https://github.com/golang-design/accel/issues/10). It does not cap
+context; it makes cross-request block sharing inexpressible, which is
+[016](016-prefix-cache.md)'s problem rather than this spec's.
 
 ## 3. The number, before and after
 
@@ -277,8 +245,9 @@ one, against the signatures accel has, and rebinds.
   $j \ne i$ unchanged. Trivially true with $2L$ states, and the test stays
   because it is what would break first if [accel#9](https://github.com/golang-design/accel/issues/9)
   lands and tgo collapses to one pair.
-- **The capacity ceiling is a named refusal.** Asking for $C > 128$ fails with
-  accel's message and a pointer to C11, rather than as an opaque compile error.
+- **A paged prefill's output matches the host oracle**, not merely its `base`
+  scalar. Asserting the scalar is what let [C13](010-conformance.md) pass as
+  working for a day.
 - **A stale version is refused.** accel guarantees it; tgo depends on it, so the
   test lives here too.
 - **The §3 arithmetic is a function**, and a table test checks it against the

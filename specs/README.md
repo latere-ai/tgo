@@ -88,6 +88,7 @@ teaches nobody why the obvious thing was not done.
 | [015](015-structured-output.md) | drafted | schema-constrained decoding |
 | [016](016-prefix-cache.md) | drafted | reusing the KV of a prompt somebody already paid for |
 
+
 ## Where the work stands
 
 **M0 is done: the tree, the gates, and CI green on both workflows.** No product
@@ -95,11 +96,14 @@ code exists yet. [011 §2](011-sequencing.md) is the order, [011 §2.1](011-sequ
 is what is gated upstream, and [011 §4](011-sequencing.md) is where outcomes are
 recorded as they land.
 
-The one thing to know before reading further: **v0 is blocked upstream.**
-`tensor.Attention` refuses a KV cache longer than 128 positions, which is
-shorter than a system prompt. It is [010 C11](010-conformance.md) and
-[accel#8](https://github.com/golang-design/accel/issues/8), and it is the only
-finding so far with no workaround. M1 through M5 are unaffected.
+The one thing to know before reading further: **v0 is no longer blocked
+upstream.** `tensor.Attention` refused a cache longer than 128 positions —
+shorter than a system prompt — and accel closed it on 2026-08-24 with a design
+tgo wrote. A 4096-position cache is verified.
+
+What is still blocked is post-v0: cross-request prefix sharing
+([C13](010-conformance.md) — a paged prefill silently drops its page table) and
+continuous batching ([C1](010-conformance.md)).
 
 ## The one thing to understand before contributing
 

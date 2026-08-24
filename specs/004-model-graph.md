@@ -145,6 +145,63 @@ $$\begin{pmatrix} x'_{2i} \\ x'_{2i+1}\end{pmatrix} =
 
 with $m$ the token's absolute position.
 
+### 2.5.1 Which pairs rotate, which nothing in this tree used to say
+
+**The formula above is ambiguous, and the ambiguity is a silent correctness
+bug.** $\big(x_{2i}, x_{2i+1}\big)$ names *interleaved* pairs. There is a second
+convention, and Qwen3 uses it.
+
+| convention | pairs | used by |
+| --- | --- | --- |
+| **interleaved** (GPT-J) | $(x_0,x_1), (x_2,x_3), \dots$ | **accel** |
+| **half-split** (NeoX) | $(x_0, x_{d_h/2}), (x_1, x_{d_h/2+1}), \dots$ | **Qwen3**, and every HF Llama-family checkpoint |
+
+accel is interleaved, verified in the kernel — `internal/testkernels/elementwise.go`:
+
+```go
+lo := r*p.Width + 2*k
+hi := lo + 1
+```
+
+and `tensor.RoPE` has **no style option**. Qwen3 is half-split: vLLM builds it
+with `is_neox_style=True`, and ollama calls MLX's `RoPEWithBase(..., false, ...)`,
+whose `traditional=false` is the same thing.
+
+**Handing HF `q_proj` and `k_proj` output straight to accel's `RoPE` rotates the
+wrong channel pairs.** Nothing refuses it. Every shape checks. The model produces
+fluent text with degraded long-range coherence — the same failure signature as
+the batched-RoPE bug in accel 043, arrived at from the other direction.
+
+### 2.5.2 The fix is a load-time permutation, and its order is forced
+
+The two conventions are related by a permutation of the head's channels, so
+tgo pre-permutes the projection's **output** channels at load and accel's
+interleaved kernel then computes the half-split rotation:
+
+$$y[2i] = x[i], \qquad y[2i+1] = x[i + d_h/2], \qquad 0 \le i < d_h/2$$
+
+Applied per head, to `q_proj` and `k_proj`, and **identically to the `q_norm`
+and `k_norm` gains**, because QK-norm ([§2.4](#24-attention--gqa-qk-norm-rope))
+is applied per channel before RoPE and its gain vector must follow its channels.
+
+**Two ordering constraints, both forced:**
+
+1. **After the transpose, before quantization.** `quant.Int8Quantize` blocks over
+   the *flattened* matrix in runs of `quant.Int8Block = 32`, so permuting after
+   quantizing would scatter each weight away from the scale that was computed
+   for it. [001-D5](001-weights.md)'s "measured post-transpose" becomes
+   post-transpose-**and-permute**.
+2. **It is host-side and load-time**, so it costs nothing at run time and stays
+   inside [000 D1](000-decisions.md) — it is a layout decision about bytes tgo
+   owns, not a kernel.
+
+`rotaryDim` is $d_h$: Qwen3 rotates the whole head.
+
+> This is the single most valuable thing the design review found, and it was
+> found by reading accel's kernel body against a reference implementation rather
+> than by reading either one alone. It is [016 §10](016-prefix-cache.md)'s lesson
+> again: the specs agreed with themselves and disagreed with the arithmetic.
+
 `tensor.RoPE(b, x, rotaryDim, baseName, positions *Tensor)` takes the base as a
 scalar — a model constant every row shares — and the **position as a u32 tensor,
 one entry per row**. It refuses a positions tensor whose length is not the row
@@ -265,22 +322,22 @@ is worth it — and at `[1,d]` it is 10 KB, which it plainly is.
 [001 §4](001-weights.md) requires each model to declare which tensors transpose.
 Qwen3, with the Hugging Face names on the left:
 
-| checkpoint tensor | shape in file | port | transpose | notes |
-| --- | --- | --- | --- | --- |
-| `model.embed_tokens.weight` | `[V, d]` | `embed` | **no** | rows are gathered; `[V,d]` is already row-per-token |
-| `model.layers.ℓ.input_layernorm.weight` | `[d]` | `ℓ.attn_norm` | no | gain |
-| `model.layers.ℓ.self_attn.q_proj.weight` | `[H·d_h, d]` | `ℓ.wq` | **yes** → `[d, H·d_h]` | |
-| `model.layers.ℓ.self_attn.k_proj.weight` | `[H_kv·d_h, d]` | `ℓ.wk` | **yes** | |
-| `model.layers.ℓ.self_attn.v_proj.weight` | `[H_kv·d_h, d]` | `ℓ.wv` | **yes** | |
-| `model.layers.ℓ.self_attn.o_proj.weight` | `[d, H·d_h]` | `ℓ.wo` | **yes** → `[H·d_h, d]` | |
-| `model.layers.ℓ.self_attn.q_norm.weight` | `[d_h]` | `ℓ.qnorm` | no | **Qwen3-specific** |
-| `model.layers.ℓ.self_attn.k_norm.weight` | `[d_h]` | `ℓ.knorm` | no | **Qwen3-specific** |
-| `model.layers.ℓ.post_attention_layernorm.weight` | `[d]` | `ℓ.ffn_norm` | no | gain |
-| `model.layers.ℓ.mlp.gate_proj.weight` | `[f, d]` | `ℓ.wgate` | **yes** | |
-| `model.layers.ℓ.mlp.up_proj.weight` | `[f, d]` | `ℓ.wup` | **yes** | |
-| `model.layers.ℓ.mlp.down_proj.weight` | `[d, f]` | `ℓ.wdown` | **yes** | |
-| `model.norm.weight` | `[d]` | `final_norm` | no | gain |
-| `lm_head.weight` | `[V, d]` | `lm_head` | **yes** → `[d, V]` | **absent when tied** |
+| checkpoint tensor | shape in file | port | transpose | **permute** | notes |
+| --- | --- | --- | --- | --- | --- |
+| `model.embed_tokens.weight` | `[V, d]` | `embed` | **no** | no | rows are gathered; `[V,d]` is already row-per-token |
+| `model.layers.ℓ.input_layernorm.weight` | `[d]` | `ℓ.attn_norm` | no | no | gain |
+| `model.layers.ℓ.self_attn.q_proj.weight` | `[H·d_h, d]` | `ℓ.wq` | **yes** → `[d, H·d_h]` | **yes** | [§2.5.2](#252-the-fix-is-a-load-time-permutation-and-its-order-is-forced) |
+| `model.layers.ℓ.self_attn.k_proj.weight` | `[H_kv·d_h, d]` | `ℓ.wk` | **yes** | **yes** | as above |
+| `model.layers.ℓ.self_attn.v_proj.weight` | `[H_kv·d_h, d]` | `ℓ.wv` | **yes** | no | V is not rotated |
+| `model.layers.ℓ.self_attn.o_proj.weight` | `[d, H·d_h]` | `ℓ.wo` | **yes** → `[H·d_h, d]` | no | reads attention output, which is unrotated |
+| `model.layers.ℓ.self_attn.q_norm.weight` | `[d_h]` | `ℓ.qnorm` | no | **yes** | **Qwen3-specific**; the gain follows its channels |
+| `model.layers.ℓ.self_attn.k_norm.weight` | `[d_h]` | `ℓ.knorm` | no | **yes** | **Qwen3-specific**; as above |
+| `model.layers.ℓ.post_attention_layernorm.weight` | `[d]` | `ℓ.ffn_norm` | no | no | gain |
+| `model.layers.ℓ.mlp.gate_proj.weight` | `[f, d]` | `ℓ.wgate` | **yes** | no | |
+| `model.layers.ℓ.mlp.up_proj.weight` | `[f, d]` | `ℓ.wup` | **yes** | no | |
+| `model.layers.ℓ.mlp.down_proj.weight` | `[d, f]` | `ℓ.wdown` | **yes** | no | |
+| `model.norm.weight` | `[d]` | `final_norm` | no | no | gain |
+| `lm_head.weight` | `[V, d]` | `lm_head` | **yes** → `[d, V]` | no | **absent when tied** |
 
 **Tied embeddings.** When `tie_word_embeddings` is true — which it is for the
 small Qwen3 sizes — there is no `lm_head.weight`. The LM head is the embedding
@@ -359,7 +416,7 @@ named:
 | --- | --- |
 | `rope_scaling` present and unsupported | a wrong scaling is fine for 4000 tokens and then is not |
 | sliding-window attention configured | the graph has no window; output would be silently wrong beyond it |
-| `head_dim` inconsistent with $d/H$ when both given | one of the two is not what the checkpoint means |
+| `head_dim` odd, or not positive | accel's `RoPE` refuses an odd `rotaryDim`; it rotates pairs |
 | $H \bmod H_{kv} \ne 0$ | accel refuses it too; catching it here names the config field |
 | `vocab_size` ≠ the embedding table's rows | the config and the weights are from different models |
 | capacity $C > 128$ | [010 C11](010-conformance.md); refuse with accel's message and the issue |
@@ -373,6 +430,8 @@ weights, on both backends, against the [010 §5](010-conformance.md) oracle:
 | --- | --- |
 | each block against the f64 oracle within a derived tolerance | any numerics error |
 | **QK-norm placement**: fails if the norm moves after RoPE | the Qwen3-specific ordering |
+| **rotary pairing**: q after RoPE matches an HF reference vector | [§2.5.1](#251-which-pairs-rotate-which-nothing-in-this-tree-used-to-say) — the permutation, which nothing else catches |
+| the permutation runs before quantization, not after | [§2.5.2](#252-the-fix-is-a-load-time-permutation-and-its-order-is-forced)'s ordering constraint |
 | **QK-norm axis**: fails if it normalises over `H·d_h` instead of `d_h` | the reshape in row 9–11 |
 | RoPE positions repeat per head (row 12's formula) | a positions tensor built per token instead of per row |
 | prefill transient memory does not scale with $V \times T$ | §3.2's slice |
@@ -392,3 +451,4 @@ weights, on both backends, against the [010 §5](010-conformance.md) oracle:
 | 004-D6 | `nn.Operand` carries f16-or-quantized, resolved once | branch on precision at each projection | one `Linear` call site; precision is a load-time decision, not a graph one |
 | 004-D7 | a tied head uploads two planes | share one buffer | the two layouts differ; sharing needs [C9](010-conformance.md), which accel correctly refuses |
 | 004-D8 | shapes in this spec are symbolic; values come from `config.json` | hardcode a size's constants | a spec cannot go stale against a checkpoint it does not contain |
+| 004-D9 | permute q/k projection output channels and the QK-norm gains at load, after transpose and before quantization | ask accel for a NeoX RoPE; permute on device each step | accel is interleaved and Qwen3 is half-split; nothing refuses the mismatch. A load-time byte layout is tgo's to own and costs nothing per step ([§2.5.2](#252-the-fix-is-a-load-time-permutation-and-its-order-is-forced)) |

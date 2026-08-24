@@ -37,7 +37,7 @@ of a broken model.
 | M8 | CLI | `tgo run` generates from a local checkpoint |
 | M9 | server ([009](009-server.md)) | handler suite against the fake engine; one golden per dialect; one real end-to-end |
 | M10 | conformance report ([010](010-conformance.md)) | the register table is generated from the tests; §3 numbers measured |
-| M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. **Worth nothing until [010 C11](010-conformance.md)**, since a 128-position cache cannot hold a system prompt |
+| M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. Single-session reuse is unblocked; **cross-request sharing waits on [C13](010-conformance.md)** |
 | M11 | real weights | a Qwen3 dense checkpoint is coherent at f16 and int8, on both backends |
 
 M11 is the gate in [000](000-decisions.md)'s "what v0 is". Everything before it
@@ -51,11 +51,11 @@ flowchart LR
     M1["M1 tokenizer"] --> M2["M2 templates"] --> M3["M3 loader"]
     M3 --> M4["M4 nn + oracle"] --> M5["M5 forward pass"]
   end
-  M5 --> M6["M6 decode loop<br/>≤128 positions"]
+  M5 --> M6["M6 decode loop"]
   M6 --> M7["M7 sampling"] --> M8["M8 CLI"] --> M9["M9 server"]
   M9 --> M10["M10 report"] --> M11["M11 real weights"]
-  C11["accel#8<br/>128-position cap"] -.blocks.-> M11
-  C11 -.caps.-> M6
+  C13["accel#10<br/>paged prefill drops Pages"] -.blocks.-> M10b["M10b prefix cache<br/>cross-request sharing"]
+  C1["accel#1<br/>no batch axis"] -.blocks.-> M12["post-v0 batching"]
 ```
 
 M1–M5 are entirely unblocked and are where the work goes now. They are also
@@ -63,29 +63,21 @@ where [000 D8](000-decisions.md) puts the device-free packages, so they carry
 almost all of the coverage gate: a tree that reaches M5 with the gate green is a
 tree whose remaining risk is concentrated in the parts a device decides.
 
-M6 through M10 are *buildable* at 128 positions — the loop, the sampler, the CLI
-and the server all work; they just cannot be pointed at a real conversation. So
-they are not blocked, they are **unmeasurable**: every number in
-[010 §3](010-conformance.md) taken at 128 positions describes nothing. M11 is
-blocked outright.
+**M6 through M11 are unblocked.** [C11](010-conformance.md), the 128-position
+cache cap that gated everything, closed on 2026-08-24 when accel shipped
+[044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md).
+A 4096-position cache is verified. Nothing between here and serving a real model
+is waiting on accel.
 
-## 3. What is deliberately not in v0
+What remains blocked is post-v0 and narrower:
 
-| | why |
+| | blocked on |
 | --- | --- |
-| continuous batching | [008](008-scheduler.md); blocked on three accel gaps |
-| paged KV, prefix reuse | [010](010-conformance.md) C4; the pool is unexported in accel |
-| structured output | [015](015-structured-output.md); real work, and it is after batching |
-| prefix caching | [016](016-prefix-cache.md); **no longer blocked** — paging landed — but inert until C11 |
-| GGUF | [012](012-gguf.md); accel has no super-block kernel |
-| MoE, hybrid/linear attention | Qwen3.5-class architectures. [004](004-model-graph.md)'s registry makes the *graph* additive; the **cache is not** — a recurrent state cannot be sliced mid-sequence, so [016](016-prefix-cache.md) would need generalising too ([§10.1](016-prefix-cache.md)) |
-| LoRA, speculative decoding, multi-device | not blocked, not v0 |
+| M10b's **cross-request** prefix sharing | [C13](010-conformance.md) — a paged prefill drops its page table |
+| continuous batching ([008](008-scheduler.md)) | [C1](010-conformance.md) — `q`'s rank is the phase, so a batch has no axis |
 
-## 4. Outcomes
-
-Appended as each milestone lands: what shipped, what deviated from the spec and
-why, and for M11 the checkpoint, the date, and the
-[010 §3](010-conformance.md) numbers.
+M10b's **single-session** reuse — the $1 - 1/n$ multi-turn win, which is most of
+the value — is not blocked.
 
 ### 2026-08-24 — M0 — **done**
 
@@ -106,7 +98,7 @@ rows changed state in one commit.
 **Findings, which are the actual output of M0:** nine issues on accel. Seven
 before the reconciliation, two after — and the two found last are the ones that
 matter most. [accel#8](https://github.com/golang-design/accel/issues/8) caps the
-KV cache at 128 positions, which is the only finding so far with no workaround.
+KV cache at 128 positions — since closed by accel 044, which tgo also designed.
 [accel#9](https://github.com/golang-design/accel/issues/9) refuses a
 `LayerState` view, which corrected a decision this tree had already recorded
 ([005-D1](005-kv-cache.md)).

@@ -131,9 +131,9 @@ and each new bucket is a compile. The set is **configurable and the default is
 defensible, not optimal** — [010 §3](010-conformance.md) measures compile time
 per bucket, which is the number that would justify changing it.
 
-> Note the interaction with [010 C11](010-conformance.md): while the cache caps
-> at 128 positions, only the first three buckets are reachable. The measurement
-> that would tune this set cannot be taken yet.
+> [010 C11](010-conformance.md) closed on 2026-08-24, so every bucket is
+> reachable and the measurement that would tune this set can now be taken. It is
+> [011 M10](011-sequencing.md)'s job.
 
 ## 4. Padding rows, and the trap that is not one
 

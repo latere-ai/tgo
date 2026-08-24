@@ -103,7 +103,9 @@ capacity.
 
 Most of what you send is usually the same as last time: a system prompt, tool
 definitions, the earlier turns of a conversation. tgo remembers the work it
-already did for that shared beginning and skips it.
+already did for that shared beginning and skips it, within a conversation.
+Sharing one system prompt across *different* requests needs a change in the
+layer below and is not available yet.
 
 You do not ask for this and you do not annotate anything. It happens when the
 beginning of your prompt matches one tgo has seen, and the saving is

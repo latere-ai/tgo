@@ -280,40 +280,50 @@ small device test for the reuse itself. No weights.
 | eviction never frees a block at refcount > 0 | §5 |
 | a seeded completion is identical cold and warm | §6 |
 | `session` scope: two sessions with the same prefix do not share | §7 |
-| a partial hit prefills exactly the suffix, at `base` = hit length | §9 |
+| a partial hit's attention **output** matches the host oracle, not merely its `base` value | §9 — asserting the base is what let C13 pass |
+| concurrent identical-prefix inserts keep one block, under `-race` | §10.4 |
 | **the identical prompt submitted twice** returns the same completion, and the second prefills exactly one token | §3.1 — the case the chat path cannot produce |
 
-## 9. What accel gives, verified
+## 9. What accel gives, and the one thing it does not
 
-Probed against accel as checked out, because [010 §2](010-conformance.md)'s rule
-is that a state is decided by what the operator refuses, not by what a commit
-says:
+Re-probed against accel HEAD by asserting values, not by reading refusals —
+[010-D7](010-conformance.md), a rule this section is the reason for.
 
-```
-ok       paged prefill at a base, f32 cache
-ok       scatter a suffix, f32 cache
-```
+**Available:** a cache of any capacity ([C11](010-conformance.md) closed, accel
+044), a paged **decode** (`AttentionOptions.Pages` + `Block`), per-row
+positions, and `BaseName` to prefill a suffix at a non-zero base.
 
-So a partial hit — reuse $n$ positions, prefill the suffix at `base = n`, over a
-paged cache whose early blocks belong to another sequence — **is expressible
-today**. `BaseName` is what makes it so: it is the position of the first query
-token, and it decides what the causal mask hides.
+**Not available, and this blocks the spec:** a paged **prefill**.
 
-Two things it does not give:
+> `Attention` accepts `Pages` on a prefill, **drops it**, and reads the cache
+> contiguously. The `if prefill { … return }` branch returns above the
+> `case opts.Pages != nil` switch and its inputs are `{q, k, v, Lengths}` — the
+> page table never reaches the kernel. Measured: identity versus reversed page
+> table, worst absolute difference **0.74**, with `Selections()` reporting the
+> contiguous kernel both times. `Block` is unvalidated on that path too.
+>
+> [accel#10](https://github.com/golang-design/accel/issues/10),
+> [010 C13](010-conformance.md).
 
-- **the block pool is tgo's.** `tensor/internal/pagetable` is still unexported,
-  and that is right: accel 030 declines to evict because choosing a victim is a
-  policy question, and §5 is that policy. tgo owns the pool, the refcounts and
-  the LRU, all of it host-side logic inside the coverage gate.
-- **an f16 cache cannot be written**, so this is an f32 design until
-  [010 C5](010-conformance.md) reopens — `ScatterRows` writes f32 only, and
-  prefill over an f16 cache is refused.
+A paged decode is only useful over blocks a paged prefill wrote, so
+**cross-request block sharing is not expressible today.** What is expressible is
+the single-sequence case: one session's own cache, contiguous, reusing its
+earlier turns — which is the $1 - 1/n$ multi-turn win and most of the value.
+Cross-request sharing of a system prompt waits on C13.
 
-And the ceiling still applies: with [010 C11](010-conformance.md) capping a
-cache at 128 positions, a "900-token system prompt" cannot be held at all. **The
-design is buildable and the benefit is zero until C11 closes**, which is the
-same sentence as [005 §2.3](005-kv-cache.md) and the reason C11 is first in
-priority.
+**An earlier draft of this section said the opposite**, on the strength of a
+probe that only checked the graph compiled. That is the mistake
+[010-D7](010-conformance.md) now exists to prevent, and it is worth leaving
+visible: the spec was confidently wrong for a day because its evidence was the
+absence of an error.
+
+Two further constraints:
+
+- **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
+  that is right: accel 030 declines to evict because choosing a victim is
+  policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
+- **f16 is read-only and excludes paging** ([C5](010-conformance.md)), so this
+  is an f32 design.
 
 ## 10. Against vLLM and sglang
 
@@ -415,6 +425,20 @@ tgo has neither feature, and [004-D2](004-model-graph.md) makes both additive.
 **Recorded here so that whoever adds one remembers this key exists**, because
 forgetting it is silent: an adapter's KV would be served to a request that did
 not ask for it.
+
+### 10.4 Concurrency, which neither reference will warn you about
+
+[§7](#7-isolation-sharing-kv-across-tenants-is-a-side-channel)'s default scope is
+the **process**, so every session's goroutine reaches one pool — while
+[007-D1](007-engine.md) deliberately leaves a `Session` unlocked. The pool is
+therefore internally locked, and **lookup → allocate → insert is atomic**: two
+concurrent misses on the same prefix must keep one block and drop the other's
+refcount, or the loser leaks a block and the winner's refcount is short by one.
+
+vLLM and sglang give no guidance here because both schedulers are
+single-threaded loops; the question does not arise for them. It arises for tgo
+because [007](007-engine.md) serves sessions from independent goroutines. A
+`-race` test over concurrent identical-prefix inserts is in §8.
 
 ## 11. What this is not
 
