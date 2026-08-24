@@ -87,6 +87,12 @@ func Load(dir string) ([]Spec, error) {
 // parser for exactly that is smaller than the dependency, and it fails on
 // anything else rather than accepting a shape the workflow does not define.
 func Parse(name, src string) (Spec, error) {
+	// Windows checkouts convert LF to CRLF, so a parser that matches on "\n"
+	// rejects every spec in the tree on one of the three platforms CI runs. The
+	// line ending is not part of what a spec says, so it is normalised here
+	// rather than defended against at each comparison.
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+
 	if !strings.HasPrefix(src, "---\n") {
 		return Spec{}, fmt.Errorf("%s: no frontmatter; specs/README.md requires it", name)
 	}

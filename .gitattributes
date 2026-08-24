@@ -1,0 +1,4 @@
+# Specs and Go source are parsed byte for byte. A CRLF checkout made every
+# spec fail to parse on Windows, so line endings are normalised in the tree
+# rather than left to each platform.
+* text=auto eol=lf

@@ -246,3 +246,23 @@ func TestRegisterProblemsAreFound(t *testing.T) {
 		t.Fatalf("valid citations were rejected: %v", got)
 	}
 }
+
+// TestParseAcceptsCRLF covers the Windows checkout. git converts LF to CRLF
+// there by default, and a parser matching on "\n" alone rejected every spec in
+// the tree -- which CI found and no local run would have.
+func TestParseAcceptsCRLF(t *testing.T) {
+	const src = "---\r\ntitle: A\r\nstatus: drafted\r\nlayer: all\r\ndepends_on:\r\n  - 000-x.md\r\n---\r\nbody\r\n"
+	s, err := Parse("001-a.md", src)
+	if err != nil {
+		t.Fatalf("a CRLF spec was rejected: %v", err)
+	}
+	if s.Title != "A" || s.Status != "drafted" || s.Layer != "all" {
+		t.Fatalf("parsed %+v, want the fields unchanged by the line ending", s)
+	}
+	if len(s.DependsOn) != 1 || s.DependsOn[0] != "000-x.md" {
+		t.Fatalf("depends_on is %v, want [000-x.md] with no carriage return", s.DependsOn)
+	}
+	if strings.Contains(s.Body, "\r") {
+		t.Fatal("the body kept a carriage return; a body check would then match differently per platform")
+	}
+}
