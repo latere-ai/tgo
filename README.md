@@ -24,9 +24,15 @@ runtime to install beside it.
 >
 > v0 *was* blocked upstream — accel's attention refused a KV cache longer than
 > 128 positions, shorter than a system prompt. tgo filed it, wrote the design,
-> and accel shipped it: a 4096-position cache is verified working, and **nothing
-> between here and serving a model is waiting on accel.**
-> [`specs/011-sequencing.md`](specs/011-sequencing.md) is where things stand.
+> and accel shipped it.
+>
+> **Nothing between here and serving a model is waiting on accel**, and that is
+> measured rather than asserted: the whole Qwen3-4B graph — 36 layers, a 151936
+> vocabulary, a 4096-position cache — compiles against accel today, as four
+> plans (prefill and decode, f16 and int8) of up to 730 nodes and 1013 kernel
+> selections. What is *not* proven is that the numbers would be right; that
+> needs the parity oracle, which needs code.
+> [`specs/011-sequencing.md`](specs/011-sequencing.md) has the table.
 
 ## Why this exists
 

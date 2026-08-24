@@ -79,6 +79,42 @@ What remains blocked is post-v0 and narrower:
 M10b's **single-session** reuse — the $1 - 1/n$ multi-turn win, which is most of
 the value — is not blocked.
 
+### 2026-08-24 — the forward pass compiles
+
+Not a milestone; a measurement, taken because the README claimed "nothing
+between here and serving a model is waiting on accel" and nothing had checked it.
+
+The whole Qwen3-4B graph from [004 §3](004-model-graph.md) — $d=2560$, $H=32$,
+$H_{kv}=8$, $d_h=128$, $f=9728$, $V=151936$, $L=36$, a 4096-position KV cache —
+was recorded against accel HEAD and **compiled**:
+
+| plan | nodes | selections | transients |
+| --- | --- | --- | --- |
+| prefill 512, f16 weights | 477 | 1013 | 62.0 MB |
+| decode 1, f16 weights | 477 | 1012 | 0.1 MB |
+| prefill 512, int8 weights | 730 | 1013 | 62.0 MB |
+| decode 1, int8 weights | 730 | 1012 | 0.1 MB |
+
+**The claim holds.** Every operator the model needs is reachable: `GatherRows`,
+`RMSNorm`, `MatMul` and `QuantMatMul`, per-head QK-norm by reshape, `RoPE` at
+per-row positions, `ScatterRows`, `Attention` over a 4096-position cache,
+`SwiGLU`, `Slice`+`Contiguous`, and the LM head at the real vocabulary.
+
+Two things the numbers show that the specs only argued:
+
+- **[004 §3.2](004-model-graph.md)'s last-row slice is worth what it claimed.**
+  Prefill transients are 62 MB. Running the LM head over all 512 positions would
+  add $512 \times 151936 \times 4 = 311$ MB of logits alone.
+- **[010 C8](010-conformance.md)'s cast cost is visible in the node count**: the
+  int8 plan is 730 nodes against f16's 477, because every quantized projection
+  binds two planes.
+
+**What this does not show** is that the numbers are *correct* — that needs
+[010 §5](010-conformance.md)'s oracle, which needs implementation. Compiling
+proves the graph is expressible, not that tgo would build it right. The
+[§2.5.1](004-model-graph.md) rotary permutation is exactly the kind of error
+that compiles cleanly.
+
 ### 2026-08-24 — M0 — **done**
 
 Module, CI, and the spec tree. CI mirrors accel's gates — build, vet, test,
