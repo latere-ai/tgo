@@ -30,25 +30,36 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | # | what tgo cannot do | accel spec | filed | state | workaround, and what it costs |
 | --- | --- | --- | --- | --- | --- |
 | C1 | batched attention from `tensor` | 010, 030, **043** | [#1](https://github.com/golang-design/accel/issues/1) | **designed** | one sequence per submission; throughput is $1/B$ of the hardware ([008 §1](008-scheduler.md)) |
-| C2 | RoPE at per-row positions | 025, **043** | [#2](https://github.com/golang-design/accel/issues/2) | **landing** | *was* a scalar offset; accel's tree now has `RoPE(…, positions *Tensor)` |
-| C3 | independent per-slot sampling draws | 028, 039, **043** | [#3](https://github.com/golang-design/accel/issues/3) | **designed** | host sampling, one sequence |
+| C2 | RoPE at per-row positions | 025, **043** | [#2](https://github.com/golang-design/accel/issues/2) | **landed** | none needed; `RoPE(…, positions *Tensor)` is upstream |
+| C3 | independent per-slot sampling draws | 028, 039, **043** | [#3](https://github.com/golang-design/accel/issues/3) | **landed in the corpus, not in `tensor`** | host sampling, one sequence. The per-row kernels exist; no exported operator binds a draws tensor |
 | C4 | a paged KV cache (`pagetable` is internal) | 030, **043** | [#1](https://github.com/golang-design/accel/issues/1) | **designed** | contiguous per session; **322×** the memory for ten short chats ([005 §3](005-kv-cache.md)) |
-| C5 | an f16 KV cache (`Attention` requires f32) | 007, 010, **043 §5** | [#4](https://github.com/golang-design/accel/issues/4) | **designed** | f32; 2× the cache, 1.21 GB at 4k for Qwen3-4B |
+| C5 | an f16 KV cache (`Attention` requires f32) | 007, 010, **043 §5** | [#4](https://github.com/golang-design/accel/issues/4) | **landed** | none needed; `Attention` accepts an f16 cache. Halves the number in [005 §3](005-kv-cache.md) |
 | C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | open | host; a 608 KB logits readback per token |
 | C7 | bf16 arithmetic (storage exists, no operator reads it) | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | open | convert to f16 at load; the one inexact step in the pipeline ([001 §3](001-weights.md)) |
 | C8 | an f32 GEMM (`MatMul` requires f16 operands) | 010, **043 §5** | [#5](https://github.com/golang-design/accel/issues/5) | **designed** | cast before every projection; 7 per layer, 252 dispatches per forward pass |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
 | C10 | importing host memory as a device buffer | 001 | [#7](https://github.com/golang-design/accel/issues/7) | open | copy through a view; every weight copied twice on unified memory |
-| **C11** | **a KV cache longer than 128 positions** | 007, 010 | [#8](https://github.com/golang-design/accel/issues/8) | **open — blocking** | none. `Attention` refuses $C > 128$; see [005 §2.3](005-kv-cache.md) |
+| **C11** | **a KV cache longer than 128 positions** | 007, 010, **044** | [#8](https://github.com/golang-design/accel/issues/8) | **designed — blocking** | none. `Attention` refuses $C > 128$; see [005 §2.3](005-kv-cache.md) |
 | C12 | binding a `LayerState` view to `Attention` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states, ports and bindings for a 36-layer model |
 
-**This table is a dated snapshot and accel is moving under it.** Between filing
-and writing, `RoPE` and per-row sampling landed upstream and the f16 cache
-kernel appeared in accel's working tree. The states below are as of
-**2026-08-24**; the tests are what will say what is true, which is
-[010-D1](#decision-record).
+**This table is a dated snapshot and accel is moving under it fast.** Within one
+day of filing: `RoPE` changed signature, per-row sampling and argmax landed in
+the corpus, `Attention` accepted an f16 cache, and
+[044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md)
+was written for C11. Three rows went from `open` to `landed` while this file was
+being edited.
 
-**States.** `landing` — the signature has changed in accel's tree.
+The states below are as of **2026-08-24**. They are hand-maintained and will go
+stale; the tests are what will say what is true, which is
+[010-D1](#decision-record) and why [010-D6](#decision-record) generates this
+table at M10.
+
+**A row is `landed` when accel's exported surface does the thing.** C3 is the
+row that shows why the distinction is worth keeping: the per-row sampling
+*kernels* landed, and no exported `tensor` operator binds a draws tensor, so
+nothing about what tgo can write has changed.
+
+**States.** `landed` — accel's exported surface does it.
 `designed` — accel
 [043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
 specifies it and the code does not do it yet. `open` — filed, not yet designed.

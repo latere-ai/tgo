@@ -44,7 +44,8 @@ not need to order anything by hand.
 
 Three constraints follow, and each is a row in [010](010-conformance.md):
 
-- `Attention` refuses anything but **f32** (`q`, `k`, `v` alike);
+- ~~`Attention` refuses anything but f32~~ — **closed 2026-08-24**: it accepts an
+  f16 cache and accumulates f32, which halves the numbers in §3;
 - there is no page table binding, and `tensor/internal/pagetable` is
   **unexported** — accel 030's package comment says why: no exported operator
   accepts one;
@@ -61,7 +62,9 @@ type AttentionOptions struct {
 }
 ```
 
-and `Attention` accepts f16 states. `State` does **not** gain a paged variant:
+`Attention` **already accepts f16 states** as of accel 701b645, so [C5](010-conformance.md)
+has closed and the f16 column of §3 is now the one tgo builds against. `State`
+does **not** gain a paged variant:
 043 §4 is explicit that a `State` addressed through a page table is the same
 `State`, and that a `PagedState` beside `State` would be exactly the
 non-orthogonal growth 043 exists to avoid.
@@ -148,11 +151,15 @@ $$m_i = \max(m_{i-1}, s_i), \quad
 \ell_i = \ell_{i-1}e^{m_{i-1}-m_i} + e^{s_i-m_i}, \quad
 o_i = o_{i-1}e^{m_{i-1}-m_i} + e^{s_i-m_i}v_i$$
 
-so that $C$ leaves the geometry entirely. accel 010 calls this the looping
-variant and does not register it. Filed as
-[accel#8](https://github.com/golang-design/accel/issues/8) and
-[010 C11](010-conformance.md), with a note that accel 007 already specifies a
-fallback — the composed score-`MatMul` / `Softmax` / value-`MatMul` graph, which
+so that $C$ leaves the geometry entirely.
+
+**This is now designed upstream** as
+[accel 044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md),
+which also records the ordering that matters to tgo: the f16 variant and a paged
+kernel are the *same* tiling loop, so three registered kernels pass through one
+rewrite. Filed as [accel#8](https://github.com/golang-design/accel/issues/8) and
+[010 C11](010-conformance.md). 044 §6 keeps on the table the fallback accel 007
+already specifies — the composed score-`MatMul` / `Softmax` / value-`MatMul` graph, which
 007 calls the correctness reference and which `Contiguous` now makes
 expressible.
 
@@ -185,10 +192,10 @@ C5.
 
 Two accel constraints produce the two halves of that factor independently:
 
-- **f32 only** doubles it. accel `Attention` refuses f16 states. 043 §5 accepts
-  the argument: K and V are *operands*, not accumulators, and
-  $\text{softmax}(qK^\top/\sqrt{d})V$ accumulates in f32 whatever they are
-  stored as.
+- ~~**f32 only** doubles it.~~ **Closed.** 043 §5 accepted the argument — K and V
+  are *operands*, not accumulators, and $\text{softmax}(qK^\top/\sqrt{d})V$
+  accumulates in f32 whatever they are stored as — and `Attention` now takes an
+  f16 cache. tgo builds against the f16 column.
 - **contiguous only** multiplies it by $C/T$. 043 §4 binds `Pages`.
 
 ## 4. What tgo does now
@@ -226,13 +233,14 @@ tgo has no batched path to write later, only a wider binding.
 
 Recorded now so it is not rediscovered:
 
-| what changes | from | to |
-| --- | --- | --- |
-| positions | scalar `Offset` on the plan | a bound u32 tensor **(done)** |
-| cache length | scalar `CurrentLengthName` | `AttentionOptions.Lengths` |
-| prefill base | scalar `BaseName` | `AttentionOptions.Positions` |
-| addressing | `row = ℓC + t` | `row = pages[⌊t/B⌋]·B + t mod B` |
-| dtype | f32 states | f16 states |
+| what changes | from | to | state |
+| --- | --- | --- | --- |
+| positions | scalar `Offset` on the plan | a bound u32 tensor | **done** |
+| dtype | f32 states | f16 states | **done** |
+| cache length | scalar `CurrentLengthName` | `AttentionOptions.Lengths` | designed |
+| prefill base | scalar `BaseName` | `AttentionOptions.Positions` | designed |
+| addressing | `row = ℓC + t` | `row = pages[⌊t/B⌋]·B + t mod B` | designed |
+| capacity | $C \le 128$ | unbounded | designed, [accel 044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md) |
 
 Every row is a **binding** change. None is a structural one, because the plan's
 shape does not depend on which of these it reads — and that is exactly why
