@@ -6,7 +6,7 @@ depends_on:
   - 000-decisions.md
   - 001-weights.md
 blocked_on:
-  - "accel specs/010-kernel-corpus.md"
+  - "accel specs/010-kernel-corpus.md — no super-block GEMM (accel#15)"
 ---
 
 # GGUF
@@ -44,7 +44,8 @@ two lossy steps and gives a model measurably worse than either format alone.
 
 ## 3. The trigger
 
-accel 010 registering a super-block GEMM. When that lands, this spec becomes
+accel 010 registering a super-block GEMM, filed as
+[accel#15](https://github.com/golang-design/accel/issues/15). When that lands, this spec becomes
 `drafted` and the work is: container reader, metadata mapping onto the same
 `Config` the registry already uses, the ggml tokenizer variant (GGUF carries its
 own vocabulary, not `tokenizer.json`), and the K-quant plane layouts.

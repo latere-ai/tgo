@@ -179,7 +179,8 @@ func TestBlockedStatusIsChecked(t *testing.T) {
 	bad := CheckBlocked([]Spec{
 		spec(t, "000-a.md", "title: A\nstatus: blocked\nlayer: all", record),
 		spec(t, "001-b.md", "title: B\nstatus: drafted\nlayer: all\nblocked_on:\n  - something", record),
-		spec(t, "002-c.md", "title: C\nstatus: blocked\nlayer: all\nblocked_on:\n  - something", record),
+		// Valid: blocked, with a cause that names an upstream issue.
+		spec(t, "002-c.md", "title: C\nstatus: blocked\nlayer: all\nblocked_on:\n  - something (accel#1)", record),
 	})
 	if len(bad) != 2 {
 		t.Fatalf("found %d problems, want blocked-without-cause and cause-without-blocked: %v",
@@ -264,5 +265,27 @@ func TestParseAcceptsCRLF(t *testing.T) {
 	}
 	if strings.Contains(s.Body, "\r") {
 		t.Fatal("the body kept a carriage return; a body check would then match differently per platform")
+	}
+}
+
+// TestBlockedSpecsNameAnUpstreamIssue is the check that specs/010-conformance.md
+// section 2.3 exists because of: 012 carried status blocked, named an accel spec
+// file, and had no issue anywhere, so the blocker was invisible to the project
+// that would have to clear it.
+func TestBlockedSpecsNameAnUpstreamIssue(t *testing.T) {
+	report(t, "blocked", CheckBlocked(tree(t)))
+
+	// Negative: a blocked spec naming only a spec file must be rejected.
+	bad := CheckBlocked([]Spec{
+		spec(t, "012-x.md", "title: X\nstatus: blocked\nlayer: load\nblocked_on:\n  - \"accel specs/010-kernel-corpus.md\"", record),
+	})
+	if len(bad) != 1 {
+		t.Fatalf("a blocker naming no issue was accepted: %v", bad)
+	}
+	// Positive: naming an issue passes.
+	if got := CheckBlocked([]Spec{
+		spec(t, "012-x.md", "title: X\nstatus: blocked\nlayer: load\nblocked_on:\n  - \"accel specs/010-kernel-corpus.md — no super-block GEMM (accel#15)\"", record),
+	}); len(got) != 0 {
+		t.Fatalf("a blocker naming an issue was rejected: %v", got)
 	}
 }

@@ -213,10 +213,18 @@ func CheckAcyclic(specs []Spec) []string {
 	return bad
 }
 
+// issueRef matches an upstream issue reference, as "accel#12" or "(accel#12)".
+var issueRef = regexp.MustCompile(`accel#\d+|/issues/\d+`)
+
 // CheckBlocked reports blocked specs that do not say what blocks them, and
 // unblocked specs that carry a blocked_on.
 //
-// "Blocked" with no cause is indistinguishable from abandoned.
+// "Blocked" with no cause is indistinguishable from abandoned. And a cause that
+// names only another project's *spec* is a blocker with no upstream record --
+// nobody there has a work item for it, so it can sit forever without anyone
+// being able to act. specs/010-conformance.md section 2.3 is the incident that
+// produced this check: 012 was blocked on an accel spec file for a week and no
+// issue existed.
 func CheckBlocked(specs []Spec) []string {
 	var bad []string
 	for _, s := range specs {
@@ -226,6 +234,12 @@ func CheckBlocked(specs []Spec) []string {
 		case s.Status != "blocked" && len(s.BlockedOn) > 0:
 			bad = append(bad, fmt.Sprintf("%s: has blocked_on but status is %q",
 				s.File, s.Status))
+		case s.Status == "blocked":
+			if !issueRef.MatchString(strings.Join(s.BlockedOn, " ")) {
+				bad = append(bad, fmt.Sprintf("%s: blocked_on names no upstream issue "+
+					"(want an \"accel#N\" reference); a blocker with no issue is one "+
+					"nobody upstream can act on", s.File))
+			}
 		}
 	}
 	return bad

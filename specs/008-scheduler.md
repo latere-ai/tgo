@@ -7,7 +7,7 @@ depends_on:
   - 005-kv-cache.md
   - 007-engine.md
 blocked_on:
-  - "accel specs/040-batch-scheduler.md (Attention reads q's rank as the phase, so a batch has no axis; tgo register C1)"
+  - "accel specs/040-batch-scheduler.md — Attention has no batch axis (accel#12); tgo register C1"
 ---
 
 # Continuous batching

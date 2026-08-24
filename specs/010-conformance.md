@@ -29,14 +29,14 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 
 | # | what tgo cannot do | accel spec | filed | state | workaround, and what it costs |
 | --- | --- | --- | --- | --- | --- |
-| C1 | a **batched** decode (B sequences, one token each) | 040 | [#1](https://github.com/golang-design/accel/issues/1) | **open** | one sequence per submission. `q`'s rank is the *phase*, so a batch axis is read as a prefill |
+| C1 | a **batched** decode (B sequences, one token each) | 040 | [#12](https://github.com/golang-design/accel/issues/12) | **open** | one sequence per submission. `q`'s rank is the *phase*, so a batch axis is read as a prefill |
 | C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
-| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | **open** | host sampling. The per-row kernels exist in the corpus; `tensor` exports no sampling operator |
+| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host sampling. The per-row kernels exist in the corpus; `tensor` exports no sampling operator |
 | C4 | a paged KV **decode** | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed |
-| C5 | an f16 KV cache that can be **written**, or paged | 007, 010, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **open** | f32. `Attention` *reads* f16; `ScatterRows` writes f32 only, prefill over f16 is refused, and paged+f16 is refused |
+| C5 | an f16 KV cache that can be **written**, or paged | 007, 010, 043 §5 | [#13](https://github.com/golang-design/accel/issues/13) | **open** | f32. `Attention` *reads* f16; `ScatterRows` writes f32 only, prefill over f16 is refused, and paged+f16 is refused |
 | C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host, before submission; a 608 KB logits readback per token |
-| C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | **open** | convert on the host at load; [001 §3](001-weights.md) |
-| C8 | **f32 activations against f16 or int8 weights** | 010 | [#5](https://github.com/golang-design/accel/issues/5) | **open** | `Cast` before every projection: 4 per layer, 144 per forward pass |
+| C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open** | convert on the host at load; [001 §3](001-weights.md) |
+| C8 | **f32 activations against f16 or int8 weights** | 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open** | `Cast` before every projection: 4 per layer, 144 per forward pass |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
 | C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed** | none needed; `Buffer.Access` |
 | C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed; 4096 verified |
@@ -44,7 +44,7 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C13 | a paged **prefill** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **closed** | none needed. Verified by value: reversing the page table moves the output by 0.61, and `Selections()` names the paged causal prefill kernel |
 | C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed; the embedding may be f16 |
 | C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed; `Selections()` names it at $M=1$ |
-| C16 | a dispatch mixing prefill chunks and decode steps | 040 | — | open | accel 040 owns it; chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
+| C16 | a dispatch mixing prefill chunks and decode steps | 040 | [#12](https://github.com/golang-design/accel/issues/12) | open | accel 040 owns it; chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
 day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
@@ -153,6 +153,31 @@ remain.
 The lesson is not that accel closed things carelessly. **Each fix matched its
 issue's title.** It is that a title is a summary and a register row is a
 capability, and only the second one is testable.
+
+### 2.3 Commenting on a closed issue is not reporting
+
+There was a second failure here, and it was tgo's.
+
+When C5 and C8 turned out to be unfixed, tgo **commented on the closed issues**
+and left the register's `filed` column pointing at them. A comment on a closed
+thread creates no work item and appears in nobody's queue. For a week the
+register read as though six rows were tracked upstream while exactly one open
+issue existed.
+
+Worse, [012](012-gguf.md) carried `status: blocked` naming an accel *spec* and
+no issue at all — a blocker that existed only in this repository.
+
+**The rule, from now on:**
+
+1. an open register row cites an **open** issue;
+2. when accel closes an issue whose capability is still absent, tgo **files a
+   new one** rather than commenting, and says in it why it is a re-file;
+3. a spec with `status: blocked` names an issue in `blocked_on`, not only a
+   spec, because a blocker with no upstream record is a blocker nobody can act
+   on.
+
+`speclint` enforces (3), which is the one a linter can see. (1) and (2) are
+enforced by the re-audit in §2.2, which is where the gap surfaced.
 
 > **That rule stopped being hypothetical on 2026-08-24.** accel closed
 > [#4](https://github.com/golang-design/accel/issues/4) and
@@ -300,5 +325,6 @@ that is the same failure this project exists to catch in accel.
 | 010-D3 | tolerances are derived and commented with their term; a raised tolerance is a finding | tune until green | a numerics regression cannot be absorbed |
 | 010-D4 | tier 3 never runs in CI | a nightly with a download | CI stays offline and under a minute |
 | 010-D5 | the oracle is float64 and presumed right on disagreement | float32, matching the device | it is the simpler program; matching the device would import the device's bugs |
+| 010-D8 | an open row cites an open issue; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
 | 010-D7 | a probe asserts a value against the oracle and varies optional bindings | record the graph and read the refusal | the refusal-based rule was blind to C13 and reported a false green in its own spec |
 | 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |
