@@ -385,7 +385,7 @@ weights, on both backends, against the [010 §5](010-conformance.md) oracle:
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
 | 004-D1 | `nn` is stateless; weights arrive as named ports | blocks that own their weights | blocks are testable with no loader; the registry owns naming |
-| 004-D2 | registry keyed on `architectures[0]`, unknown is refused with the known list | a filename heuristic; a generic fallback path | a wrong model is refused, not guessed — a guess produces fluent wrong text |
+| 004-D2 | registry keyed on `architectures[0]`, unknown is refused with the known list | a filename heuristic; a generic fallback path | a wrong model is refused, not guessed — a guess produces fluent wrong text. **Note 2026-08-24:** "additive" holds for the *graph* and not for the *cache* — a hybrid model's recurrent or sliding-window state cannot be sliced at an arbitrary position, which [016 §10.1](016-prefix-cache.md) records |
 | 004-D3 | prefill and decode are separate plans, bucketed on $T$ | one dynamic-shape plan | bounded recompiles; §3.1 shows they differ only in `q`'s rank |
 | 004-D4 | slice to the last row before the LM head | full-sequence logits | 1.2 GB → 608 KB for a 2000-token prompt |
 | 004-D5 | fused kernels keep their composed form as the reference | fused only | a fusion bug is a test failure, not a silent quality loss |

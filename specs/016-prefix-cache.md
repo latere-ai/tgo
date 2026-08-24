@@ -83,6 +83,37 @@ error against the win, and the alternative (sharing partial blocks) would mean
 two sequences writing into one block at different offsets, which is a
 correctness problem rather than an optimisation.
 
+### 3.1 A full hit must still prefill one token
+
+**The reusable prefix is capped at $T-1$, never $T$.**
+
+$$\text{reused} = \min\!\big(\text{hit}, \; T - 1\big)$$
+
+The cache holds **KV, not logits**. Sampling the next token needs the logits at
+the last prompt position, and those come from a forward pass over it
+([004 §3](004-model-graph.md) rows 26–28 slice the last hidden state and run the
+LM head). Reuse everything and there is no hidden state to slice — the request
+has a warm cache and nothing to sample from.
+
+This is not a rare path. An exact resubmission is a retry, an agent loop
+re-sending an unchanged prompt, or `/v1/completions` called twice. In *chat* it
+hides, because [003 §3](003-chat-template.md)'s rendered prompt always ends with
+a fresh `<|im_start|>assistant\n`, so the suffix is naturally non-empty and the
+bug never fires in the obvious test.
+
+Taken from ollama, which does exactly this and says why:
+
+```go
+// Always keep at least one token to re-evaluate so the
+// pipeline can seed token generation from it.
+if matched == len(inputs) && matched > 0 {
+    matchPath, matched = findBestMatch(c.root, keys[:matched-1])
+}
+```
+
+§8 tests it with an identical prompt submitted twice, which is the case the
+chat path cannot produce.
+
 Each block gets a hash chained over its predecessor, so a block's identity
 includes everything before it:
 
@@ -250,6 +281,7 @@ small device test for the reuse itself. No weights.
 | a seeded completion is identical cold and warm | §6 |
 | `session` scope: two sessions with the same prefix do not share | §7 |
 | a partial hit prefills exactly the suffix, at `base` = hit length | §9 |
+| **the identical prompt submitted twice** returns the same completion, and the second prefills exactly one token | §3.1 — the case the chat path cannot produce |
 
 ## 9. What accel gives, verified
 
@@ -288,16 +320,16 @@ priority.
 Read from their source rather than from their papers, at the versions checked
 out on 2026-08-24.
 
-| | vLLM | sglang | tgo |
-| --- | --- | --- | --- |
-| structure | chained block hashes → map | radix trie of token sequences | chained block hashes → map |
-| chained hash | yes | yes | yes |
-| granularity | block-aligned | page-aligned | block-aligned |
-| refcount | yes | `lock_ref` per node | yes |
-| eviction | LRU over unreferenced blocks | pluggable — LRU, LFU — over a heap of evictable **leaves** | LRU over unreferenced blocks |
-| isolation | `cache_salt` per request | `cache_salt` per request | **salt *and* server scope** |
-| batch-shape determinism | opt-in `VLLM_BATCH_INVARIANT`, beta, needs SM 8.0+ | — | measured, not eliminated |
-| preemption | recompute | retract (recompute) | recompute |
+| | vLLM | sglang | ollama | tgo |
+| --- | --- | --- | --- | --- |
+| structure | chained block hashes → map | radix trie | compressed prefix trie | chained block hashes → map |
+| concurrent sharing | many sequences attend shared blocks | same | **one active path**; others live as snapshots | many |
+| reclaim | LRU over unreferenced blocks | pluggable (LRU, LFU) over evictable leaves | **page out to host**, 8 GiB threshold | LRU over unreferenced blocks |
+| isolation | `cache_salt` | `cache_salt` | — (single user) | **salt *and* server scope** |
+| full-hit rule | — | — | **re-evaluate one token** | re-evaluate one token ([§3.1](#31-a-full-hit-must-still-prefill-one-token)) |
+| non-sliceable state | — | — | **whole-state layers handled** | not yet ([§10.1](#101-what-tgo-does-not-have)) |
+| batch determinism | opt-in `VLLM_BATCH_INVARIANT`, beta, SM 8.0+ | — | — | measured, not eliminated |
+| preemption | recompute | retract (recompute) | page out | recompute |
 
 **Where tgo agrees, it agrees for the same reasons**, and that is worth saying:
 chaining, block alignment, refcounting and recompute-over-swap are not
@@ -328,8 +360,56 @@ that differed would need an argument this one does not have.
    basis for a bound it has not taken. If accel later offers reduction-order
    guarantees, this becomes a real option rather than an aspiration.
 
-**What tgo does not have that both of them do**: multimodal and LoRA identity in
-the hash key. vLLM mixes image hashes and the LoRA id into `extra_keys` for the
+### 10.1 ollama is the closest comparison and the least similar design
+
+It is Go, single-binary and cgo-averse, so its constraints are tgo's. Its cache
+is not.
+
+**One active path.** Only one root-to-leaf path is backed by live cache arrays;
+switching to another pages the new one in from snapshots. vLLM, sglang and tgo
+instead let many sequences attend shared blocks concurrently. ollama's shape
+follows from its workload — one user, one conversation at a time — and it buys
+something the block designs cannot have: a cached branch costs *host* memory
+rather than device memory, so the cache can far exceed the KV pool.
+
+**It pages out rather than recomputing.** `maxPagedOutBytes = 8 GiB` of
+snapshots before eviction. That is the opposite of
+[008-D2](008-scheduler.md), and it is right *for a desktop*: host RAM is
+plentiful, a memcpy is cheap against a prefill, and there is no second request
+whose latency the transfer would hurt. Under concurrency the calculus inverts,
+which is why vLLM and sglang both recompute. **The difference is workload, not
+correctness**, and tgo serving concurrent requests puts it on their side.
+
+**It handles state that cannot be sliced.** Its trie distinguishes sliceable KV
+layers, which span a node's edge exactly, from *whole-state* layers — recurrent
+and rotating (sliding-window) — which keep entries only at node ends. tgo's
+design assumes every layer is sliceable KV, which is true for Qwen3 dense and
+**false for the hybrid-attention successors** ([011 §3](011-sequencing.md)
+lists them as out of scope). A recurrent state has no meaning at an arbitrary
+position, so it cannot be resumed mid-edge.
+
+That is worth recording now: [004-D2](004-model-graph.md) says a new
+architecture is additive at the registry, and for a hybrid model **that is not
+true of the cache**. ollama had to generalise its trie; tgo would too.
+
+### 10.2 Dialect translation: three positions
+
+ollama also answers [009](009-server.md)'s question, differently:
+`FromChatRequest` and `FromMessagesRequest` both convert into **`api.ChatRequest`
+— ollama's own public API**. Hub-and-spoke, like llmdialect, but the hub is the
+product's native surface rather than a neutral IR.
+
+| | hub | cost |
+| --- | --- | --- |
+| ollama | its own public API | every dialect feature must be expressible in ollama's API, so the API accretes other people's fields |
+| llmdialect / tgo | a neutral IR, separate from both | one more type to maintain; the engine API stays free |
+
+That accretion is precisely what [009-D1](009-server.md) rejects, and ollama is
+the evidence that it happens rather than a hypothetical.
+
+### 10.3 What tgo does not have
+
+Multimodal and LoRA identity in the hash key. vLLM mixes image hashes and the LoRA id into `extra_keys` for the
 obvious reason — the same tokens under a different adapter are different KV.
 tgo has neither feature, and [004-D2](004-model-graph.md) makes both additive.
 **Recorded here so that whoever adds one remembers this key exists**, because
@@ -363,3 +443,5 @@ wants determinism.
 | 016-D7 | **both** a server-side scope (default `process`) and a request `cache_salt` | share globally and silently; a salt alone, as vLLM and sglang do | a salt is precise but fails open when omitted; a scope makes the default safe but cannot say "same customer". They compose ([§7.1](#71-two-mechanisms-and-tgo-takes-both)) |
 | 016-D9 | $H$ is SHA-256; a fast hash needs a per-process random seed | any fast hash | a collision hands one request another's KV. vLLM shipped a predictable non-crypto hash and had to fix it ([§3.1](#31-the-hash-is-a-security-boundary-so-h-is-not-free-choice)) |
 | 016-D8 | tgo owns the block pool | ask accel to export `pagetable` | accel 030 declines to evict because eviction is policy, and it is right; the policy is §5 |
+| 016-D10 | reuse at most $T-1$ positions; a full hit still prefills one token | reuse the whole match | the cache holds KV, not logits, so a full reuse has nothing to sample from. Taken from ollama; the chat path hides it because the rendered prompt always ends with a fresh assistant opener ([§3.1](#31-a-full-hit-must-still-prefill-one-token)) |
+| 016-D11 | many sequences share blocks concurrently; reclaim by recompute | ollama's single active path with snapshots paged to host | ollama's shape is right for one user and inverts under concurrency, which is what tgo serves. Recorded because the difference is workload, not correctness |

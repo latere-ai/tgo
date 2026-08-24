@@ -78,7 +78,7 @@ blocked outright.
 | structured output | [015](015-structured-output.md); real work, and it is after batching |
 | prefix caching | [016](016-prefix-cache.md); **no longer blocked** — paging landed — but inert until C11 |
 | GGUF | [012](012-gguf.md); accel has no super-block kernel |
-| MoE, hybrid/linear attention | Qwen3.5-class architectures; [004](004-model-graph.md)'s registry makes them additive |
+| MoE, hybrid/linear attention | Qwen3.5-class architectures. [004](004-model-graph.md)'s registry makes the *graph* additive; the **cache is not** — a recurrent state cannot be sliced mid-sequence, so [016](016-prefix-cache.md) would need generalising too ([§10.1](016-prefix-cache.md)) |
 | LoRA, speculative decoding, multi-device | not blocked, not v0 |
 
 ## 4. Outcomes
