@@ -29,22 +29,23 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 
 | # | what tgo cannot do | accel spec | filed | state | workaround, and what it costs |
 | --- | --- | --- | --- | --- | --- |
-| C1 | a **batched** decode (B sequences, one token each) | 040 | [#12](https://github.com/golang-design/accel/issues/12) | **open** | one sequence per submission. `q`'s rank is the *phase*, so a batch axis is read as a prefill |
+| C1 | a **batched** decode | 040 | [#12](https://github.com/golang-design/accel/issues/12) | **closed** | none needed. Verified: two sequences of lengths 96 and 32 batched match two single runs to `0.00e+00` |
 | C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
 | C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host sampling. The per-row kernels exist in the corpus; `tensor` exports no sampling operator |
 | C4 | a paged KV **decode** | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed |
-| C5 | an f16 KV cache that can be **written**, or paged | 007, 010, 043 §5 | [#13](https://github.com/golang-design/accel/issues/13) | **open** | f32. `Attention` *reads* f16; `ScatterRows` writes f32 only, prefill over f16 is refused, and paged+f16 is refused |
+| C5 | an f16 KV cache that can be **written**, or paged | 007, 010 | [#13](https://github.com/golang-design/accel/issues/13) | **closed** | none needed; `ScatterRows`, prefill and paged decode all take f16. **Halves the cache** |
 | C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host, before submission; a 608 KB logits readback per token |
-| C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open** | convert on the host at load; [001 §3](001-weights.md) |
-| C8 | **f32 activations against f16 or int8 weights** | 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open** | `Cast` before every projection: 4 per layer, 144 per forward pass |
+| C7 | a **bf16 GEMM** | 002, 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open, narrowed** | convert on the host at load. `Cast` now widens bf16 to f32, so only the GEMM is missing, and a weight would not want a per-step cast anyway |
+| C8 | f32 activations against f16 or int8 weights | 010 | [#14](https://github.com/golang-design/accel/issues/14) | **closed** | none needed. **The cast chain is gone**: 1013 selections → 760 on the Qwen3 graph |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
 | C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed** | none needed; `Buffer.Access` |
-| C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed; 4096 verified |
-| C12 | binding a `LayerState` view to `Attention` or `ScatterRows` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | **closed** | none needed. **2 states, not 72** — [005 §2.1](005-kv-cache.md) |
-| C13 | a paged **prefill** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **closed** | none needed. Verified by value: reversing the page table moves the output by 0.61, and `Selections()` names the paged causal prefill kernel |
-| C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed; the embedding may be f16 |
-| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed; `Selections()` names it at $M=1$ |
-| C16 | a dispatch mixing prefill chunks and decode steps | 040 | [#12](https://github.com/golang-design/accel/issues/12) | open | accel 040 owns it; chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
+| C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed |
+| C12 | binding a `LayerState` view | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | **closed** | none needed. 2 states, not 72 |
+| C13 | a paged **prefill** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **closed** | none needed; verified by reversing the page table |
+| C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed |
+| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed |
+| C16 | a **batched prefill**, or prefill and decode in one dispatch | 040 | [#16](https://github.com/golang-design/accel/issues/16) | **open** | prefills run alone. Chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
+| C17 | GGUF's K-quant super-blocks | 010 | [#15](https://github.com/golang-design/accel/issues/15), not planned | **open, not scheduled** | read safetensors and quantize at load ([012](012-gguf.md)) |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
 day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
@@ -128,7 +129,28 @@ makes cross-request prefix sharing inexpressible, so it blocks
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
 
-### 2.2 Ten issues closed; six rows did not
+### 2.2 Thirteen rows closed, three open, and what that took
+
+As of accel HEAD `ee659f6`, re-audited by asserting values and reading
+`Selections()`:
+
+**Closed: C1, C2, C4, C5, C8, C10, C11, C12, C13, C14, C15** — and C9 is a
+refusal that should stay. **Open: C3 and C6** (no sampling operator at the
+tensor layer, one issue), **C7** narrowed to a bf16 GEMM alone, **C16** (a
+batched step takes one token per sequence), and **C17** (GGUF, not scheduled).
+
+Three of those closures change what tgo builds:
+
+- **row C1** — continuous batching is expressible. [008](008-scheduler.md) was
+  `blocked` from the day it was written and is not any more.
+- **row C8** — **the cast chain is gone.** f32 activations now multiply f16 and
+  int8 weights directly: 1013 kernel selections on the Qwen3-4B graph became 760.
+- **row C5** — an f16 cache can be written *and* paged, so
+  [005 §3](005-kv-cache.md)'s f16 column is the one tgo builds against.
+
+### 2.2.1 The earlier audit, kept because the lesson stands
+
+
 
 On 2026-08-24 accel closed ten of the eleven issues tgo filed. A re-audit of
 every row at HEAD `cb82904`, asserting values and reading `Selections()` rather
@@ -252,6 +274,43 @@ whole reason mixed-precision schemes exist — so a bound measured on real block
 is a different number from one measured on noise, and it is the only one worth
 reporting.
 
+## 3.1 Performance against vLLM, and which axes are winnable
+
+tgo's goal is to be **faster than vLLM**, and this section says on what and how
+it is measured, because an ambition with no measurement is a slogan.
+
+**The axes tgo should win, and why:**
+
+| axis | why tgo can win |
+| --- | --- |
+| **host overhead per decode token** — scheduling, sampling, detokenizing, deciding what runs next | none of it is matrix multiplication, all of it runs every token, and it is compiled Go against a Python interpreter with a global lock |
+| **time to first token, cold** | tgo builds a plan in milliseconds; a Python stack loads for tens of seconds |
+| **resident footprint of the runtime itself** | one static binary against an interpreter and its dependency tree |
+| **hardware vLLM serves poorly** | CPU, Metal, and whatever accel adds |
+
+**The axis tgo will lose for a long time, stated plainly:** raw GEMM and
+attention throughput on NVIDIA. vLLM's kernels are years of hand-tuned CUDA —
+FlashAttention, CUTLASS-derived quantized GEMMs — and accel's are portable
+kernels written in a Go subset. **That gap is accel's to close, not tgo's**, and
+[000 D1](000-decisions.md) means tgo's contribution to closing it is
+measurement: a kernel that is slower than it should be is a report, exactly like
+a kernel that is missing.
+
+**The measurements**, run against vLLM on the same model, hardware and prompts:
+
+- **decode tokens per second**, single sequence and at batch, which is the
+  headline;
+- **host time per token** — the step minus the device time — which is the axis
+  above and the one tgo expects to win first;
+- **time to first token**, cold and warm;
+- **resident memory** at the same context and batch;
+- **the readback share** ([C6](#2-the-register)), because it is host overhead
+  tgo currently cannot remove.
+
+**Losses are published.** A framework that reports only the benchmarks it wins
+is not reporting. The register already commits tgo to naming what it cannot do;
+the same rule covers what it does slowly.
+
 ## 4. How the suite runs
 
 | tier | needs | when | on failure |
@@ -335,6 +394,7 @@ that is the same failure this project exists to catch in accel.
 | 010-D3 | tolerances are derived and commented with their term; a raised tolerance is a finding | tune until green | a numerics regression cannot be absorbed |
 | 010-D4 | tier 3 never runs in CI | a nightly with a download | CI stays offline and under a minute |
 | 010-D5 | the oracle is float64 and presumed right on disagreement | float32, matching the device | it is the simpler program; matching the device would import the device's bugs |
+| 010-D9 | performance against vLLM is a measured table per axis, losses included | a headline throughput claim | tgo will lose raw NVIDIA kernel throughput for a long time and should win host overhead first; one number hides both ([§3.1](#31-performance-against-vllm-and-which-axes-are-winnable)) |
 | 010-D8 | an open row cites an open issue; a blocked spec names a durable upstream record, issue **or** named artifact; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread; demand an open issue for every blocker | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
 | 010-D7 | a probe asserts a value against the oracle and varies optional bindings | record the graph and read the refusal | the refusal-based rule was blind to C13 and reported a false green in its own spec |
 | 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |

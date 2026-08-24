@@ -87,13 +87,13 @@ table, so it is recorded here rather than rediscovered per model.
 
 | accel operator | operands | result |
 | --- | --- | --- |
-| `GatherRows` | table `f32`, ids `u32` | `f32` |
+| `GatherRows` | table `f32` or `f16`, ids `u32` | `f32` |
 | `QuantGatherRows` | table `i8` + scales `f16`, ids `u32` | `f32` |
 | `RMSNorm` | `f32`, gain `f32` | `f32` |
 | `Softmax`, `RoPE` | `f32` | `f32` |
-| `MatMul`, `Linear` | **both `f16`** | `f32` |
-| `QuantMatMul` | activations `f16`, weight `i8`+`f16` | `f32` |
-| `Attention` | q `f32`, k/v state `f32` | `f32` |
+| `MatMul`, `Linear` | `f32` or `f16` activations × `f16`/`f32` weights | `f32` |
+| `QuantMatMul` | `f32` or `f16` activations, weight `i8`+`f16` | `f32` |
+| `Attention` | q `f32`, k/v state `f32` or `f16` | `f32` |
 | `Add`, `Mul`, `SiLU`, `SwiGLU` | `f32` or `f16` | same |
 | `Cast` | `f32`↔`f16` only | the target |
 
@@ -108,23 +108,18 @@ loses accuracy badly, and accel's f32 accumulation is the correct default.
 tensor operator reads it. Qwen3 ships bf16. The loader therefore converts, and
 [001 §3](001-weights.md) owns the rounding and the overflow rule.
 
-> **Amended 2026-08-24, then corrected the same day.** accel 043 §5 accepted the
-> argument in [accel#5](https://github.com/golang-design/accel/issues/5) and
-> `MatMul` now takes f32 operands. **The cast chain survived it**, and the table
-> above still holds.
+> **Amended twice, and closed.** The table above once read "both f16" for
+> `MatMul`, which forced a `Cast` before every projection — 4 per layer, because
+> a transformer's activations are f32 and its weights are f16 or int8. tgo
+> reported it as an f32 GEMM request, which accel shipped and which did **not**
+> remove the casts, because the rule was that the two operands *share* a dtype.
+> Refiled naming the shape rather than the symptom — a **mixed** GEMM — and accel
+> relaxed it. Measured: 1013 kernel selections on the Qwen3-4B graph became 760.
 >
-> `MatMul` requires the two operands to *share* a dtype — one kernel reads both.
-> A transformer's activations are f32 and its weights are f16 or int8, because
-> decision 5 makes f32 weights the choice not to load the model. So f32 operands
-> help only a model storing f32 weights, and `QuantMatMul` still requires f16
-> activations either way.
->
-> What would close it is a **mixed** GEMM: f32 activations against f16 or int8
-> weights, accumulating f32 — the shape every inference stack uses, and the one
-> the original report should have named instead of "f16-only". Refiled on the
-> same issue. bf16 stays open as [010 C7](010-conformance.md), and is worse than
-> recorded: `Cast` cannot widen bf16 either, so the conversion is entirely the
-> host's.
+> bf16 is narrower than it was too. `Cast` now widens bf16 to f32, so only the
+> bf16 GEMM is missing ([010 C7](010-conformance.md)) — and a weight would not
+> want a per-step cast anyway, so the host conversion in
+> [001 §3](001-weights.md) stays.
 >
 > The lesson is [010 §2.1](010-conformance.md)'s: a report being accepted is not
 > a cost being removed.
@@ -265,6 +260,27 @@ engine.** That is what makes three cost one adapter rather than three parsers;
 [009 §2](009-server.md) has the boundary.
 
 ---
+
+## 11. Faster than vLLM is the goal, and it is measured per axis
+
+tgo is not a convenience trade. **The goal is to be faster than vLLM**, and
+[010 §3.1](010-conformance.md) says on which axes and how it is measured.
+
+**Rejected: "fast enough, and easier to deploy."** It sounds humble and it
+decides the architecture badly — it licenses a slow scheduler, a slow sampler
+and a slow detokenizer, because each is individually small against a matrix
+multiplication. They are not small: none of them is arithmetic, all of them run
+on every token, and together they are the part of a serving stack a compiled
+language should win outright.
+
+**Also rejected: claiming it before measuring it.** Today vLLM is faster,
+because tgo does not run. What is stated here is a target with a table attached
+and a commitment to publish the rows tgo loses.
+
+The axis tgo will lose longest is raw GEMM and attention throughput on NVIDIA,
+against years of hand-tuned CUDA. That is accel's to close, and decision 1 makes
+tgo's contribution to it the same as everywhere else: a kernel slower than it
+should be is a report, exactly like a kernel that is missing.
 
 ## What v0 is
 

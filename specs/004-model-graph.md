@@ -84,10 +84,12 @@ $$y = x W, \quad x \in \mathbb{R}^{M \times K},\ W \in \mathbb{R}^{K \times N}$$
 
 | step | operator | in | out |
 | --- | --- | --- | --- |
-| narrow | `tensor.Cast(x, F16)`, **hoisted and shared** across projections reading the same activation | `[M,K]` f32 | `[M,K]` f16 |
-| multiply | `tensor.MatMul` or `tensor.QuantMatMul` | `[M,K]` f16 × `[K,N]` | `[M,N]` **f32** |
+| multiply | `tensor.MatMul` or `tensor.QuantMatMul` | `[M,K]` **f32** × `[K,N]` f16 or int8 | `[M,N]` f32 |
 
-f32 in, f32 out; the f16 exists only between the two. `MatMul` selects the
+f32 in, f32 out, **and no cast**: accel accepts f32 activations against narrow
+weights directly ([C8](010-conformance.md) closed 2026-08-24). The weight stays
+f16 or int8 for memory; the activation stays f32 for accuracy; the accumulator
+was always f32. `MatMul` selects the
 matrix-vector kernel at $M = 1$, which is every decode step, and
 `Plan.Selections()` reports which and why. **`QuantMatMul` selects one too**, as
 of [C15](010-conformance.md) — so the int8 path, which is what `auto` picks for
@@ -272,8 +274,7 @@ node:
 | 3 | h | `GatherRows` / `QuantGatherRows` | table `[V,d]`, ids `[T]` | `[T,d]` f32 |
 | | | **per layer ℓ** | | |
 | 4 | n | `RMSNorm` | `[T,d]`, gain `[d]` | `[T,d]` |
-| 5 | nf | `Cast` | `[T,d]` f32 | `[T,d]` f16 |
-| 6 | q | `MatMul` | `[T,d]` × `[d, H·d_h]` | `[T, H·d_h]` f32 |
+| 6 | q | `MatMul` | `[T,d]` f32 × `[d, H·d_h]` f16 | `[T, H·d_h]` f32 |
 | 7 | k | `MatMul` | `[T,d]` × `[d, H_kv·d_h]` | `[T, H_kv·d_h]` f32 |
 | 8 | v | `MatMul` | `[T,d]` × `[d, H_kv·d_h]` | `[T, H_kv·d_h]` f32 |
 | 9 | q | `Reshape` | `[T, H·d_h]` | `[T·H, d_h]` |
@@ -284,22 +285,24 @@ node:
 | 14 | K_ℓ | `ScatterRows` | rows `[T, H_kv·d_h]`, ids `[T]` | `State` `[C, H_kv, d_h]` |
 | 15 | V_ℓ | `ScatterRows` | rows `[T, H_kv·d_h]`, ids `[T]` | `State` `[C, H_kv, d_h]` |
 | 16 | a | `Attention` | q `[T,H,d_h]`, K_ℓ, V_ℓ | `[T, H, d_h]` f32 |
-| 17 | a | `Reshape` → `Cast` | `[T, H·d_h]` | `[T, H·d_h]` f16 |
+| 17 | a | `Reshape` | `[T,H,d_h]` | `[T, H·d_h]` f32 |
 | 18 | o | `MatMul` | `[T, H·d_h]` × `[H·d_h, d]` | `[T,d]` f32 |
 | 19 | h | `Add` | `[T,d]`, `[T,d]` | `[T,d]` |
-| 20 | n2 | `RMSNorm` → `Cast` | `[T,d]`, gain `[d]` | `[T,d]` f16 |
+| 20 | n2 | `RMSNorm` | `[T,d]`, gain `[d]` | `[T,d]` f32 |
 | 21 | g | `MatMul` | `[T,d]` × `[d,f]` | `[T,f]` f32 |
 | 22 | u | `MatMul` | `[T,d]` × `[d,f]` | `[T,f]` f32 |
-| 23 | s | `SwiGLU` → `Cast` | two `[T,f]` | `[T,f]` f16 |
+| 23 | s | `SwiGLU` | two `[T,f]` | `[T,f]` f32 |
 | 24 | dn | `MatMul` | `[T,f]` × `[f,d]` | `[T,d]` f32 |
 | 25 | h | `Add` | `[T,d]`, `[T,d]` | `[T,d]` |
 | | | **after the loop** | | |
 | 26 | last | `Slice` → `Contiguous` | `[T,d]`, axis 0, `[T-1,T)` | `[1,d]` |
-| 27 | n | `RMSNorm` → `Cast` | `[1,d]`, gain `[d]` | `[1,d]` f16 |
+| 27 | n | `RMSNorm` | `[1,d]`, gain `[d]` | `[1,d]` f32 |
 | 28 | logits | `MatMul` | `[1,d]` × `[d,V]` | `[1,V]` f32 |
 | 29 | | `Output("logits")` | | |
 
-Roughly $25L$ nodes: about **900** for a 36-layer model. **Four** of the
+Roughly $21L$ nodes. Measured on the real Qwen3-4B graph — 36 layers,
+$V=151936$, a 4096-position cache — **760 kernel selections** for prefill and
+759 for decode, at both f16 and int8 weights. **Four** of the
 per-layer nodes are `Cast` — rows 5, 17, 20 and 23 — which is
 [010 C8](010-conformance.md): **144 dispatches per forward pass** that exist only
 to satisfy a dtype check.
@@ -312,15 +315,18 @@ to satisfy a dtype check.
 > which is why it is four and not seven. `nn.Linear` therefore must **not** cast
 > per call; §2.1's description is the shared form.
 
-> **Those casts did not go away when `MatMul` gained f32 operands.** `MatMul`
-> requires its two operands to share a dtype, and this model's weights are f16
-> or int8 while its activations are f32. Dropping the casts would mean f32
-> weights, which doubles the model's footprint and, at $M=1$, loses the
-> matrix-vector kernel — so decode would take the tiled GEMM with seven of eight
-> rows idle. The table above is what tgo records at every precision anyone
-> actually runs. See [010 §2.1](010-conformance.md).
+> **The casts are gone.** An earlier draft of this table had four `Cast` nodes
+> per layer — rows 5, 17, 20 and 23 — because `MatMul` required its two operands
+> to share a dtype, and a transformer's activations are f32 while its weights are
+> f16 or int8. tgo reported the cost; accel relaxed the rule
+> ([C8](010-conformance.md)). Measured on the real graph: **1013 kernel
+> selections became 760.**
+>
+> Rows 5, 17, 20 and 23 are struck from the table above. They are recorded here
+> rather than deleted because the arithmetic that produced them is what closed
+> the gap.
 
-### 3.1 Decode is the same graph at $T = 1$
+## 3.1 Decode is the same graph at $T = 1$
 
 Every shape above with a leading $T$ becomes 1. Two things change beyond that:
 

@@ -172,9 +172,9 @@ closed**, and neither pays yet:
 - ~~**contiguous only** multiplies it by $C/T$.~~ Closed. `Pages` binds a page
   table.
 
-**So the design tgo builds is the last column**, and it is the one §2.3 says is
-unreachable. That is the whole state of this spec in one sentence: the cache tgo
-wants is fully expressible except for how big it may be.
+**So the design tgo builds is the last column, and it is now reachable.** Paged,
+f16, any capacity. Every constraint this spec was written around has been
+removed upstream.
 
 ## 4. What tgo does now
 
@@ -214,7 +214,7 @@ Recorded now so it is not rediscovered:
 | what changed | from | to | state |
 | --- | --- | --- | --- |
 | positions | scalar `Offset` | a bound u32 tensor | **done** |
-| dtype | f32 states | f16 states | **done** |
+| dtype | f32 states | f16 states, readable **and writable**, composing with paging | **done** |
 | cache length | scalar `CurrentLengthName` | `AttentionOptions.Lengths` | **done** |
 | addressing | `row = ℓC + t` | `row = pages[⌊t/B⌋]·B + t mod B` | **done** |
 | prefill base | scalar `BaseName` | per row | **not moving**: a prefill is one sequence, so there is no row for it to differ across. accel corrected its own table here, and the reasoning holds until batched prefill exists |

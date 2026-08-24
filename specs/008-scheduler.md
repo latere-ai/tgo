@@ -1,29 +1,39 @@
 ---
 title: "Continuous batching: slots, admission, and the upstream change it now waits on"
-status: blocked
+status: drafted
 layer: engine
 depends_on:
   - 000-decisions.md
   - 005-kv-cache.md
   - 007-engine.md
-blocked_on:
-  - "accel specs/040-batch-scheduler.md — Attention has no batch axis (accel#12); tgo register C1"
 ---
 
 # Continuous batching
 
-**Status: blocked, and the reason changed on 2026-08-24.**
+**Unblocked on 2026-08-24.** This spec carried `status: blocked` from the day it
+was written. accel closed the last gap — `Attention` takes a batch axis — and a
+value test confirms it: two sequences of lengths 96 and 32 batched together match
+two single-sequence runs to `0.00e+00`, on *the batched paged decode kernel*.
 
-It was blocked because accel had no design for per-row values. tgo filed four
-reports; accel
-[043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
-answered all four with one decision, and `RoPE` has already changed. So the
-design is no longer the blocker — **the code is**, and this spec now waits on
-043's implementation rather than on its absence.
+Nothing in this spec is implemented. What changed is that it can be.
 
-Nothing in this repository implements batching. This spec exists so that the
-parts which are cheap today are not made expensive by accident, and so that when
-043 lands the work is a binding change rather than a redesign.
+**The shape accel settled on**, which §2's slots must match:
+
+```go
+q       [batch, qSeq, qHeads, headDim]   // qSeq is 1 for a decode
+Lengths [batch]                          // per sequence
+Pages   [batch, maxPages]                // one row of block ids per sequence
+```
+
+A batch **requires** `Pages`: members have different lengths, so a contiguous
+cache cannot address them. That is not a restriction to work around — it is the
+reason paging exists, and it means [016](016-prefix-cache.md)'s block pool is a
+prerequisite for this spec rather than a neighbour of it.
+
+**One shape is still per-dispatch:** `qSeq`. A batched step takes one token per
+sequence, so a *batched prefill* is not expressible and a prefill cannot share a
+dispatch with a decode. That is [C16](010-conformance.md), and §5 is where it
+costs something.
 
 ## 1. Why it is the thing worth having
 

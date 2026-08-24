@@ -99,19 +99,22 @@ your conversation gets there.
 tgo defaults to a modest context and **tells you what a larger one costs before
 allocating it**, so you find out when you ask rather than when it fails.
 
-To plan capacity, the cache costs about **288 KB per token** for a 4B model, on
+To plan capacity, the cache costs about **144 KB per token** for a 4B model, on
 top of the weights:
 
 | context you ask for | cache |
 | --- | --- |
-| 2048 | 0.6 GB |
-| 4096 | 1.2 GB |
-| 8192 | 2.4 GB |
-| 32768 | 9.7 GB |
+| 2048 | 0.3 GB |
+| 4096 | 0.6 GB |
+| 8192 | 1.2 GB |
+| 32768 | 4.8 GB |
 
-That is per conversation, and it is reserved whether or not the conversation
-gets that long. A larger model has proportionally more layers and heads, so
-scale it by the model's size.
+A larger model has proportionally more layers and heads, so scale it by the
+model's size.
+
+tgo pages this memory rather than reserving a fixed block per conversation, so a
+short conversation on a server configured for long ones only costs what it
+actually uses.
 
 ## Prompt caching
 

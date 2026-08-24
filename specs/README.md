@@ -78,7 +78,7 @@ teaches nobody why the obvious thing was not done.
 | [005](005-kv-cache.md) | drafted | the contiguous KV cache, and what it costs |
 | [006](006-sampling.md) | drafted | composition order, and reproducibility as a stream |
 | [007](007-engine.md) | drafted | sessions, plans, buckets, the decode loop |
-| [008](008-scheduler.md) | **blocked** | continuous batching, and the accel gaps that block it |
+| [008](008-scheduler.md) | drafted | continuous batching: slots, admission, eviction |
 | [009](009-server.md) | drafted | three wire dialects over one neutral request |
 | [010](010-conformance.md) | drafted | **what tgo proves about accel**, and the register of gaps |
 | [011](011-sequencing.md) | living | build order, and what actually landed |
@@ -96,16 +96,16 @@ code exists yet. [011 §2](011-sequencing.md) is the order, [011 §2.1](011-sequ
 is what is gated upstream, and [011 §4](011-sequencing.md) is where outcomes are
 recorded as they land.
 
-The one thing to know before reading further: **v0 is not blocked upstream, and
-neither is prefix caching.** accel closed ten of the eleven issues tgo filed,
-including the two that mattered — a KV cache capped at 128 positions, and a
-paged prefill that accepted its page table and silently ignored it.
+The one thing to know before reading further: **nothing is blocked upstream any
+more.** accel closed thirteen of the sixteen gaps tgo filed, including the two
+that decided the shape of this tree — a KV cache capped at 128 positions, and a
+missing batch axis that left [008](008-scheduler.md) blocked from the day it was
+written.
 
-**Six register rows are still open**, four of them against closed issues,
-because each fix matched its issue's title and four of those titles named a
-symptom rather than the cost. [010 §2.2](010-conformance.md) has the audit. The
-only one that blocks a feature is [C1](010-conformance.md), continuous batching,
-which is post-v0.
+What is still open is narrower: no sampling operator at the tensor layer, no
+batched *prefill*, a bf16 GEMM, and GGUF's K-quants. None of it blocks a
+milestone. [010 §2](010-conformance.md) is the register and
+[010 §2.2](010-conformance.md) is the audit behind those states.
 
 ## The one thing to understand before contributing
 

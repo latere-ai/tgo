@@ -27,13 +27,26 @@ program.
 
 ## Why you might want it
 
-If you already run Python happily, [vLLM](https://github.com/vllm-project/vllm)
-is faster and far more complete today, and you should use it.
+**Deployment.** One file. Ship a model inside a Go service, run it on a machine
+you cannot install a toolchain on, cross-compile it for a platform you do not
+build on. No runtime, no version matrix, no container to keep in step with a
+driver.
 
-tgo is for the case where that is awkward: shipping a model inside a Go service,
-running on a machine you cannot install a toolchain on, or cross-compiling a
-binary for a platform you do not build on. One file, no runtime, no version
-matrix.
+**Speed, and this is the goal rather than a claim.** tgo aims to be **faster
+than vLLM**, not to trade speed for convenience. The parts of serving that are
+not matrix multiplication — scheduling a step, sampling a token, turning it back
+into text, deciding what runs next — are pure overhead on every token, and they
+are where a compiled language with no interpreter and no global lock should win.
+Starting up is the same story: tgo builds its compute plan in milliseconds
+rather than loading a Python stack.
+
+Today [vLLM](https://github.com/vllm-project/vllm) is faster, because tgo does
+not run yet. When it does, the honest position will be a table of measurements
+rather than a claim, and we will publish the ones we lose.
+
+**Hardware.** vLLM serves NVIDIA extremely well and other hardware less so. tgo
+runs wherever its compute layer runs, which today means CPU everywhere and Metal
+on Apple silicon.
 
 ## What it will do
 
@@ -46,9 +59,9 @@ matrix.
 | **Serving** | streaming, logprobs, seeded reproducible output, and prompt caching that reuses work across turns and requests |
 | **As a library** | open a model, hold a conversation, stream tokens |
 
-Continuous batching — running many conversations in one step — is designed and
-waiting on work in the layer below. Until it lands, tgo serves one conversation
-at a time well rather than many badly, and says so in its metrics.
+Continuous batching — running many conversations in one step, which is where a
+server gets most of its throughput — is designed and now expressible in the
+layer below.
 
 ## What using it will look like
 

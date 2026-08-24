@@ -39,6 +39,8 @@ of a broken model.
 | M10 | conformance report ([010](010-conformance.md)) | the register table is generated from the tests; §3 numbers measured |
 | M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. **Fully unblocked** — [C13](010-conformance.md) closed, so cross-request sharing is expressible too |
 | M11 | real weights | a Qwen3 dense checkpoint is coherent at f16 and int8, on both backends |
+| M12 | continuous batching ([008](008-scheduler.md)) | throughput scales with batch size; two batched sequences match two single runs |
+| M13 | performance against vLLM ([010 §3.1](010-conformance.md)) | the table is measured on the same model and hardware, **losses published** |
 
 M11 is the gate in [000](000-decisions.md)'s "what v0 is". Everything before it
 runs on synthetic configs.
@@ -54,7 +56,7 @@ flowchart LR
   M5 --> M6["M6 decode loop"]
   M6 --> M7["M7 sampling"] --> M8["M8 CLI"] --> M9["M9 server"]
   M9 --> M10["M10 report"] --> M11["M11 real weights"]
-  C1["accel#1<br/>no batch axis"] -.blocks.-> M12["post-v0 batching"]
+  M11 --> M12["M12 batching"] --> M13["M13 vs vLLM"]
 ```
 
 M1–M5 are entirely unblocked and are where the work goes now. They are also
@@ -72,41 +74,41 @@ What remains blocked is post-v0 and narrower:
 
 | | blocked on |
 | --- | --- |
-| continuous batching ([008](008-scheduler.md)) | [C1](010-conformance.md) — `q`'s rank is the phase, so a batch has no axis |
+| chunked prefill recovering throughput | [C16](010-conformance.md) — a batched step takes one token per sequence, so a prefill runs alone |
 
-**Batching is the only thing left that is blocked upstream**, and it is post-v0.
-Everything in M1–M11, plus prefix caching in full, is expressible against accel
-as it stands.
+**Nothing is blocked upstream any more.** Batching was the last one and accel
+closed it: a batched decode is expressible and verified, two sequences of
+different lengths matching two single runs exactly. What remains open is
+narrower — no sampling operator at the tensor layer, no batched *prefill*, and
+GGUF — and none of it blocks a milestone.
 
-### 2026-08-24 — the forward pass compiles
+### 2026-08-24 — the forward pass compiles, and the casts are gone
 
-Not a milestone; a measurement, taken because the README claimed "nothing
-between here and serving a model is waiting on accel" and nothing had checked it.
+Not a milestone; a measurement, taken because the README claimed "nothing between
+here and serving a model is waiting on accel" and nothing had checked it.
 
 The whole Qwen3-4B graph from [004 §3](004-model-graph.md) — $d=2560$, $H=32$,
-$H_{kv}=8$, $d_h=128$, $f=9728$, $V=151936$, $L=36$, a 4096-position KV cache —
-was recorded against accel HEAD and **compiled**:
+$H_{kv}=8$, $d_h=128$, $f=9728$, $V=151936$, $L=36$, a 4096-position cache —
+compiles against accel HEAD:
 
-| plan | nodes | selections | transients |
-| --- | --- | --- | --- |
-| prefill 512, f16 weights | 477 | 1013 | 62.0 MB |
-| decode 1, f16 weights | 477 | 1012 | 0.1 MB |
-| prefill 512, int8 weights | 730 | 1013 | 62.0 MB |
-| decode 1, int8 weights | 730 | 1012 | 0.1 MB |
+| plan | selections | transients |
+| --- | --- | --- |
+| prefill 512, f16 weights | 760 | 62.0 MB |
+| decode 1, f16 weights | 759 | 0.1 MB |
+| prefill 512, int8 weights | 760 | 62.0 MB |
+| decode 1, int8 weights | 759 | 0.1 MB |
 
-**The claim holds.** Every operator the model needs is reachable: `GatherRows`,
-`RMSNorm`, `MatMul` and `QuantMatMul`, per-head QK-norm by reshape, `RoPE` at
-per-row positions, `ScatterRows`, `Attention` over a 4096-position cache,
-`SwiGLU`, `Slice`+`Contiguous`, and the LM head at the real vocabulary.
+**It was 1013 selections a day earlier.** The difference is 253 `Cast` nodes
+that existed only because `MatMul` required both operands to share a dtype;
+[010 C8](010-conformance.md) closed and they are gone.
 
 Two things the numbers show that the specs only argued:
 
 - **[004 §3.2](004-model-graph.md)'s last-row slice is worth what it claimed.**
   Prefill transients are 62 MB. Running the LM head over all 512 positions would
   add $512 \times 151936 \times 4 = 311$ MB of logits alone.
-- **[010 C8](010-conformance.md)'s cast cost is visible in the node count**: the
-  int8 plan is 730 nodes against f16's 477, because every quantized projection
-  binds two planes.
+- **The cast cost was real and is now zero**, which is the first upstream change
+  tgo can price exactly rather than estimate.
 
 **What this does not show** is that the numbers are *correct* — that needs
 [010 §5](010-conformance.md)'s oracle, which needs implementation. Compiling

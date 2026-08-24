@@ -318,8 +318,9 @@ Two constraints remain:
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
-- **f16 is read-only and excludes paging** ([C5](010-conformance.md)), so this
-  is an f32 design. That is the one row that would halve the pool.
+- **f16 is fully available** ([C5](010-conformance.md) closed), so the pool is
+  f16: half the memory, which is twice the blocks and twice the prefixes worth
+  keeping.
 
 ## 10. Against vLLM and sglang
 
