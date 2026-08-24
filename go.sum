@@ -1,2 +1,6 @@
+github.com/ebitengine/purego v0.10.1 h1:dewVBCBT2GaMu1SrNTYxQhgQBethzfhiwvZiLGP/qyY=
+github.com/ebitengine/purego v0.10.1/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
+golang.design/x/accel v0.0.0-20260824185610-2cbf1a2aa1da h1:IxN6CvWURE0KNJR6T3cyR/n6BBaARfSZH33uOJKfKK8=
+golang.design/x/accel v0.0.0-20260824185610-2cbf1a2aa1da/go.mod h1:XJX9XC7NVgEiGs3O8kLKICkGDaZpbHc6sSbCO1t5Jtw=
 golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
 golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
