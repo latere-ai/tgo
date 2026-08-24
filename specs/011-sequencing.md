@@ -38,6 +38,33 @@ was discovered by reading its config rather than assuming.
 | "Qwen3 3B" | **Qwen3-4B**. There is no 3B; the dense line is 0.6B, 1.7B, 4B, 8B, 14B, 32B | **buildable now** |
 | "Qwen3.8 27B" | **Qwen3.8-27B**, Apache 2.0, released August 2026 | **blocked**, [018](018-hybrid-models.md) |
 
+### 2.1.1 What "well tested" means for each, and what it cannot mean
+
+The two targets are at different distances, and saying so precisely matters more
+than restating the goal.
+
+| | Qwen3 dense | Qwen3.8-27B |
+| --- | --- | --- |
+| architecture expressible | **yes** — the graph compiles at 36 layers and $V=151936$ | **no** — 48 of 64 layers need an operator accel does not have |
+| numerics verified | **yes** — against the f64 oracle, per block and end to end | not reachable |
+| real weights loaded | **yes** — Qwen3-0.6B, 311 tensors, 1.40 GiB at f16 | not reachable |
+| generation verified | **Wave 4** | not reachable |
+| blocked by | nothing | [accel#17](https://github.com/golang-design/accel/issues/17) |
+
+**Two honest qualifications on the dense side.** The checkpoint on hand is
+**0.6B**, not 4B — same architecture, same code path, one twelfth the
+parameters. What that proves is the loader, the graph and the numerics; what it
+does not prove is behaviour at 4B's memory footprint. And the 4B graph is
+verified to *compile and to agree with the oracle*, not to have generated text,
+until Wave 4 lands.
+
+**On the 27B, the position is not "not yet" but "not by tgo".** 018 states it,
+accel has [scoped the operator](https://github.com/golang-design/accel/issues/17)
+as in-scope-not-scheduled, and [000 D1](000-decisions.md) forbids tgo from
+writing the kernel itself. Testing it is downstream of an upstream decision this
+project deliberately does not control. Claiming otherwise would be the
+overclaiming this tree exists to prevent.
+
 Qwen3-4B: `Qwen3ForCausalLM`, $d=2560$, $L=36$, 32 query heads over 8 KV heads,
 $d_h=128$, $f=9728$, $V=151936$, `rope_theta` $10^6$, tied embeddings. This is
 exactly what [004](004-model-graph.md) specifies.
