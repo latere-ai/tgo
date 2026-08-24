@@ -89,8 +89,16 @@ teaches nobody why the obvious thing was not done.
 
 ## Where the work stands
 
-M0. Nothing is implemented. [011 §2](011-sequencing.md) is the order, and
-[011 §4](011-sequencing.md) is where outcomes are recorded as they land.
+**M0 is done: the tree, the gates, and CI green on both workflows.** No product
+code exists yet. [011 §2](011-sequencing.md) is the order, [011 §2.1](011-sequencing.md)
+is what is gated upstream, and [011 §4](011-sequencing.md) is where outcomes are
+recorded as they land.
+
+The one thing to know before reading further: **v0 is blocked upstream.**
+`tensor.Attention` refuses a KV cache longer than 128 positions, which is
+shorter than a system prompt. It is [010 C11](010-conformance.md) and
+[accel#8](https://github.com/golang-design/accel/issues/8), and it is the only
+finding so far with no workaround. M1 through M5 are unaffected.
 
 ## The one thing to understand before contributing
 

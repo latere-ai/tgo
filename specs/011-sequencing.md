@@ -85,7 +85,7 @@ Appended as each milestone lands: what shipped, what deviated from the spec and
 why, and for M11 the checkpoint, the date, and the
 [010 §3](010-conformance.md) numbers.
 
-### 2026-08-24 — M0
+### 2026-08-24 — M0 — **done**
 
 Module, CI, and the spec tree. CI mirrors accel's gates — build, vet, test,
 race, cgo-free, cross-compile, gofmt — with two additions: a **per-package**
@@ -113,3 +113,23 @@ That last point is worth keeping. **A spec written against a library's
 documentation was wrong about that library within a day.** Reading the
 signatures is not the same as reading the refusals, and the refusals are where
 the design actually lives.
+
+**Two gates found their own bugs before any product code existed**, which is the
+argument for building them first:
+
+- The coverage gate reported *"every package at or above 90%"* over a tree whose
+  only measured package was the one exempt from the check. It now fails when no
+  non-exempt package was measured, and `speclint` moved from a test-only package
+  into real code so the floor has something to stand on — 97.9%, measured.
+- `speclint`'s negative tests immediately found a bug in its own citation regex,
+  which captured the digits without the `C` and would have reported every valid
+  register citation as dangling.
+- CI's Windows row found that a CRLF checkout made **every spec in the tree**
+  fail to parse. Nothing local would have.
+
+CI is green on both workflows: `ci` across Linux, macOS and Windows with the
+race detector, the fuzz seed corpus, the per-package coverage floor, the
+cgo-free grep, ten cross-compile targets, gofmt and `speclint`; and `ci-metal`
+on Apple silicon.
+
+**M1 is next and is unblocked.**
