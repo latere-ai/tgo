@@ -280,12 +280,19 @@ func TestBlockedSpecsNameAnUpstreamIssue(t *testing.T) {
 		spec(t, "012-x.md", "title: X\nstatus: blocked\nlayer: load\nblocked_on:\n  - \"accel specs/010-kernel-corpus.md\"", record),
 	})
 	if len(bad) != 1 {
-		t.Fatalf("a blocker naming no issue was accepted: %v", bad)
+		t.Fatalf("a blocker naming only a file was accepted: %v", bad)
 	}
-	// Positive: naming an issue passes.
+	// Positive: an issue reference is a record.
 	if got := CheckBlocked([]Spec{
-		spec(t, "012-x.md", "title: X\nstatus: blocked\nlayer: load\nblocked_on:\n  - \"accel specs/010-kernel-corpus.md — no super-block GEMM (accel#15)\"", record),
+		spec(t, "012-x.md", "title: X\nstatus: blocked\nlayer: load\nblocked_on:\n  - \"accel specs/010-kernel-corpus.md (accel#15)\"", record),
 	}); len(got) != 0 {
 		t.Fatalf("a blocker naming an issue was rejected: %v", got)
+	}
+	// Positive: so is a backticked upstream name, which is what accel chose
+	// instead of keeping accel#15 open.
+	if got := CheckBlocked([]Spec{
+		spec(t, "012-x.md", "title: X\nstatus: blocked\nlayer: load\nblocked_on:\n  - \"accel specs/010-kernel-corpus.md — `quant_matmul_superblock`, not registered\"", record),
+	}); len(got) != 0 {
+		t.Fatalf("a blocker naming an upstream artifact was rejected: %v", got)
 	}
 }

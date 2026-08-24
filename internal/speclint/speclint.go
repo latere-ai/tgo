@@ -213,18 +213,28 @@ func CheckAcyclic(specs []Spec) []string {
 	return bad
 }
 
-// issueRef matches an upstream issue reference, as "accel#12" or "(accel#12)".
-var issueRef = regexp.MustCompile(`accel#\d+|/issues/\d+`)
+// upstreamRecord matches a durable upstream record of a blocker: an issue
+// reference, or a backticked identifier naming the thing upstream that records
+// the gap -- a kernel name, a corpus row.
+//
+// Not a bare file path. "blocked on accel specs/010-kernel-corpus.md" is a
+// belief about whose problem it is; "blocked on `quant_matmul_superblock`, not
+// registered" is a claim that can be checked by opening that file.
+var upstreamRecord = regexp.MustCompile("accel#[0-9]+|/issues/[0-9]+|`[^`]+`")
 
 // CheckBlocked reports blocked specs that do not say what blocks them, and
 // unblocked specs that carry a blocked_on.
 //
-// "Blocked" with no cause is indistinguishable from abandoned. And a cause that
-// names only another project's *spec* is a blocker with no upstream record --
-// nobody there has a work item for it, so it can sit forever without anyone
-// being able to act. specs/010-conformance.md section 2.3 is the incident that
-// produced this check: 012 was blocked on an accel spec file for a week and no
-// issue existed.
+// "Blocked" with no cause is indistinguishable from abandoned, and a cause that
+// names only another project's file is a belief rather than a record.
+//
+// specs/010-conformance.md section 2.3 is the incident: 012 was blocked on an
+// accel spec file for a week with no issue anywhere. The first version of this
+// check demanded an open *issue*, which was too narrow -- accel closed that
+// issue as not planned and recorded the gap as a "not registered" row in its
+// kernel corpus instead, which is a better record than an issue with no plan,
+// because the corpus is what a kernel author reads. So the requirement is a
+// durable record, not a ticket.
 func CheckBlocked(specs []Spec) []string {
 	var bad []string
 	for _, s := range specs {
@@ -235,10 +245,12 @@ func CheckBlocked(specs []Spec) []string {
 			bad = append(bad, fmt.Sprintf("%s: has blocked_on but status is %q",
 				s.File, s.Status))
 		case s.Status == "blocked":
-			if !issueRef.MatchString(strings.Join(s.BlockedOn, " ")) {
-				bad = append(bad, fmt.Sprintf("%s: blocked_on names no upstream issue "+
-					"(want an \"accel#N\" reference); a blocker with no issue is one "+
-					"nobody upstream can act on", s.File))
+			if !upstreamRecord.MatchString(strings.Join(s.BlockedOn, " ")) {
+				bad = append(bad, fmt.Sprintf("%s: blocked_on names no durable upstream "+
+					"record (want an \"accel#N\" reference, or a `backticked` name for "+
+					"the thing upstream that records the gap); a bare file path is a "+
+					"belief about whose problem it is, not a record anyone can act on",
+					s.File))
 			}
 		}
 	}

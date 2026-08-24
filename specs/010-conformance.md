@@ -172,9 +172,19 @@ no issue at all — a blocker that existed only in this repository.
 1. an open register row cites an **open** issue;
 2. when accel closes an issue whose capability is still absent, tgo **files a
    new one** rather than commenting, and says in it why it is a re-file;
-3. a spec with `status: blocked` names an issue in `blocked_on`, not only a
-   spec, because a blocker with no upstream record is a blocker nobody can act
-   on.
+3. a spec with `status: blocked` names a **durable upstream record** in
+   `blocked_on` — an issue, or the named thing upstream that records the gap —
+   not a bare file path, because a file path is a belief about whose problem it
+   is rather than something anyone can act on.
+
+**Rule 3 was narrower when first written**, and accel corrected it. It demanded
+an open *issue*; accel closed [#15](https://github.com/golang-design/accel/issues/15)
+as not planned and recorded the gap as a `quant_matmul_superblock` row in its
+kernel corpus, carrying the layout, the formula and both workarounds. That is a
+**better** record than an issue with no plan, because the corpus is what someone
+adding a kernel reads and an issue is what someone opening the tracker reads.
+tgo accepted the closure and widened the rule. See
+[012 §3](012-gguf.md).
 
 `speclint` enforces (3), which is the one a linter can see. (1) and (2) are
 enforced by the re-audit in §2.2, which is where the gap surfaced.
@@ -325,6 +335,6 @@ that is the same failure this project exists to catch in accel.
 | 010-D3 | tolerances are derived and commented with their term; a raised tolerance is a finding | tune until green | a numerics regression cannot be absorbed |
 | 010-D4 | tier 3 never runs in CI | a nightly with a download | CI stays offline and under a minute |
 | 010-D5 | the oracle is float64 and presumed right on disagreement | float32, matching the device | it is the simpler program; matching the device would import the device's bugs |
-| 010-D8 | an open row cites an open issue; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
+| 010-D8 | an open row cites an open issue; a blocked spec names a durable upstream record, issue **or** named artifact; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread; demand an open issue for every blocker | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
 | 010-D7 | a probe asserts a value against the oracle and varies optional bindings | record the graph and read the refusal | the refusal-based rule was blind to C13 and reported a false green in its own spec |
 | 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |

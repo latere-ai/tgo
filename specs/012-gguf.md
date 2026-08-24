@@ -6,7 +6,7 @@ depends_on:
   - 000-decisions.md
   - 001-weights.md
 blocked_on:
-  - "accel specs/010-kernel-corpus.md — no super-block GEMM (accel#15)"
+  - "accel specs/010-kernel-corpus.md — `quant_matmul_superblock`, not registered (accel#15, closed as not planned)"
 ---
 
 # GGUF
@@ -37,16 +37,45 @@ accel registers **one** quantized weight: int8 quants with one fp16 scale per
 kernel that reads a super-block, and [000 D1](000-decisions.md) forbids tgo from
 writing one.
 
-The two ways around it are both bad. Dequantizing to f16 at load discards the
-memory saving that is the entire reason to read GGUF, and needs a larger
-resident model than the safetensors path. Requantizing to accel's int8 stacks
-two lossy steps and gives a model measurably worse than either format alone.
+The two ways around it look bad. Dequantizing to f16 at load discards the memory
+saving that is the entire reason to read GGUF, and needs a larger resident model
+than the safetensors path. Requantizing into accel's int8 stacks two lossy steps.
 
-## 3. The trigger
+> **"Stacks two lossy steps" is an argument, not a measurement**, and an earlier
+> draft overstated it: it said requantizing "gives a model measurably worse than
+> either format alone", which nobody had measured. That is the
+> assertion-where-a-measurement-belongs that [010 §3](010-conformance.md) exists
+> to catch, made here in tgo's own spec. accel's maintainer caught it while
+> closing [accel#15](https://github.com/golang-design/accel/issues/15). Corrected
+> rather than quietly deleted, and §3 now names the measurement that settles it.
 
-accel 010 registering a super-block GEMM, filed as
-[accel#15](https://github.com/golang-design/accel/issues/15). When that lands, this spec becomes
-`drafted` and the work is: container reader, metadata mapping onto the same
+## 3. The trigger, and the two numbers that decide it
+
+accel closed [#15](https://github.com/golang-design/accel/issues/15) as **not
+planned** and recorded the gap in its corpus instead: `010-kernel-corpus.md`
+carries a `quant_matmul_superblock` row with the layout, the formula, and why
+both workarounds are bad.
+
+**That closure was right and this spec accepts it.** Nothing in tgo is blocked by
+it, so it competed against three issues that block work in progress. And a corpus
+row is a better record than an issue open with no plan: the corpus is what
+someone adding a kernel reads, whereas an issue is what someone opening the
+tracker reads.
+
+**Two measurements decide whether this is ever worth building**, and tgo can
+produce both where accel cannot:
+
+| measurement | why it decides the case |
+| --- | --- |
+| **which K-quant formats actually circulate** for the models tgo targets — a count over real checkpoints | the corpus should register the two that matter, not six. §5's claim that `Q4_K` and `Q6_K` cover most of it is a guess |
+| **int8-at-load against `Q4_K` on real weight blocks**, checked against `quant.Int8ErrorBound` | if the two are within noise on trained weights, **GGUF stops being a quality argument and becomes a download-size argument** — a much weaker case for a new kernel family, and worth knowing before anyone writes one |
+
+Both belong with [010 §3](010-conformance.md)'s numbers, and the second is a
+variant of one already there: quantization error on real blocks rather than
+synthetic ones, where outlier channels make the difference.
+
+**Reopening happens on a number or on a user, not on a preference.** When a
+super-block GEMM lands, this spec becomes `drafted` and the work is: container reader, metadata mapping onto the same
 `Config` the registry already uses, the ggml tokenizer variant (GGUF carries its
 own vocabulary, not `tokenizer.json`), and the K-quant plane layouts.
 
@@ -57,4 +86,5 @@ it. Nothing does.
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
-| 012-D1 | blocked on an accel super-block kernel | dequantize on load; requantize to int8 | neither workaround is worth shipping; the trigger is one upstream change |
+| 012-D1 | blocked on an accel super-block kernel | dequantize on load; requantize to int8 | neither workaround looks worth shipping. **Amended:** the requantization half was asserted, not measured; [§3](#3-the-trigger-and-the-two-numbers-that-decide-it) names the measurement that would settle it |
+| 012-D2 | accept accel's `not planned` closure; the corpus row is the record | press to keep an issue open | an issue open with no plan is a worse record than a corpus row carrying the reasoning, and the corpus is what a kernel author reads |
