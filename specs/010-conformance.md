@@ -128,6 +128,23 @@ makes cross-request prefix sharing inexpressible, so it blocks
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
 
+> **That rule stopped being hypothetical on 2026-08-24.** accel closed
+> [#4](https://github.com/golang-design/accel/issues/4) and
+> [#5](https://github.com/golang-design/accel/issues/5), and a probe against the
+> same HEAD shows both capabilities still absent: an f16 cache cannot be written
+> (`ScatterRows` writes f32, prefill over f16 is refused, paged+f16 is refused),
+> and mixed-precision `MatMul` is still refused for both f16 and int8 weights.
+>
+> Neither closure was wrong from inside accel — each shipped what its issue
+> asked for by name. C5's issue asked for an f16 *cache* and got the read path;
+> C8's asked for an *f32 GEMM* and got one. **The reports named the symptom and
+> the fix matched the name rather than the cost**, which is a failure of the
+> reporting, not the fixing. C8's is squarely tgo's fault and is now refiled as
+> a mixed GEMM.
+>
+> The general lesson is why this table exists: an issue tracker records what was
+> asked, and only a test records what a consumer can do.
+
 ### 2.1 What the register is worth so far
 
 Nine reports so far. Seven produced one upstream design decision — accel 043's *a scalar is a
