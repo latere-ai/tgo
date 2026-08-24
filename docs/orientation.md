@@ -139,6 +139,16 @@ Two things worth knowing:
   conversation. Otherwise a fast reply tells someone that another person
   recently sent a similar prompt.
 
+## Which models
+
+tgo targets the **Qwen3 dense** family — 0.6B, 1.7B, 4B, 8B, 14B, 32B — read
+directly from a Hugging Face safetensors checkpoint.
+
+The newer Qwen3.5 and Qwen3.8 models are a different shape: three of every four
+layers use linear attention rather than the softmax attention everything else
+uses, so they need a piece the compute layer does not have yet. They are a
+target and they are not close, and this page will say so until they run.
+
 ## What tgo will not do
 
 - **Guess.** A model it does not recognise is refused with the list of what it

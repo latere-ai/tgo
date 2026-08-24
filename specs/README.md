@@ -87,6 +87,8 @@ teaches nobody why the obvious thing was not done.
 | [014](014-jinja.md) | deferred | a Jinja subset, and when it becomes right |
 | [015](015-structured-output.md) | drafted | schema-constrained decoding |
 | [016](016-prefix-cache.md) | drafted | reusing the KV of a prompt somebody already paid for |
+| [017](017-benchmarks.md) | drafted | measuring where a token's time goes, and comparing honestly |
+| [018](018-hybrid-models.md) | **blocked** | Qwen3.8-27B's linear-attention layers, and the operator they need |
 
 
 ## Where the work stands

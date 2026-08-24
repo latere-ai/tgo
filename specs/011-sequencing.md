@@ -22,30 +22,94 @@ Writing the server early is the tempting mistake. A `framework` request invites
 an API surface, and an API over logits that are subtly wrong is a working demo
 of a broken model.
 
-## 2. Milestones
+## 2. Readiness: build now, and what the targets actually are
 
-| M | scope | done means |
+**Verdict, 2026-08-24: ready to build the dense path.** The whole Qwen3-4B graph
+compiles against accel, nothing in M1–M11 is blocked upstream, and further spec
+polish would be writing against a design that has stopped moving.
+
+**But one of the two named target models is not a dense transformer**, and that
+was discovered by reading its config rather than assuming.
+
+### 2.1 The two targets, corrected
+
+| named | actual | status |
 | --- | --- | --- |
-| M0 | module, CI, spec tree, docs | CI green on an empty build; every gate from accel's `ci.yml` present |
-| M1 | tokenizer ([002](002-tokenizer.md)) | fixed vectors pass; fuzz clean; streaming equals batch |
-| M2 | chat template ([003](003-chat-template.md)) | goldens match; the injection case is structural |
-| M3 | safetensors + conversion ([001](001-weights.md)) | every §6 refusal is a test; bf16→f16 saturation counted |
-| M4 | `nn` blocks + oracle ([004](004-model-graph.md), [010 §5](010-conformance.md)) | each block matches the f64 oracle within a derived tolerance, both backends |
-| M5 | Qwen3 forward pass | a synthetic 2-layer config produces logits matching the oracle |
-| M6 | KV cache + decode loop ([005](005-kv-cache.md), [007](007-engine.md)) | prefill-then-decode equals token-by-token; padded prefill leaves the cache clean. **Capped at 128 positions until [010 C11](010-conformance.md) closes** |
-| M7 | sampling ([006](006-sampling.md)) | order tests pass; stream reproducibility holds across a policy change |
-| M8 | CLI | `tgo run` generates from a local checkpoint |
-| M9 | server ([009](009-server.md)) | handler suite against the fake engine; one golden per dialect; one real end-to-end |
-| M10 | conformance report ([010](010-conformance.md)) | the register table is generated from the tests; §3 numbers measured |
-| M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. **Fully unblocked** — [C13](010-conformance.md) closed, so cross-request sharing is expressible too |
-| M11 | real weights | a Qwen3 dense checkpoint is coherent at f16 and int8, on both backends |
-| M12 | continuous batching ([008](008-scheduler.md)) | throughput scales with batch size; two batched sequences match two single runs |
-| M13 | performance against vLLM ([010 §3.1](010-conformance.md)) | the table is measured on the same model and hardware, **losses published** |
+| "Qwen3 3B" | **Qwen3-4B**. There is no 3B; the dense line is 0.6B, 1.7B, 4B, 8B, 14B, 32B | **buildable now** |
+| "Qwen3.8 27B" | **Qwen3.8-27B**, Apache 2.0, released August 2026 | **blocked**, [018](018-hybrid-models.md) |
 
-M11 is the gate in [000](000-decisions.md)'s "what v0 is". Everything before it
-runs on synthetic configs.
+Qwen3-4B: `Qwen3ForCausalLM`, $d=2560$, $L=36$, 32 query heads over 8 KV heads,
+$d_h=128$, $f=9728$, $V=151936$, `rope_theta` $10^6$, tied embeddings. This is
+exactly what [004](004-model-graph.md) specifies.
 
-### 2.1 What is gated upstream, and what is not
+Qwen3.8-27B is a **different architecture family**:
+
+```json
+"architectures": ["Qwen3_5ForConditionalGeneration"],
+"layer_types": ["linear_attention", "full_attention"],
+"full_attention_interval": 4,
+"num_hidden_layers": 64, "hidden_size": 5120, "head_dim": 256,
+"num_attention_heads": 24, "num_key_value_heads": 4,
+"partial_rotary_factor": 0.25, "attn_output_gate": true,
+"linear_num_key_heads": 16, "linear_num_value_heads": 48,
+"max_position_embeddings": 262144, "vocab_size": 248320
+```
+
+**Three of every four layers are linear attention** — a gated-delta recurrence,
+not softmax attention — and it carries vision tokens. accel has no
+linear-attention operator, so 48 of its 64 layers are inexpressible. Filed as
+[accel#17](https://github.com/golang-design/accel/issues/17), and
+[018](018-hybrid-models.md) is the design.
+
+Two things about it that *do* work, checked rather than assumed:
+`partial_rotary_factor: 0.25` is `RoPE(x, 64, …)` because `rotaryDim` was always
+a parameter, and `attn_output_gate` is an elementwise multiply.
+
+> **This is why the answer is "build now" rather than "spec more".** The dense
+> path is fully specified and unblocked; the hybrid path is blocked on a kernel
+> nobody has written, and no amount of tgo spec work moves it. Building the
+> dense path is also what produces the evidence that makes the hybrid ask
+> concrete.
+
+### 2.2 Waves
+
+Work is grouped by what can proceed in parallel. A wave starts when the one
+before it is green.
+
+```mermaid
+flowchart TB
+  subgraph W1["Wave 1 — no device, no dependencies"]
+    T["tokenizer 002"]
+    S["safetensors 001 §1"]
+    C["chat templates 003"]
+    B["bench harness 017"]
+  end
+  subgraph W2["Wave 2 — needs Wave 1"]
+    L["weight loader 001"]
+    N["nn blocks + oracle 004, 010 §5"]
+  end
+  subgraph W3["Wave 3 — needs Wave 2"]
+    Q["Qwen3 forward pass"]
+    K["KV cache + decode loop 005, 007"]
+    P["sampling 006"]
+  end
+  subgraph W4["Wave 4 — needs Wave 3"]
+    CLI["CLI"]
+    SRV["server 009"]
+    PC["prefix cache 016"]
+  end
+  W1 --> W2 --> W3 --> W4
+  W4 --> W5["Wave 5 — real weights, batching 008, vLLM table 010 §3.1"]
+```
+
+**Wave 1 is four independent packages with no device and no network**, which is
+where [000 D8](000-decisions.md) puts the coverage gate, and it is the wave that
+parallelises cleanly. Wave 3 is the one that must be sequential: the forward
+pass, the cache and the loop are one dependency chain.
+
+## 3. Milestones
+
+### 3.1 What is gated upstream, and what is not
 
 ```mermaid
 flowchart LR

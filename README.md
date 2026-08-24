@@ -52,7 +52,7 @@ on Apple silicon.
 
 | | |
 | --- | --- |
-| **Models** | Qwen3 dense, from Hugging Face safetensors |
+| **Models** | Qwen3 dense — 0.6B through 32B — from Hugging Face safetensors. The hybrid-attention models (Qwen3.5, Qwen3.8) need work in the layer below first |
 | **Precision** | f16 or int8, chosen by what fits your machine, and always overridable |
 | **Devices** | CPU everywhere, Metal on Apple silicon; more as they arrive |
 | **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
