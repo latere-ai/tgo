@@ -37,6 +37,7 @@ of a broken model.
 | M8 | CLI | `tgo run` generates from a local checkpoint |
 | M9 | server ([009](009-server.md)) | handler suite against the fake engine; one golden per dialect; one real end-to-end |
 | M10 | conformance report ([010](010-conformance.md)) | the register table is generated from the tests; §3 numbers measured |
+| M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. **Worth nothing until [010 C11](010-conformance.md)**, since a 128-position cache cannot hold a system prompt |
 | M11 | real weights | a Qwen3 dense checkpoint is coherent at f16 and int8, on both backends |
 
 M11 is the gate in [000](000-decisions.md)'s "what v0 is". Everything before it
@@ -75,6 +76,7 @@ blocked outright.
 | continuous batching | [008](008-scheduler.md); blocked on three accel gaps |
 | paged KV, prefix reuse | [010](010-conformance.md) C4; the pool is unexported in accel |
 | structured output | [015](015-structured-output.md); real work, and it is after batching |
+| prefix caching | [016](016-prefix-cache.md); **no longer blocked** — paging landed — but inert until C11 |
 | GGUF | [012](012-gguf.md); accel has no super-block kernel |
 | MoE, hybrid/linear attention | Qwen3.5-class architectures; [004](004-model-graph.md)'s registry makes them additive |
 | LoRA, speculative decoding, multi-device | not blocked, not v0 |

@@ -120,38 +120,27 @@ exists — chunked prefill is the one part of this spec that is **not** blocked,
 and it is still not built, because a scheduler with one sequence has nothing to
 stall.
 
-## 6. Prefix reuse depends on paging, not on policy
+## 6. Prefix reuse is no longer downstream of this spec
 
 sglang's RadixAttention keys a trie on token prefixes and shares the KV blocks
-beneath a common prefix. Two requests with the same 900-token system prompt
-prefill it once.
+beneath a common prefix. This section previously said prefix reuse was
+downstream of gap 4 — the unreachable page table — and recorded that as the
+point, since it is otherwise natural to plan prefix caching as a tgo feature and
+discover late that it is an accel one.
 
-**Sharing blocks needs blocks.** Over [005 §2.1](005-kv-cache.md)'s contiguous
-per-session cache the only way to share a prefix is to copy it, which costs most
-of what the sharing saves. So prefix reuse is downstream of 043's `Pages`
-binding, and recording that is the point: it is otherwise natural to plan prefix
-caching as a tgo feature and discover late that it is an accel one.
+**That dependency is discharged.** `AttentionOptions.Pages` landed on
+2026-08-24, so prefix reuse is buildable and it is [016](016-prefix-cache.md).
 
-The refcounting it needs — a block freed only when the last sequence referencing
-it leaves — is tgo's, and it is the reason the trie is not simply a cache with
-an LRU.
+Two things the move clarified, both of which belong here rather than there:
 
-## 7. What is cheap now and would be expensive later
-
-The four hooks tgo keeps live in v0, at a cost of nothing:
-
-| hook | v0 shape | why |
-| --- | --- | --- |
-| the cache is addressed through a `Session` | one session, one cache | a page table replaces the addressing without touching callers |
-| positions are a **bound tensor**, not a scalar | a one-row tensor | already true as of accel's current tree; widening is a shape change |
-| one draw consumed per step per sequence | one sequence | [006-D2](006-sampling.md); per-slot draws become a shape change, not a semantic one |
-| `Generate` streams over a channel | one stream | a scheduler drives many without the API moving |
-
-## 8. What tgo does now
-
-Holds one named, skipping test per [010](010-conformance.md) register row, each
-naming the accel spec that owns it. When 043's implementation lands, those tests
-stop skipping and this spec moves from `blocked` to `drafted`.
+- **It does not depend on batching.** A single-sequence server benefits from
+  every request after the first, and a multi-turn conversation benefits from
+  every turn after the first. So [016](016-prefix-cache.md) is not blocked on
+  this spec, and is the larger win of the two for an agent workload.
+- **What it would want from a scheduler** is the one thing [016-D3](016-prefix-cache.md)
+  gave up in choosing a hash map over a trie: *which waiting requests share a
+  prefix with this one*, so admission can group them. If this spec ever wants
+  that query, it is the argument for the trie, and 016 says so.
 
 ## Decision record
 

@@ -66,7 +66,7 @@ Lessons taken deliberately from [ollama](https://github.com/ollama/ollama),
 | Chat templates | per model, with user text that cannot forge a turn | designed |
 | OpenAI, Anthropic and Responses APIs | three wire dialects, one adapter, via `llmdialect` | designed |
 | Paged KV, continuous batching | vLLM's contribution | blocked on accel |
-| Prefix reuse | sglang's RadixAttention | blocked on paging |
+| Prefix caching | reuse the KV of a shared system prompt or an earlier turn | designed |
 | Constrained decoding | a JSON schema compiled to a token mask | designed, after batching |
 | GGUF | needs a super-block kernel accel does not register | blocked |
 

@@ -99,6 +99,28 @@ allocating it**. The arithmetic is in
 [`../specs/005-kv-cache.md`](../specs/005-kv-cache.md) if you want to plan
 capacity.
 
+## Prompt caching
+
+Most of what you send is usually the same as last time: a system prompt, tool
+definitions, the earlier turns of a conversation. tgo remembers the work it
+already did for that shared beginning and skips it.
+
+You do not ask for this and you do not annotate anything. It happens when the
+beginning of your prompt matches one tgo has seen, and the saving is
+proportional to how much matches — for a long system prompt and a short
+question, most of the wait.
+
+Two things worth knowing:
+
+- **It is not a response cache.** The model still generates. Only the reading of
+  your prompt is skipped, so the same question can still get a different answer.
+- **Sharing has a scope, and you choose it.** By default a tgo process shares
+  this work across every request it serves, which is what you want when the
+  process is yours. If you put many people's conversations through one tgo, set
+  the scope to `session` — a request can then only reuse work from its own
+  conversation. Otherwise a fast reply tells someone that another person
+  recently sent a similar prompt.
+
 ## What tgo will not do
 
 - **Guess.** A model it does not recognise is refused with the list of what it

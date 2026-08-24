@@ -33,7 +33,7 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
 | C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | open | host sampling. The per-row kernels landed in the corpus; `tensor` exports no sampling operator at all |
 | C4 | a paged KV cache | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed; `AttentionOptions.Pages` + `Block` |
-| C5 | an f16 KV cache | 007, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **closed** | none needed; halves the cache |
+| C5 | an f16 KV cache that can be **written** | 007, 010, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **reopened** | f32. `Attention` reads f16, `ScatterRows` writes f32 only, and prefill over f16 is refused — so a model cannot populate one |
 | C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | open | host, before submission; a 608 KB logits readback per token |
 | C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | open | convert on the host at load; [001 §3](001-weights.md) |
 | C8 | **f32 activations against f16 or int8 weights** | 010 | [#5](https://github.com/golang-design/accel/issues/5) | open, narrowed | `Cast` before every projection: 7 per layer, 252 per forward pass |
@@ -63,6 +63,11 @@ that reading commits had got wrong:
 - **C1 looked closed and is half closed.** Paging landed; batching did not.
   `q`'s rank is the phase, so a batch axis is read as a prefill and refused for
   a missing `BaseName`.
+- **C5 closed, then reopened by using it.** `Attention` reads an f16 cache. No
+  graph can *write* one: `ScatterRows` writes f32, and prefill over f16 is
+  refused. accel's own test populates the cache from the host, which is a
+  legitimate way to test the read path and exactly what hides the write path — a
+  model has to compute KV on the device and write it from inside the graph.
 - **C10 closed by a different answer than the one asked for.** The request was a
   buffer *over* caller memory; accel pointed the problem the other way with
   `Buffer.Access`, which needs no lifetime promise. Better than the ask, and

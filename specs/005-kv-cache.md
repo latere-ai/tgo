@@ -64,9 +64,11 @@ rebind, and rebinding is all it turned out to be.
 
 ## 2. Addressing
 
-### 2.1 Contiguous, which is what tgo builds today
+### 2.1 Contiguous, which is the degenerate case
 
-**Two states per layer**, $2L$ in total:
+A contiguous cache is a paged one with an identity table and a block size of
+one, so this is not a second design — it is the shape tgo binds when `Pages` is
+nil. **Two states per layer**, $2L$ in total:
 
 $$\text{Shape}_{K_\ell} = \text{Shape}_{V_\ell} = [\,C,\; H_{kv},\; d_h\,]$$
 
@@ -90,7 +92,7 @@ Position $t$ of layer $\ell$ is row $t$ of state $\ell$.
 > a page table is inherently a ranged view into a larger allocation, so whatever
 > makes `Pages` bindable probably makes a non-zero offset bindable too.
 
-### 2.2 Paged, after 043
+### 2.2 Paged, which is what tgo builds
 
 The rows a sequence owns stop being contiguous. A page table maps the
 sequence's logical position to a physical block:
@@ -117,7 +119,7 @@ flowchart LR
 Only the **last** block of a sequence is partly used, so waste is bounded by
 $B-1$ positions per sequence rather than $C - T$.
 
-## 2.3 The ceiling: 128 positions
+### 2.3 The ceiling: 128 positions
 
 `Attention` refuses any cache longer than the decode kernel's workgroup width,
 and that width is **128**:

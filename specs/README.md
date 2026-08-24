@@ -86,6 +86,7 @@ teaches nobody why the obvious thing was not done.
 | [013](013-distribution.md) | drafted | fetching checkpoints, and the cache |
 | [014](014-jinja.md) | deferred | a Jinja subset, and when it becomes right |
 | [015](015-structured-output.md) | drafted | schema-constrained decoding |
+| [016](016-prefix-cache.md) | drafted | reusing the KV of a prompt somebody already paid for |
 
 ## Where the work stands
 
