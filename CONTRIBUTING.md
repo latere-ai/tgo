@@ -74,6 +74,18 @@ go test -coverprofile=cover.out -coverpkg=./... ./... && go run ./internal/cover
 CI runs all of these plus a cgo-free grep and a cross-compile across ten
 GOOS/GOARCH pairs.
 
+**Before you push, build a clean clone.** Every gate above reads your working
+tree; CI reads what you committed. A file you forgot to stage passes locally and
+fails everywhere else:
+
+```sh
+T=$(mktemp -d) && git clone -q . $T/tgo && (cd $T/tgo && go build ./... && go test ./...)
+```
+
+This has cost a red build once already — `go.mod` was left out of a commit that
+staged its packages by name, so nine green packages built against a module file
+CI did not have.
+
 ## Dependencies
 
 tgo's core is stdlib, `golang.design/x/accel`, and
