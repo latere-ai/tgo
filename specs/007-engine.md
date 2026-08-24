@@ -104,10 +104,22 @@ flowchart LR
   sampler. It is a conversation.
 - **`Stream`** runs prefill then a decode loop.
 
-`Model` is safe for concurrent use. **A `Session` is not, and says so**: two
-goroutines decoding one session would interleave writes into one cache, and
-serialising internally would hide a caller's bug rather than report it. The race
-detector runs in CI for exactly this claim.
+`Model` is safe for concurrent use, **and that needs a lock rather than only a
+claim.** `tensor.PlanCache` returns the *same* `*Plan` for an identical graph,
+and `Plan.Submit` refuses a second submission while one is in flight. So two
+sessions decoding at once share one decode plan and the second gets a failed
+fence — not a data race, which means a `-race` test stays green while the server
+returns errors under load.
+
+**`Model` therefore holds a submission lock across submit-and-wait.** It
+serialises what accel already serialises, and turns a runtime failure into
+waiting.
+
+**A `Session` is still not concurrency-safe, and says so**: two goroutines
+decoding one session would interleave writes into one cache, and serialising
+that internally would hide a caller's bug rather than report it. The two are not
+in tension — the `Model` lock protects a resource accel shares, and the
+`Session`'s absence of one reports a mistake only the caller can make.
 
 ## 3. Plans and buckets
 
@@ -153,7 +165,8 @@ Neither is needed. `tensor.ScatterRows` documents its own behaviour:
 > GPU cannot report one*
 
 So a pad row scatters to id $\ge C$ and **writes nothing, by the operator's own
-contract**. Pad ids are set to $C$; real ids are positions. No mask, no scratch
+contract** — which holds for an f32 state, the only kind `ScatterRows` writes
+while [010 C5](010-conformance.md) is open. Pad ids are set to $C$; real ids are positions. No mask, no scratch
 buffer, no extra allocation.
 
 This is worth recording as a decision rather than a trick, because it depends on
@@ -222,7 +235,7 @@ a user's context is unanswerable.
 | $N$ decode steps compile exactly 1 plan | §6's `Weight`/`Input` mistake |
 | $N$ prefills of varying $T$ compile at most one plan per distinct bucket | §3 |
 | two sessions interleaved give the same outputs as run in sequence | session independence |
-| one `Model` from many goroutines is race-clean | §2's concurrency claim |
+| **two concurrent sessions both complete**, with the same outputs as run in sequence | §2 — a `-race` test passes without this, because the failure is a refused submission rather than a race |
 | a mid-stream failure marks the session unusable, with the original error | §7 |
 | `Stream` abandoned early releases its resources | the iterator-vs-channel choice in §1 |
 | a cancelled `context.Context` ends the stream promptly | §1 |
@@ -238,4 +251,5 @@ a user's context is unanswerable.
 | 007-D5 | a failed step makes the session unusable | reset and continue | a partial cache write is not recoverable |
 | 007-D6 | `Stream` is an iterator publicly, a channel internally | a channel in the public API | early return does not leak; [008 §7](008-scheduler.md)'s hook survives |
 | 007-D7 | the plan cache, KV layout and builders stay unexported | export them for advanced users | they are where accel's shape moves; [000 D10](000-decisions.md) |
+| 007-D9 | `Model` holds a submission lock across submit-and-wait | rely on "concurrent-safe" as a claim | one shared decode plan plus accel's in-flight refusal makes concurrent sessions fail, invisibly to `-race` |
 | 007-D8 | `Chat` takes block-structured messages and `Stream` yields typed events | `[]Message` with `Content string`; `Text()` alone | [003-D6](003-chat-template.md) forces the request side; a UI cannot render thinking without the response side |

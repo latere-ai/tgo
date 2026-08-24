@@ -18,6 +18,7 @@ The Hugging Face `tokenizers` serialisation. Four parts matter:
 
 | part | Qwen3 | role |
 | --- | --- | --- |
+| `normalizer` | **NFC** | runs **before** the pre-tokenizer; omitting it gives different ids for the same visible text |
 | `added_tokens` | `<\|im_start\|>`, `<\|im_end\|>`, `<\|endoftext\|>`, `<think>`, `</think>`, and the tool-call markers | matched before anything else, never merged into |
 | `pre_tokenizer` | a `Split` on a regex, then `ByteLevel` | cuts the input into pieces that are BPE'd independently |
 | `model.vocab` | token string → id | ~151k entries |
@@ -66,9 +67,13 @@ b & b \in [33,126] \cup [161,172] \cup [174,255] \\
 \end{cases}$$
 
 This is GPT-2's alphabet and every byte-level BPE since uses it. The important
-property is that it is a **bijection on all 256 byte values** — which is what
-makes §5's round trip total rather than best-effort, including for input that is
-not valid UTF-8.
+property is that it is a **bijection on all 256 byte values**, which makes the
+round trip total **over bytes** — including input that is not valid UTF-8.
+
+It does **not** make the round trip total over strings: §1's NFC normalizer runs
+first, so the pipeline is idempotent *after* normalization rather than
+identity-preserving. §7 splits the test accordingly, and conflating the two is
+how an implementation quietly drops NFC and still shows a green round-trip test.
 
 Decoding inverts the map and reassembles bytes. A token is therefore a byte
 string, not a character string, and that distinction is the whole of §6.
@@ -112,15 +117,26 @@ renders anyway. The asymmetry is the point:
 
 For each piece from §4:
 
+0. **normalize the input to NFC** (§1) — this happens once, before splitting;
 1. map its bytes through §3, giving a sequence of symbols;
-2. repeatedly merge the adjacent pair with the **lowest merge rank**;
+2. repeatedly merge the adjacent pair with the **lowest merge rank**, breaking a
+   rank tie by taking the **leftmost** such pair;
 3. look up each remaining symbol in the vocabulary.
 
 Step 2 is the whole algorithm. The rank is the pair's **index in the merge
 list**, and it is a *global* ordering, not a local preference:
 
 $$\text{merge } \arg\min_{i}\ \operatorname{rank}(s_i, s_{i+1}), \quad
+\text{ties broken by the smallest } i, \quad
 \text{stop when no adjacent pair has a rank}$$
+
+**The tie-break is not a detail.** A scan written with `<` takes the leftmost
+pair and one written with `<=` takes the rightmost, and both look like a correct
+reading of "the lowest rank". They differ: measured on Qwen3's real merge table,
+`'eee'` becomes `['eee']` leftmost and `['e','ee']` rightmost, and about 3.7% of
+short random strings diverge. `('Ġ','Ġ')` — two spaces — is rank 0, so the tie
+path is exercised constantly by ordinary whitespace. **Leftmost is correct**,
+and §7 has a fixed vector that distinguishes them.
 
 Worked, with a merge list ranking `("l","o") = 3`, `("lo","w") = 7`,
 `("o","w") = 12`:
@@ -186,7 +202,9 @@ buffer is about text.
 | test | what it catches |
 | --- | --- |
 | **fixed vectors**: known strings → known id sequences, checked in as testdata | a merge-order bug, which a round trip does not catch |
-| round trip `decode(encode(s)) == s` over CJK, emoji with ZWJ and skin tones, combining marks, invalid UTF-8, empty string | the §3 bijection |
+| round trip `decode(encode(s)) == s` over **NFC-stable** input: CJK, emoji with ZWJ and skin tones, invalid UTF-8, empty string | the §3 bijection |
+| **NFC-unstable** input round-trips to its normal form: `decode(encode(s)) == NFC(s)` | §1's normalizer. `e` + combining acute becomes `é`, and an implementation that makes the *first* row pass on this input has dropped NFC |
+| a fixed vector that distinguishes leftmost from rightmost tie-breaking | §5 |
 | the pre-tokenizer splitter against the reference pattern's behaviour on a corpus | §4 |
 | an unknown pattern checksum is **refused**, naming the pattern | §4's decision |
 | specials round-trip as single ids, and only when `allowSpecial` | §8 / [003 §4](003-chat-template.md) |
@@ -206,7 +224,8 @@ vocabulary, plus the fixed vectors from the real one. Neither needs a model.
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
-| 002-D1 | true BPE by global merge rank | greedy longest-match against the vocabulary | ids match the reference; there is no partial credit |
+| 002-D1 | true BPE by global merge rank, **ties broken leftmost** | greedy longest-match; an unstated tie rule | ids match the reference. The tie rule is a `<` versus `<=` coin flip that diverges on 3.7% of short strings and fires on every double space |
+| 002-D9 | NFC-normalize before splitting | skip it, as the four-part table implied | the reference normalizes; skipping it gives different ids for the same visible text |
 | 002-D2 | naive $O(n^2)$ merge in v0 | a heap from the start | pieces are short; the heap needs a benchmark, and a long unsplittable run is a fuzz seed |
 | 002-D3 | added tokens matched before BPE, never merged into | let specials reach the BPE | turn boundaries survive; enables [003-D4](003-chat-template.md) |
 | 002-D4 | a stateful streaming decoder holding back partial UTF-8 | decode each token independently | every CJK character and emoji would otherwise emit U+FFFD |

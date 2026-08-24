@@ -7,7 +7,7 @@ depends_on:
   - 005-kv-cache.md
   - 007-engine.md
 blocked_on:
-  - "accel specs/043-per-row-values.md (designed; implementation in flight)"
+  - "accel specs/040-batch-scheduler.md (no batch axis on Attention; tgo register C1)"
 ---
 
 # Continuous batching
@@ -36,11 +36,28 @@ and $\beta$ the achievable bandwidth. One step at batch size $B$ costs
 
 $$t(B) \approx \frac{W + B\cdot A}{\beta}, \qquad \text{throughput} = \frac{B}{t(B)} = \frac{B\beta}{W + BA}$$
 
-Since $A \ll W$ at realistic context lengths, throughput is close to linear in
-$B$ until $BA \sim W$. For the numbers above — $W = 4$ GB, $A$ on the order of
-tens of MB — that crossover is far above the batch sizes a single-device server
-sees. **Batching is not an optimisation at the margin; it is most of the
-hardware.**
+Throughput is close to linear in $B$ until $BA \sim W$, and the ceiling is
+
+$$\frac{t(1)}{t(\infty)} = \frac{W}{A} + 1$$
+
+**$A$ is not small, and this is where an earlier draft was wrong.** Reading the
+cache dominates it, and [005 §3](005-kv-cache.md) gives 288 KiB per position, so
+$A \approx L \cdot 288\text{ KiB}$ for context length $L$:
+
+| context $L$ | $A$ | crossover $B$ | ceiling |
+| --- | --- | --- | --- |
+| 1024 | 295 MB | ≈ 13 | ~15× |
+| 2048 | 590 MB | ≈ 7 | ~7× |
+| 4096 | 1.21 GB | ≈ 3.4 | ~4.3× |
+
+So the crossover is **inside** the range a single-device server sees, not far
+above it, and **the ceiling falls as context grows.** Batching is still most of
+the hardware at short contexts and much less at long ones.
+
+That is a second argument for [C5](010-conformance.md), the f16 cache: halving
+$A$ doubles the batch size worth reaching. It is also an argument for
+[016](016-prefix-cache.md), which reduces the prefill work that batching does not
+help with at all.
 
 Static batching gives it back: a batch that starts together finishes together,
 so a 20-token answer holds its slot until the 800-token answer beside it is
@@ -141,6 +158,28 @@ Two things the move clarified, both of which belong here rather than there:
   gave up in choosing a hash map over a trie: *which waiting requests share a
   prefix with this one*, so admission can group them. If this spec ever wants
   that query, it is the argument for the trie, and 016 says so.
+
+## 7. Four hooks that are cheap now and expensive later
+
+tgo keeps these live in v0 at a cost of nothing, so that when [C1](010-conformance.md)
+closes the retrofit stays local:
+
+| hook | v0 shape | why it matters later |
+| --- | --- | --- |
+| the cache is addressed through a **`Session`** | one session, one cache | a page table replaces the addressing without touching callers |
+| positions are a **bound tensor** | a one-row tensor | already true; widening to B rows is a shape change, not a rewrite |
+| **one draw consumed per step per sequence** | one sequence | [006-D2](006-sampling.md); per-slot draws become a shape change, not a semantic one |
+| `Generate` streams over a **channel** internally | one stream | a scheduler drives many without the public API moving ([007-D6](007-engine.md)) |
+
+The first two were free because accel 043 moved per-row values onto tensors
+before tgo wrote any code. The third and fourth are decisions tgo made for
+reasons that stand on their own, and which happen to survive batching.
+
+## 8. What tgo does now
+
+Holds one named, skipping test per [010](010-conformance.md) register row, each
+naming the accel spec that owns it. When [C1](010-conformance.md) closes, those
+tests stop skipping and this spec moves from `blocked` to `drafted`.
 
 ## Decision record
 

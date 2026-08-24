@@ -41,8 +41,8 @@ package sample
 
 type Policy struct {
     Temperature       float32          // 0 means greedy, exactly
-    TopK              int              // 0 means no cap
-    TopP              float32          // 0 or 1 means no truncation
+    TopK              int              // 0 means the stage is absent; 1..TopMaxRounds
+    TopP              float32          // 0 means the stage is absent; otherwise (0,1]
     RepetitionPenalty float32          // 1 means none
     PresencePenalty   float32
     FrequencyPenalty  float32
@@ -85,6 +85,12 @@ swapped.
   something different at each temperature.
 - **Top-$k$ before top-$p$.** $k$ is a hard cap on the candidate count; $p$ then
   trims within it. The reverse lets $p$ admit more than $k$.
+- **Both stages are capped at `TopMaxRounds` = 128 candidates** by accel's
+  kernels. A $k$ above that, or a nucleus wider than that, is expressible on the
+  host and unrepresentable on the device — so the host reference must refuse it
+  rather than compute something the device cannot reproduce. accel keeps exactly
+  $k$, breaking ties lexicographically on (value, index); vLLM may return more
+  than $k$. tgo follows accel, because accel is what it will be checked against.
 - **$T = 0$ is greedy**, a distinct branch, not a division. It is also the
   branch that must be bit-exact.
 
@@ -131,8 +137,13 @@ users report as "it just echoes my question".
 Top-$p$ keeps the smallest prefix of the sorted distribution whose mass reaches
 $p$. Two subtleties:
 
-- the token that **crosses** the threshold is kept, not dropped, or $p = 0$
-  would produce an empty candidate set;
+- the token that **crosses** the threshold is kept, not dropped;
+- **$p = 0$ means the stage is absent, not "keep one".** accel 039's contract:
+  zero disables the stage, any other value must lie in $(0, 1]$, and anything
+  else is refused. This matters because accel's kernel with $P = 0$ computes
+  `target := best[0] * P` = 0 and keeps **nothing** — so a spec that said
+  "$p=0$ keeps one token" would disagree with the device path it is supposed to
+  be the reference for;
 - ties at the boundary are broken by **token id**, ascending, so the result does
   not depend on the sort's stability. An unstable sort would make a supposedly
   reproducible run depend on the standard library's implementation.

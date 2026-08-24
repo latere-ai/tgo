@@ -48,6 +48,8 @@ trigger stated.
 ```go
 package chat
 
+import "encoding/json"
+
 type Role string
 
 const (
@@ -57,11 +59,47 @@ const (
     Tool      Role = "tool"
 )
 
+// Message is one turn. Blocks rather than a string: see section 3.1.
 type Message struct {
-    Role      Role
-    Content   string
-    ToolCalls []ToolCall  // assistant turns
-    Name      string      // tool results
+    Role   Role
+    Blocks []Block
+}
+
+type BlockType string
+
+const (
+    BlockText       BlockType = "text"
+    BlockToolUse    BlockType = "tool_use"
+    BlockToolResult BlockType = "tool_result"
+    BlockThinking   BlockType = "thinking"
+)
+
+// Block mirrors 009 section 3's type, which is a strict subset of
+// llmdialect's ir.Block. The two are declared together deliberately: the
+// server maps ir.Block to this and nothing else may.
+type Block struct {
+    Type       BlockType
+    Text       string      // Text and Thinking
+    ToolUse    *ToolUse    // assistant turns
+    ToolResult *ToolResult // tool turns
+}
+
+type ToolUse struct {
+    ID   string
+    Name string
+    Args json.RawMessage // passed through verbatim
+}
+
+type ToolResult struct {
+    ToolUseID string
+    Text      string
+    IsError   bool
+}
+
+type ToolSpec struct {
+    Name        string
+    Description string
+    InputSchema json.RawMessage
 }
 
 // Renderer turns a conversation into the exact prompt bytes, plus the
@@ -101,9 +139,23 @@ func (p Prompt) String() string  // for goldens; concatenates, no tokenizer
 <|im_start|>assistant
 ```
 
-and the model completes until `<|im_end|>`. With thinking enabled the assistant
-turn opens with `<think>`, and the model closes it with `</think>` before its
-answer.
+and the model completes until `<|im_end|>`. With thinking enabled the model opens
+`<think>` itself and closes it with `</think>` before its answer.
+
+**With thinking disabled the template does not simply omit the block — it emits
+a pre-closed one:**
+
+```
+<|im_start|>assistant
+<think>
+
+</think>
+
+```
+
+so the model resumes after a thinking block it never wrote. Omitting it instead
+leaves the model free to open one, which is the behaviour the flag exists to
+prevent. ollama's Qwen3 renderer matches this exactly.
 
 ```mermaid
 sequenceDiagram
@@ -131,6 +183,31 @@ Four details that are load-bearing and easy to lose:
    one, and inventing one changes the model's behaviour.
 4. **Tool definitions go in the system turn**, in the model's own JSON shape,
    not as a separate role.
+5. **Thinking-off emits a pre-closed block**, per the second listing above. A
+   golden must assert the whole suffix including both blank lines.
+
+### 3.2 Tool calls and tool results
+
+An assistant tool call renders as, inside the assistant turn:
+
+```
+<tool_call>
+{"name": ..., "arguments": ...}
+</tool_call>
+```
+
+with the arguments passed through **verbatim** when the caller supplied a string,
+rather than re-marshalled — re-marshalling reorders keys and changes the bytes
+the model was trained on.
+
+A tool *result* is **not its own turn.** Consecutive tool messages merge into one
+`<|im_start|>user` turn, each wrapped in `<tool_response>`. The template never
+emits a tool's name, so a `Name` field would have nowhere to go — which is why
+§2's `ToolResult` carries `ToolUseID` and text and no name.
+
+> ollama's sibling Qwen renderer uses an incompatible shape with a different
+> prefix. The two are kept distinct here rather than merged, because a template
+> that is nearly right is the failure mode this whole spec exists to avoid.
 
 ### 3.1 Why a turn is blocks and not a string
 
@@ -191,6 +268,9 @@ prompt cannot distinguish a boundary the renderer wrote from one the user did.
 | test | what it catches |
 | --- | --- |
 | goldens: bare user; with system; multi-turn; thinking on and off | §3's format, byte for byte |
+| **thinking-off emits `<think>\n\n</think>\n\n`**, asserted as the whole suffix | §3's second listing — omitting the block instead is the natural mistake |
+| a tool call renders with verbatim arguments; consecutive tool results merge into one user turn | §3.2 |
+| a multi-step tool round keeps its intermediate thinking | §3 detail 2's real rule |
 | prior-assistant thinking is stripped, current is not | §3.2 |
 | the trailing newline after `assistant` is present | §3.1, the off-by-one nobody sees |
 | **injection**: a user message containing every control token yields the same `Part` count and no extra boundary | §4 |
@@ -209,4 +289,6 @@ which is what [003-D3](#decision-record) buys.
 | 003-D3 | render to parts, tokenize separately | render straight to ids | goldens need no tokenizer; enables 003-D4 |
 | 003-D4 | control tokens come from the renderer; content encodes with specials off | a denylist over user text; one `Encode` over the whole prompt | forged turns are structurally impossible rather than unlikely |
 | 003-D5 | never inject a default system message | supply a helpful one | the model's tuned behaviour is what the caller asked for |
+| 003-D7 | tool arguments pass through verbatim | re-marshal from a parsed object | re-marshalling reorders keys and changes the bytes the model was trained on |
+| 003-D8 | tgo decides "is a tool result" structurally, from the `Tool` role | text-match `<tool_response>` on user content, as the reference does | the structural rule is the conformance target; the text rule misfires on a user who quotes the tag |
 | 003-D6 | a turn is typed blocks, not a string | `Content string`, with the thinking found by matching text | forced by 003-D4's own principle: stripping prior thinking from a string is a textual boundary, and a user who types `<think>` would lose their text ([§3.1](#31-why-a-turn-is-blocks-and-not-a-string)) |

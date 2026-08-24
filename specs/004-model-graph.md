@@ -62,11 +62,16 @@ func SwiGLUMLP(g *Graph, x *tensor.Tensor, gate, up, down Operand) *tensor.Tenso
 type AttentionConfig struct {
     QHeads, KVHeads, HeadDim int
     RoPEBase                 string // declared f32 scalar name
+    ScaleName                string // declared f32 scalar, 1/sqrt(headDim)
+    BaseName                 string // declared u32 scalar, the prefill's first position
     QKNorm                   bool
 }
 
+// posQ and posK are separate because under GQA the q and k row counts differ
+// (T*QHeads against T*KVHeads), so one positions tensor cannot serve both.
 func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
-    k, v *tensor.State, positions *tensor.Tensor, cfg AttentionConfig) *tensor.Tensor
+    k, v *tensor.State, posQ, posK, lengths *tensor.Tensor,
+    cfg AttentionConfig) *tensor.Tensor
 ```
 
 Each block below is stated with the accel operators it lowers to. That is what
@@ -79,7 +84,7 @@ $$y = x W, \quad x \in \mathbb{R}^{M \times K},\ W \in \mathbb{R}^{K \times N}$$
 
 | step | operator | in | out |
 | --- | --- | --- | --- |
-| narrow | `tensor.Cast(x, F16)` | `[M,K]` f32 | `[M,K]` f16 |
+| narrow | `tensor.Cast(x, F16)`, **hoisted and shared** across projections reading the same activation | `[M,K]` f32 | `[M,K]` f16 |
 | multiply | `tensor.MatMul` or `tensor.QuantMatMul` | `[M,K]` f16 × `[K,N]` | `[M,N]` **f32** |
 
 f32 in, f32 out; the f16 exists only between the two. `MatMul` selects the
@@ -242,10 +247,26 @@ logits = LMHead(RMSNorm(h[-1]))
 Pre-norm, with a residual around each sub-block. Expanded, one row per recorded
 node:
 
+**Ports and scalars the graph declares**, which an earlier draft under-counted:
+
+| kind | name | shape | note |
+| --- | --- | --- | --- |
+| `Input` | `ids` | `[T]` u32 | the tokens |
+| `Input` | `posq` | `[T·H]` u32 | RoPE positions for q, each token repeated $H$ times |
+| `Input` | `posk` | `[T·H_kv]` u32 | **a separate tensor**: under GQA $H \ne H_{kv}$, so one positions tensor cannot serve both |
+| `Input` | `slots` | `[T]` u32 | scatter destinations |
+| `Input` | `lengths` | `[1]` u32 | `AttentionOptions.Lengths` |
+| `Scalar` | `rope_base` | f32 | $10^6$ for Qwen3 |
+| `Scalar` | `scale` | f32 | $1/\sqrt{d_h}$ |
+| `Scalar` | `base` | u32 | the prefill's first position |
+
+> `posq` and `posk` being separate is why `nn.Attention` cannot take one
+> `positions` argument. [005 §1.1](005-kv-cache.md) already had this right and
+> §2 of this spec did not.
+
 | # | node | operator | inputs | output |
 | --- | --- | --- | --- | --- |
 | 1 | ids | `Input` u32 | — | `[T]` |
-| 2 | positions | `Input` u32 | — | `[T]` |
 | 3 | h | `GatherRows` / `QuantGatherRows` | table `[V,d]`, ids `[T]` | `[T,d]` f32 |
 | | | **per layer ℓ** | | |
 | 4 | n | `RMSNorm` | `[T,d]`, gain `[d]` | `[T,d]` |
@@ -256,8 +277,8 @@ node:
 | 9 | q | `Reshape` | `[T, H·d_h]` | `[T·H, d_h]` |
 | 10 | q | `RMSNorm` | `[T·H, d_h]`, gain `[d_h]` | `[T·H, d_h]` |
 | 11 | k | `Reshape` → `RMSNorm` | `[T·H_kv, d_h]`, gain `[d_h]` | `[T·H_kv, d_h]` |
-| 12 | q | `RoPE` | `[T·H, d_h]`, positions `[T·H]` | `[T·H, d_h]` |
-| 13 | k | `RoPE` | `[T·H_kv, d_h]`, positions `[T·H_kv]` | `[T·H_kv, d_h]` |
+| 12 | q | `RoPE` | `[T·H, d_h]`, `posq` `[T·H]` | `[T·H, d_h]` |
+| 13 | k | `RoPE` | `[T·H_kv, d_h]`, `posk` `[T·H_kv]` | `[T·H_kv, d_h]` |
 | 14 | K_ℓ | `ScatterRows` | rows `[T, H_kv·d_h]`, ids `[T]` | `State` `[C, H_kv, d_h]` |
 | 15 | V_ℓ | `ScatterRows` | rows `[T, H_kv·d_h]`, ids `[T]` | `State` `[C, H_kv, d_h]` |
 | 16 | a | `Attention` | q `[T,H,d_h]`, K_ℓ, V_ℓ | `[T, H, d_h]` f32 |
@@ -276,10 +297,18 @@ node:
 | 28 | logits | `MatMul` | `[1,d]` × `[d,V]` | `[1,V]` f32 |
 | 29 | | `Output("logits")` | | |
 
-Roughly $22L + 7$ nodes: **799** for a 36-layer model. Seven of the per-layer
-nodes are `Cast` (rows 5, 17, 20, 23 and the two inside `Linear`'s quantized
-form), which is [010 C8](010-conformance.md) — 252 dispatches per forward pass
-existing only to satisfy a dtype check.
+Roughly $25L$ nodes: about **900** for a 36-layer model. **Four** of the
+per-layer nodes are `Cast` — rows 5, 17, 20 and 23 — which is
+[010 C8](010-conformance.md): **144 dispatches per forward pass** that exist only
+to satisfy a dtype check.
+
+> An earlier draft said seven casts and 252 dispatches. It was wrong three ways:
+> the enumeration summed to six, "the two inside `Linear`'s quantized form" had
+> no referent — `QuantMatMul` *refuses* non-f16 activations rather than casting —
+> and a probe of this graph counts 25 dispatches and 4 casts per layer. The cast
+> is shared across the projections that consume the same normalized activation,
+> which is why it is four and not seven. `nn.Linear` therefore must **not** cast
+> per call; §2.1's description is the shared form.
 
 > **Those casts did not go away when `MatMul` gained f32 operands.** `MatMul`
 > requires its two operands to share a dtype, and this model's weights are f16

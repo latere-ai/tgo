@@ -162,11 +162,31 @@ silently. tgo adopts it, with a rule for which side a field falls on:
 | category | rule | examples |
 | --- | --- | --- |
 | **changes the answer** | **refuse**, naming the field | `n > 1` (needs batching, [008](008-scheduler.md)), `response_format: json_schema` ([015](015-structured-output.md)), a `logit_bias` id outside the vocabulary |
-| **advisory** | accept, run, and **record the loss** | `cache_control`, `service_tier`, `user`, `metadata`, Anthropic `top_k` on a Chat response, `citations` |
+| **advisory** | accept, run, and **record the loss** | `cache_control`, `service_tier`, `user`, `metadata`, `citations` |
 
 Losses are surfaced two ways, both from the same list: an `X-Tgo-Loss` response
 header, and a `tgo_request_loss_total{field}` counter. A field that turns up
 constantly in that counter is a feature request with evidence attached.
+
+### 4.1 `ir.Request` is narrower than `Policy`, so the loss list must be corrected
+
+`llmdialect`'s IR carries no `seed`, `logit_bias`, `presence_penalty`,
+`frequency_penalty` or `repetition_penalty`, and its OpenAI Chat frontend adds
+each to `Loss` as unrepresentable. **tgo implements every one of them**
+([007 §1](007-engine.md)'s `Policy`), so emitting that list verbatim would report
+as unhonoured exactly the knobs that were honoured — and §8's row "every advisory
+field appears in the loss header" would pass over the bug.
+
+So the handler parses those fields from the **raw body** alongside
+`DecodeRequest`, and **subtracts** them from `Loss.Fields()` before emitting the
+header. `top_k` is the same defect from the other side: it is in `ir.Request`, so
+`/v1/messages` honours it, while OpenAI Chat has no such field and it must not
+appear as a loss at all.
+
+The missing IR fields are filed upstream on `latere.ai/x/pkg`. Until they land,
+the subtraction list is a named constant in one place, with a test that fails if
+a `Policy` field is not in it — otherwise a new sampling knob silently starts
+reporting itself as lost.
 
 **The distinction is testable, which is why it is worth having as a rule rather
 than a list.** A field is advisory if a request with it and a request without it
@@ -212,6 +232,23 @@ us:
   its KV reservation until `max_tokens`.
 - **The terminal event carries `finish_reason` and usage.** A stream that ends
   without one is indistinguishable from a dropped connection.
+
+### 5.1 Errors need a per-dialect encoder, which the Frontend half does not give
+
+`Frontend` has four methods and none of them encodes an error; `ir` defines no
+error type. So §6's 429 and §4's refusals have **no body shape**, and a
+mid-generation device failure ([007 §7](007-engine.md)) can only reach the client
+as an abrupt close — which a client cannot distinguish from a network drop.
+
+The dialects genuinely differ here: Anthropic sends `event: error` mid-stream and
+an `{"type":"error","error":{...}}` body; OpenAI sends an error chunk before
+closing. ollama hand-writes both, which is the evidence that there is no shared
+shape to borrow.
+
+**tgo therefore owns a small per-dialect error encoder**, beside the frontend
+rather than inside it, covering the pre-stream body and the mid-stream frame.
+§8 tests it per dialect. This is the one place §2's "three surfaces for one
+adapter" is not true, and it is worth stating rather than discovering.
 
 ## 6. Concurrency
 
@@ -286,6 +323,8 @@ what proves the fake engine's contract matches the real one.
 | 009-D6 | `tools` returns what the model emitted | parse into a dialect's `tool_calls` | without [015](015-structured-output.md) nothing checks validity; parsing would assert what was not verified |
 | 009-D7 | metrics expose the readback share, queue wait, and loss | throughput only | the numbers that name tgo's upstream costs are visible in production |
 | 009-D8 | loopback by default; a public bind needs a flag | bind `0.0.0.0` by default | an unauthenticated server is not exposed by omission |
+| 009-D12 | subtract the fields tgo honours from `llmdialect`'s loss list | emit `Loss.Fields()` verbatim | the IR is narrower than `Policy`, so the header would report honoured knobs as dropped ([§4.1](#41-irrequest-is-narrower-than-policy-so-the-loss-list-must-be-corrected)) |
+| 009-D13 | tgo owns a per-dialect error encoder | expect `Frontend` to cover errors | `Frontend` has no error path and the dialects genuinely differ; ollama hand-writes both ([§5.1](#51-errors-need-a-per-dialect-encoder-which-the-frontend-half-does-not-give)) |
 | 009-D9 | serve three dialects via `llmdialect`'s `Frontend` half | OpenAI Chat only; reimplement the dialects in tgo | three surfaces for one adapter. `Backend` is a gateway's half and tgo never uses it |
 | 009-D10 | `llmdialect` is a `tgo/server` dependency, not a core one | make `ir.Request` the engine's argument | a library embedder inherits neither the IR types nor another module's release cycle |
 | 009-D11 | messages and stream events are **blocks**, a strict subset of `ir.Block` | `Content string` | forced by [003-D4](003-chat-template.md): stripping prior thinking from a string is a textual boundary, and textual boundaries can be forged |
