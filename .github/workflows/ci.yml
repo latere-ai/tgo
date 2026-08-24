@@ -1,0 +1,177 @@
+name: ci
+
+# Tier 1 from specs/010-conformance.md section 4: everything that needs no
+# device and no weights. It runs on every push, because each of these gates
+# rots silently.
+#
+# Tier 2 is ci-metal.yml. A job that promises a backend and finds no device is
+# a failure rather than a skip, so it cannot share a matrix with jobs that
+# promise only the CPU.
+#
+# Tier 3 -- real weights -- is never here. specs/000-decisions.md decision 8:
+# the smallest Qwen3 is over a gigabyte, and a CI that downloads one is a CI
+# nobody runs locally.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  # specs/000-decisions.md decision 2. cgo-free is the point, not an
+  # optimization, so the build that must pass is the one without it.
+  CGO_ENABLED: '0'
+
+jobs:
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v5
+
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    - name: Build
+      run: go build ./...
+
+    - name: Vet
+      run: go vet ./...
+
+    - name: Test
+      run: go test ./...
+
+    # The race detector needs cgo on most platforms, so this is the one step
+    # that turns it on. The cgo-free guarantee is about what tgo compiles to,
+    # not about what its test harness may use to find a race.
+    - name: Test under the race detector
+      env:
+        CGO_ENABLED: '1'
+      run: go test -race ./...
+
+  coverage:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    # Per package, not one repository average: an average lets a well-tested
+    # package carry an untested one and reports a number nobody can act on.
+    - name: Measure
+      run: go test -coverprofile=cover.out -coverpkg=./... ./...
+
+    - name: Gate
+      run: go run ./internal/covercheck -profile=cover.out
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-profile
+        path: cover.out
+
+  fuzz:
+    name: fuzz seed corpus
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    # The seed corpus only, not a fuzzing campaign: it is a regression gate over
+    # the inputs that have already found a bug, and it must stay fast.
+    - name: Run every seed
+      run: go test -run='Fuzz' ./...
+
+  cgo-free:
+    name: no cgo anywhere
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    # Greps rather than relying on the build: a file can import "C" behind a
+    # build tag this platform does not select, and still be a violation.
+    - name: Reject import "C"
+      run: |
+        if grep -rn --include='*.go' '^import "C"\|^\s*"C"$' . ; then
+          echo "::error::found cgo usage; specs/000-decisions.md decision 2 makes cgo-free a hard requirement"
+          exit 1
+        fi
+        echo "no cgo found"
+
+  cross:
+    name: cross-compile every GOOS
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    # The README tells a reader they can cross-compile with CGO_ENABLED=0. A
+    # claim in a user-facing document with no gate behind it goes stale
+    # silently, so this is the gate.
+    - name: Build for every GOOS
+      run: |
+        set -e
+        for pair in \
+          linux/amd64 linux/arm64 linux/arm \
+          darwin/amd64 darwin/arm64 \
+          windows/amd64 windows/arm64 \
+          freebsd/amd64 openbsd/amd64 netbsd/amd64
+        do
+          GOOS=${pair%/*} GOARCH=${pair#*/}
+          echo "--- $GOOS/$GOARCH"
+          GOOS=$GOOS GOARCH=$GOARCH go build ./...
+        done
+
+  gofmt:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "::error::these files are not gofmt'd:"
+          echo "$unformatted"
+          exit 1
+        fi
+        echo "all files formatted"
+
+  specs:
+    name: specs are consistent
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    # specs/README.md documents a lifecycle and a frontmatter shape. A spec
+    # tree nobody checks drifts from the code within a milestone.
+    - name: Lint the spec tree
+      run: go test ./internal/speclint/

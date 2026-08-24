@@ -1,0 +1,38 @@
+name: ci-metal
+
+# Tier 2 from specs/010-conformance.md section 4: the job that promises a
+# backend. TGO_REQUIRE_METAL turns "no device on this runner" from a skip into
+# the failure it should be where Metal is promised -- without it, this job
+# would rot green.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: '0'
+  TGO_REQUIRE_METAL: '1'
+
+jobs:
+  metal:
+    name: metal
+    runs-on: macos-15
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    - name: Test
+      run: go test ./...
+
+    - name: Test under the race detector
+      env:
+        CGO_ENABLED: '1'
+      run: go test -race ./...
