@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -258,6 +259,70 @@ func TestIndexAgreesOnStatus(t *testing.T) {
 			}
 			if !strings.Contains(line, s.status) {
 				t.Errorf("%s: status is %q; the index row says %q", s.file, s.status, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// The register in 010 is the project's primary output, and other specs cite its
+// rows by number. 010-D6 makes it generated from the tests, which cannot happen
+// before there are tests -- so until M10 these two checks are what stand in for
+// it: the rows are well formed, and nothing cites a row that does not exist.
+//
+// A dangling "C11" in another spec is the exact drift 010-D1 exists to prevent,
+// one level up, and it is invisible in review.
+
+// registerRow matches a row of the table in 010 section 2.
+var registerRow = regexp.MustCompile(`(?m)^\| \*{0,2}(C\d+)\*{0,2} \|`)
+
+// registerCite matches a citation of a register row from anywhere in the tree.
+var registerCite = regexp.MustCompile(`010 (C\d+)|\[010 (C\d+)\]|\bC(\d+)\]\(010-conformance\.md\)`)
+
+func registerRows(t *testing.T) map[string]bool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(specDir, "010-conformance.md"))
+	if err != nil {
+		t.Fatalf("read the conformance spec: %v", err)
+	}
+	rows := map[string]bool{}
+	for _, m := range registerRow.FindAllStringSubmatch(string(b), -1) {
+		if rows[m[1]] {
+			t.Errorf("010: register row %s appears twice", m[1])
+		}
+		rows[m[1]] = true
+	}
+	if len(rows) == 0 {
+		t.Fatal("010: the register has no rows; the check would pass vacuously")
+	}
+	return rows
+}
+
+func TestRegisterRowsAreNumberedWithoutGaps(t *testing.T) {
+	rows := registerRows(t)
+	for i := 1; i <= len(rows); i++ {
+		if id := "C" + strconv.Itoa(i); !rows[id] {
+			t.Errorf("010: the register has %d rows and no %s; a gap means a row was "+
+				"deleted, and a row leaves only when its test stops skipping", len(rows), id)
+		}
+	}
+}
+
+func TestNothingCitesAMissingRegisterRow(t *testing.T) {
+	rows := registerRows(t)
+	for _, s := range load(t) {
+		if s.file == "010-conformance.md" {
+			continue
+		}
+		for _, m := range registerCite.FindAllStringSubmatch(s.body, -1) {
+			id := m[1] + m[2]
+			if m[3] != "" {
+				id = "C" + m[3]
+			}
+			if id == "" {
+				continue
+			}
+			if !rows[id] {
+				t.Errorf("%s cites register row %s, which 010 does not have", s.file, id)
 			}
 		}
 	}

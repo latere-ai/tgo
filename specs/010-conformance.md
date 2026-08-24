@@ -42,6 +42,12 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | **C11** | **a KV cache longer than 128 positions** | 007, 010 | [#8](https://github.com/golang-design/accel/issues/8) | **open — blocking** | none. `Attention` refuses $C > 128$; see [005 §2.3](005-kv-cache.md) |
 | C12 | binding a `LayerState` view to `Attention` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states, ports and bindings for a 36-layer model |
 
+**This table is a dated snapshot and accel is moving under it.** Between filing
+and writing, `RoPE` and per-row sampling landed upstream and the f16 cache
+kernel appeared in accel's working tree. The states below are as of
+**2026-08-24**; the tests are what will say what is true, which is
+[010-D1](#decision-record).
+
 **States.** `landing` — the signature has changed in accel's tree.
 `designed` — accel
 [043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
@@ -189,4 +195,4 @@ that is the same failure this project exists to catch in accel.
 | 010-D3 | tolerances are derived and commented with their term; a raised tolerance is a finding | tune until green | a numerics regression cannot be absorbed |
 | 010-D4 | tier 3 never runs in CI | a nightly with a download | CI stays offline and under a minute |
 | 010-D5 | the oracle is float64 and presumed right on disagreement | float32, matching the device | it is the simpler program; matching the device would import the device's bugs |
-| 010-D6 | the register is generated from the tests | maintained by hand beside them | it is the exact drift tgo exists to catch upstream |
+| 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |
