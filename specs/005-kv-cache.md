@@ -73,20 +73,29 @@ two**, so the migration in §6 is a binding change, not a second code path.
 
 ### 2.1 Contiguous, which is what tgo builds today
 
-One state per role — K and V — for the whole model, sliced per layer:
+**Two states per layer**, $2L$ in total:
 
-$$\text{Shape}_{K} = \text{Shape}_{V} = [\,L \cdot C,\; H_{kv},\; d_h\,]$$
+$$\text{Shape}_{K_\ell} = \text{Shape}_{V_\ell} = [\,C,\; H_{kv},\; d_h\,]$$
 
-with $L$ layers, per-layer capacity $C$, $H_{kv}$ key/value heads and head
-dimension $d_h$. Layer $\ell$'s window is `LayerState(b, s, ℓ)`, covering rows
-$[\ell C, (\ell+1)C)$. Position $t$ of layer $\ell$ is the single row
+with per-layer capacity $C$, $H_{kv}$ key/value heads and head dimension $d_h$.
+Position $t$ of layer $\ell$ is row $t$ of state $\ell$.
 
-$$\text{row}(\ell, t) = \ell C + t$$
-
-**One state pair rather than $2L$ states.** Two allocations and two bindings
-instead of 72 for a 36-layer model, and `LayerState` is a slice rather than a
-copy. The cost is that the windows must be *proven* disjoint rather than
-disjoint by construction, which is the test in §7.
+> **This is not the design tgo wanted.** One state of $[L \cdot C, H_{kv}, d_h]$
+> with `LayerState(b, s, ℓ)` per layer is the natural shape, and it is what
+> `LayerState` exists for. `Attention` refuses it:
+>
+> ```
+> a layer view binds a range of a resource, which a slot cannot express yet;
+> use one state per layer
+> ```
+>
+> So a 36-layer model declares **72 states**, 72 ports, and 72 entries in
+> `Bindings.Buffers`, where the natural count is two. Filed as
+> [accel#9](https://github.com/golang-design/accel/issues/9) and
+> [010 C12](010-conformance.md). The instruction in the refusal is followed
+> rather than worked around, and it is likely subsumed by 043's `Pages` binding:
+> a page table is inherently a ranged view into a larger allocation, so whatever
+> makes `Pages` bindable probably makes a non-zero offset bindable too.
 
 ### 2.2 Paged, after 043
 
@@ -114,6 +123,43 @@ flowchart LR
 
 Only the **last** block of a sequence is partly used, so waste is bounded by
 $B-1$ positions per sequence rather than $C - T$.
+
+## 2.3 The ceiling: 128 positions
+
+`Attention` refuses any cache longer than the decode kernel's workgroup width,
+and that width is **128**:
+
+$$C \le \texttt{AttentionDecodeKernel.WorkgroupSize.X} = 128$$
+
+The check sits above the prefill branch, so it binds prefill too. The kernel
+gives each query head a workgroup and **each lane one cached position**, so
+capacity is part of the launch geometry rather than a loop bound.
+
+**This is the wall, and it is not a cost like the rest of this spec.** A
+128-token context is below the chat template's overhead for a system prompt.
+Every table in §3 describes memory tgo cannot currently allocate, because the
+operator will not accept a $C$ large enough to need it.
+
+Raising the workgroup does not fix it — 1024 lanes buys 1024 positions and is
+still short of any real conversation. The shape has to change to an online
+softmax that loops over positions with a running max and sum:
+
+$$m_i = \max(m_{i-1}, s_i), \quad
+\ell_i = \ell_{i-1}e^{m_{i-1}-m_i} + e^{s_i-m_i}, \quad
+o_i = o_{i-1}e^{m_{i-1}-m_i} + e^{s_i-m_i}v_i$$
+
+so that $C$ leaves the geometry entirely. accel 010 calls this the looping
+variant and does not register it. Filed as
+[accel#8](https://github.com/golang-design/accel/issues/8) and
+[010 C11](010-conformance.md), with a note that accel 007 already specifies a
+fallback — the composed score-`MatMul` / `Softmax` / value-`MatMul` graph, which
+007 calls the correctness reference and which `Contiguous` now makes
+expressible.
+
+**tgo does not build that composition.** It is precisely the route-around that
+[000 D1](000-decisions.md) forbids, accel 007 assigns the choice to `Attention`,
+and a consumer that quietly composes its own attention stops reporting the gap
+that matters most.
 
 ## 3. The number, before and after
 
@@ -203,8 +249,12 @@ one, against the signatures accel has, and rebinds.
   attention output equals a host reference over the same $T+1$ rows. This is
   accel's own `TestPrefillAndDecodeAgree` invariant, one layer up, on a real
   model's shapes.
-- **Layer windows are disjoint.** Writing layer $i$ leaves every byte of layer
-  $j \ne i$ unchanged. §2.1 buys one allocation at the price of this test.
+- **Layer states are independent.** Writing layer $i$ leaves every byte of layer
+  $j \ne i$ unchanged. Trivially true with $2L$ states, and the test stays
+  because it is what would break first if [accel#9](https://github.com/golang-design/accel/issues/9)
+  lands and tgo collapses to one pair.
+- **The capacity ceiling is a named refusal.** Asking for $C > 128$ fails with
+  accel's message and a pointer to C11, rather than as an opaque compile error.
 - **A stale version is refused.** accel guarantees it; tgo depends on it, so the
   test lives here too.
 - **The §3 arithmetic is a function**, and a table test checks it against the
@@ -216,8 +266,10 @@ one, against the signatures accel has, and rebinds.
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
-| 005-D1 | one state pair for the model, `LayerState` per layer | one state per layer | 2 allocations instead of $2L$; windows must be proven disjoint |
+| 005-D1 | ~~one state pair for the model, `LayerState` per layer~~ → **two states per layer, $2L$ total** | the one-pair design | **Amended 2026-08-24, and it was wrong as first written.** `Attention` refuses a layer view outright and says "use one state per layer". 72 states for a 36-layer model. [accel#9](https://github.com/golang-design/accel/issues/9) |
 | 005-D2 | context capacity is a session parameter defaulting to 4096 | the model's `max_position_embeddings` | a 32k default would reserve 9.66 GB before the first token |
 | 005-D3 | print the cache cost when capacity is raised | allocate and fail | the user learns the number when they ask, not from an OOM |
 | 005-D4 | no paging, no f16 cache; both filed upstream | a private page table in tgo | forbidden by [000 D1](000-decisions.md); the arithmetic *was* the filing. **Amended 2026-08-24:** accel 043 §4 and §5 adopt both. tgo still builds neither, because 043 is designed and unbuilt. |
 | 005-D5 | build one cache path against today's signatures and rebind | a paged path behind a flag, switched when 043 lands | 043 §4 makes paging a binding, not a second `State`; two paths would be two code paths for one mechanism |
+| 005-D6 | follow the "use one state per layer" instruction rather than route around it | reshape the cache to hide the refusal | the noise is visible and filed; a hidden workaround would not be |
+| 005-D7 | do not compose attention from primitives to beat the 128 ceiling | build score-MatMul / Softmax / value-MatMul in tgo | forbidden by [000 D1](000-decisions.md); accel 007 assigns the fallback to `Attention`, and composing it here would hide the register's most important row |

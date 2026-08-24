@@ -39,6 +39,8 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C8 | an f32 GEMM (`MatMul` requires f16 operands) | 010, **043 §5** | [#5](https://github.com/golang-design/accel/issues/5) | **designed** | cast before every projection; 7 per layer, 252 dispatches per forward pass |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
 | C10 | importing host memory as a device buffer | 001 | [#7](https://github.com/golang-design/accel/issues/7) | open | copy through a view; every weight copied twice on unified memory |
+| **C11** | **a KV cache longer than 128 positions** | 007, 010 | [#8](https://github.com/golang-design/accel/issues/8) | **open — blocking** | none. `Attention` refuses $C > 128$; see [005 §2.3](005-kv-cache.md) |
+| C12 | binding a `LayerState` view to `Attention` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states, ports and bindings for a 36-layer model |
 
 **States.** `landing` — the signature has changed in accel's tree.
 `designed` — accel
@@ -52,17 +54,35 @@ operator that looks free. The host-side transpose is the right answer, not a
 workaround. It stays in the table because it constrains what tgo can do at graph
 time, which is what this table is for.
 
+**C11 is different in kind from every other row.** The rest are costs — tgo runs
+more slowly, or uses more memory, or emits more dispatches. C11 has no
+workaround and no degraded mode: `Attention` refuses a cache large enough to
+hold a system prompt, so there is no context length at which a model is
+servable. Everything downstream of [011 M6](011-sequencing.md) is gated on it,
+including every number in §3, because a measurement taken at 128 positions
+describes nothing.
+
+It is listed last because it was found last. It is first in priority.
+
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
 
 ### 2.1 What the register is worth so far
 
-Seven reports produced one upstream design decision — accel 043's *a scalar is a
+Nine reports so far. Seven produced one upstream design decision — accel 043's *a scalar is a
 value every row shares; a value that differs per row is a tensor* — which
 removes surface rather than adding it, and which was reached by five of the
 rows above being **the same mistake seen five times**. That is the argument for
 a validating consumer: no single one of C1–C5 looks like a design decision from
 inside accel, and together they are one.
+
+C11 is the second argument, and a different one. It is not a subtle design
+tension — it is a hard refusal with an honest error message, sitting in a
+library whose own tests all pass, because no test inside accel asks for a cache
+longer than a workgroup. **A gap can be fully documented, correctly refused, and
+still invisible, until something tries to do the real job.** That is what a
+validating consumer is for, and it is worth more than the five rows that shared
+one cause.
 
 ## 3. Numbers tgo reports back
 

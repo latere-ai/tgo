@@ -32,7 +32,7 @@ of a broken model.
 | M3 | safetensors + conversion ([001](001-weights.md)) | every §6 refusal is a test; bf16→f16 saturation counted |
 | M4 | `nn` blocks + oracle ([004](004-model-graph.md), [010 §5](010-conformance.md)) | each block matches the f64 oracle within a derived tolerance, both backends |
 | M5 | Qwen3 forward pass | a synthetic 2-layer config produces logits matching the oracle |
-| M6 | KV cache + decode loop ([005](005-kv-cache.md), [007](007-engine.md)) | prefill-then-decode equals token-by-token; padded prefill leaves the cache clean |
+| M6 | KV cache + decode loop ([005](005-kv-cache.md), [007](007-engine.md)) | prefill-then-decode equals token-by-token; padded prefill leaves the cache clean. **Capped at 128 positions until [010 C11](010-conformance.md) closes** |
 | M7 | sampling ([006](006-sampling.md)) | order tests pass; stream reproducibility holds across a policy change |
 | M8 | CLI | `tgo run` generates from a local checkpoint |
 | M9 | server ([009](009-server.md)) | handler suite against the fake engine; one real end-to-end |
@@ -41,6 +41,32 @@ of a broken model.
 
 M11 is the gate in [000](000-decisions.md)'s "what v0 is". Everything before it
 runs on synthetic configs.
+
+### 2.1 What is gated upstream, and what is not
+
+```mermaid
+flowchart LR
+  subgraph free["unblocked — 90% of the coverage gate lives here"]
+    M1["M1 tokenizer"] --> M2["M2 templates"] --> M3["M3 loader"]
+    M3 --> M4["M4 nn + oracle"] --> M5["M5 forward pass"]
+  end
+  M5 --> M6["M6 decode loop<br/>≤128 positions"]
+  M6 --> M7["M7 sampling"] --> M8["M8 CLI"] --> M9["M9 server"]
+  M9 --> M10["M10 report"] --> M11["M11 real weights"]
+  C11["accel#8<br/>128-position cap"] -.blocks.-> M11
+  C11 -.caps.-> M6
+```
+
+M1–M5 are entirely unblocked and are where the work goes now. They are also
+where [000 D8](000-decisions.md) puts the device-free packages, so they carry
+almost all of the coverage gate: a tree that reaches M5 with the gate green is a
+tree whose remaining risk is concentrated in the parts a device decides.
+
+M6 through M10 are *buildable* at 128 positions — the loop, the sampler, the CLI
+and the server all work; they just cannot be pointed at a real conversation. So
+they are not blocked, they are **unmeasurable**: every number in
+[010 §3](010-conformance.md) taken at 128 positions describes nothing. M11 is
+blocked outright.
 
 ## 3. What is deliberately not in v0
 
@@ -59,4 +85,31 @@ Appended as each milestone lands: what shipped, what deviated from the spec and
 why, and for M11 the checkpoint, the date, and the
 [010 §3](010-conformance.md) numbers.
 
-*(No entries yet. M0 in progress.)*
+### 2026-08-24 — M0
+
+Module, CI, and the spec tree. CI mirrors accel's gates — build, vet, test,
+race, cgo-free, cross-compile, gofmt — with two additions: a **per-package**
+coverage floor rather than a repository average, and `speclint`, which checks
+frontmatter shape, that dependency edges resolve, that the tree is acyclic, that
+a `blocked` spec names what blocks it, that every spec carries a decision
+record, and that the index cannot go stale.
+
+**Deviation from plan:** none in scope, but the tree was written twice. It was
+first written against accel's signatures as they stood, and then reconciled
+against accel
+[043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md),
+which landed mid-drafting in answer to seven reports tgo filed. Five register
+rows changed state in one commit.
+
+**Findings, which are the actual output of M0:** nine issues on accel. Seven
+before the reconciliation, two after — and the two found last are the ones that
+matter most. [accel#8](https://github.com/golang-design/accel/issues/8) caps the
+KV cache at 128 positions, which is the only finding so far with no workaround.
+[accel#9](https://github.com/golang-design/accel/issues/9) refuses a
+`LayerState` view, which corrected a decision this tree had already recorded
+([005-D1](005-kv-cache.md)).
+
+That last point is worth keeping. **A spec written against a library's
+documentation was wrong about that library within a day.** Reading the
+signatures is not the same as reading the refusals, and the refusals are where
+the design actually lives.

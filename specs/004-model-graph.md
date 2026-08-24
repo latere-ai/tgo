@@ -86,11 +86,22 @@ $$\begin{pmatrix} x'_{2i} \\ x'_{2i+1}\end{pmatrix} =
 
 with $m$ the absolute position and base $10^6$ for Qwen3.
 
-`tensor.RoPE(b, x, rotaryDim, baseName, offsetName)` takes the base and the
-offset as **scalars**, and computes the position as `row + Offset`. For a single
-sequence that is exactly right: prefill rows are positions $0..T-1$, and a
-decode step is one row at offset $t$. **It is wrong for a batch**, and that is
-gap 2 of [008](008-scheduler.md).
+`tensor.RoPE(b, x, rotaryDim, baseName, positions *Tensor)` takes the base as a
+scalar — a model constant every row shares — and the **position as a u32 tensor,
+one entry per row**. A prefill binds $[0..T-1]$; a decode binds $[t]$.
+
+> This signature is one day old. It took a scalar `Offset` and computed
+> `row + Offset`, which is exactly right for one sequence and silently wrong for
+> a batch: the row index is the *slot*, so only one member rotates at its own
+> cache length. tgo filed it as
+> [accel#2](https://github.com/golang-design/accel/issues/2); accel
+> [043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
+> generalised it into one rule — *a scalar is a value every row shares; a value
+> that differs per row is a tensor* — and changed the operator.
+>
+> The consequence for tgo is that **there is no batched RoPE to write later**.
+> The one-row tensor a single sequence binds is the same mechanism, which is
+> 043 §3's orthogonality test.
 
 ## 3. The forward pass
 

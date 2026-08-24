@@ -259,3 +259,16 @@ conformance suite that reports what accel cannot yet do.
 **Done means:** a Qwen3 dense checkpoint produces coherent text at both f16 and
 int8, on both backends, with the tokenizer round-tripping and the chat template
 matching the reference byte for byte.
+
+> **v0 is gated upstream, as of 2026-08-24.** `tensor.Attention` refuses a KV
+> cache longer than **128 positions** — the decode kernel's workgroup width —
+> and the check binds prefill too. A 128-token context is shorter than a system
+> prompt, so "done" as stated above is currently unreachable for reasons that
+> are entirely in accel. It is [010 C11](010-conformance.md) and
+> [accel#8](https://github.com/golang-design/accel/issues/8).
+>
+> Everything before [011 M6](011-sequencing.md) — the tokenizer, templates, the
+> loader, the `nn` blocks, the oracle, the forward pass on synthetic configs —
+> is unaffected and is where the work goes meanwhile. That is not a
+> consolation: those are the milestones that carry the coverage gate, and they
+> are what makes the eventual end-to-end run a measurement rather than a demo.

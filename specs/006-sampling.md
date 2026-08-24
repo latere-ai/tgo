@@ -13,7 +13,10 @@ depends_on:
 
 accel 028 puts argmax, categorical sampling and top-k/top-p truncation on the
 device, with the random draw as an **input**. accel 039 specifies temperature,
-penalties and composition order and is **drafted, not built**.
+penalties and composition order and is **drafted, not built**. accel 043 §4
+moves the draw from a scalar to a per-row tensor, which tgo asked for in
+[accel#3](https://github.com/golang-design/accel/issues/3) and which matters
+only once there is a batch — but see §3 for the part that matters now.
 
 So the split for v0:
 
@@ -39,6 +42,12 @@ $$\ell \xrightarrow{\text{penalties}} \ell' \xrightarrow{\;/T\;} \ell'' \xrighta
   trims within it. The reverse lets $p$ admit more than $k$.
 - **$T = 0$ means greedy**, not division by zero. It is a distinct branch, and
   it is the branch that must be bit-exact.
+
+> The order above is now recorded upstream too: accel 043 §6 adopts it verbatim
+> into [039](https://github.com/golang-design/accel/blob/main/specs/039-sampling-policy.md)'s
+> scope, on the grounds that it is documentation rather than code. When 039 is
+> built, this section stops being tgo's design and becomes tgo's reference
+> implementation of accel's.
 
 Repetition penalty applies to tokens in the window $[t-W, t)$ over both prompt
 and generated tokens, dividing positive logits and multiplying negative ones —
