@@ -146,6 +146,52 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-24 — Wave 2 shipped, and the target checkpoint corrected a spec
+
+`weights`, `nn`, `internal/oracle` and `model`. Nine packages now, every gate
+green including `-race`, and the coverage floor measures all nine: `bench`,
+`chat`, `internal/oracle`, `model` and `nn` at 100.0%, `tokenizer` 99.1%,
+`speclint` 98.0%, `safetensors` 97.7%, `weights` 93.7%.
+
+**The real checkpoint loads.** Qwen3-0.6B onto an accel device: *311 tensors,
+0.75e9 parameters, 1.40 GiB resident at f16*.
+
+**A spec was wrong, and the checkpoint is what proved it.**
+[004 §4](004-model-graph.md) said a checkpoint that is tied *and* ships an
+`lm_head.weight` is a contradiction to refuse. Qwen3-0.6B does exactly that —
+and both planes hash to `8f29acf5…` over their full 311 MB. The rule refused the
+model tgo exists to run.
+
+Corrected as [004-D10](004-model-graph.md): **redundancy is not a
+contradiction.** Identical planes load; differing planes are the real
+contradiction and stay refused; and because a safetensors header carries shapes
+and shapes cannot tell the two apart, the comparison takes a
+`WithPlaneComparator` and belongs to whoever holds the file. Writing the test
+then exposed the second half — an accepted alias was still reported as a tensor
+the map does not name.
+
+**What the review pass earned this time**, all found by mutation rather than by
+reading:
+
+- `model`: forty-five mutants, **twelve survived**, from one root cause — the
+  synthetic fixture had `d = H_kv·d_h` and `V = f`, so six wrong weight maps
+  passed. Renumbered so no two dimensions collide, and the fixture now documents
+  the rule.
+- `weights`: every f16 test used `head_dim = 2`, where the rotary permutation
+  **is the identity** — so the whole f16 path's permutation rested on a single
+  int8 test. Widened to 8, with a degeneracy floor that fails if the expectation
+  stops being sensitive to the permutation.
+- `internal/oracle`: `mustPanic` accepted *any* panic, so nine deleted guards
+  still "passed" by panicking one statement later out of a slice bound. Now
+  asserts the message.
+- `oracle` also settled a question the implementer left open, by reading accel's
+  kernel: RoPE's theta divides by `rotaryDim`, not by the row width. Dividing by
+  width would put the oracle out of parity with the device on every partial
+  rotation — which is exactly what Qwen3.8-27B's `partial_rotary_factor` needs.
+
+**Wave 3 next**: the Qwen3 forward pass, the KV cache and the decode loop —
+[§2.2](#22-waves)'s one sequential chain.
+
 ### 2026-08-24 — Wave 1 shipped, Wave 2 started
 
 **Verdict at the start of the wave: build.** [§2](#2-readiness-build-now-and-what-the-targets-actually-are)

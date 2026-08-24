@@ -386,8 +386,22 @@ table transposed. Two consequences:
   not on the device. Both may now be **f16** ([C14](010-conformance.md)), so the
   tie costs 2× the file tensor rather than the 3× it would have when
   `GatherRows` demanded f32;
-- a checkpoint that is tied *and* ships an `lm_head.weight` is a contradiction.
-  The loader refuses rather than picking one.
+- a checkpoint that is tied *and* ships an `lm_head.weight` needs the two planes
+  compared, and **redundancy is not a contradiction**:
+
+  | planes | verdict |
+  | --- | --- |
+  | byte-identical | **accept.** The exporter wrote the head out as well; the config and the weights agree. Load either |
+  | differ | **refuse.** The config says the head is the embedding and the weights say it is not, and picking one is a guess about which the model was trained with |
+  | no `lm_head.weight` | accept; the head is the embedding transposed |
+
+  > **This rule was wrong when first written**, and the target checkpoint is what
+  > proved it. An earlier draft refused *any* tied checkpoint that also shipped a
+  > head. Qwen3-0.6B does exactly that, and its two planes hash identically
+  > (`8f29acf5…`, verified over both 311 MB ranges) — so the rule refused the
+  > model tgo exists to run. Shapes alone cannot tell the two cases apart, which
+  > is why the comparison is on bytes and belongs to the loader rather than to
+  > the header check.
 
 > That first point corrects a natural assumption. "Tied" does not mean one
 > device buffer here — it means one *source* tensor. Sharing one buffer would
@@ -489,5 +503,6 @@ weights, on both backends, against the [010 §5](010-conformance.md) oracle:
 | 004-D5 | fused kernels keep their composed form as the reference | fused only | a fusion bug is a test failure, not a silent quality loss |
 | 004-D6 | `nn.Operand` carries f16-or-quantized, resolved once | branch on precision at each projection | one `Linear` call site; precision is a load-time decision, not a graph one |
 | 004-D7 | a tied head uploads two planes | share one buffer | the two layouts differ; sharing needs [C9](010-conformance.md), which accel correctly refuses |
+| 004-D10 | tied **and** shipped is refused only when the planes differ | refuse on the config/tensor mismatch alone | the first rule refused Qwen3-0.6B, which is tied, ships a head, and has identical planes. A header check cannot decide it, so the comparison is the loader's ([§4](#4-the-weight-map)) |
 | 004-D8 | shapes in this spec are symbolic; values come from `config.json` | hardcode a size's constants | a spec cannot go stale against a checkpoint it does not contain |
 | 004-D9 | permute q/k projection output channels and the QK-norm gains at load, after transpose and before quantization | ask accel for a NeoX RoPE; permute on device each step | accel is interleaved and Qwen3 is half-split; nothing refuses the mismatch. A load-time byte layout is tgo's to own and costs nothing per step ([§2.5.2](#252-the-fix-is-a-load-time-permutation-and-its-order-is-forced)) |
