@@ -29,37 +29,50 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 
 | # | what tgo cannot do | accel spec | filed | state | workaround, and what it costs |
 | --- | --- | --- | --- | --- | --- |
-| C1 | batched attention from `tensor` | 010, 030, **043** | [#1](https://github.com/golang-design/accel/issues/1) | **designed** | one sequence per submission; throughput is $1/B$ of the hardware ([008 §1](008-scheduler.md)) |
-| C2 | RoPE at per-row positions | 025, **043** | [#2](https://github.com/golang-design/accel/issues/2) | **landed** | none needed; `RoPE(…, positions *Tensor)` is upstream |
-| C3 | independent per-slot sampling draws | 028, 039, **043** | [#3](https://github.com/golang-design/accel/issues/3) | **landed in the corpus, not in `tensor`** | host sampling, one sequence. The per-row kernels exist; no exported operator binds a draws tensor |
-| C4 | a paged KV cache (`pagetable` is internal) | 030, **043** | [#1](https://github.com/golang-design/accel/issues/1) | **designed** | contiguous per session; **322×** the memory for ten short chats ([005 §3](005-kv-cache.md)) |
-| C5 | an f16 KV cache (`Attention` requires f32) | 007, 010, **043 §5** | [#4](https://github.com/golang-design/accel/issues/4) | **landed** | none needed; `Attention` accepts an f16 cache. Halves the number in [005 §3](005-kv-cache.md) |
-| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | open | host; a 608 KB logits readback per token |
-| C7 | bf16 arithmetic (storage exists, no operator reads it) | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | open | convert to f16 at load; the one inexact step in the pipeline ([001 §3](001-weights.md)) |
-| C8 | an f32 GEMM (`MatMul` requires f16 operands) | 010, **043 §5** | [#5](https://github.com/golang-design/accel/issues/5) | **designed** | cast before every projection; 7 per layer, 252 dispatches per forward pass |
+| C1 | a **batched** decode (B sequences, one token each) | 040, 043 | [#1](https://github.com/golang-design/accel/issues/1) | open | one sequence per submission. `q`'s rank is the *phase* — rank 3 is a prefill — so a batch axis has nowhere to go |
+| C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
+| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | open | host sampling. The per-row kernels landed in the corpus; `tensor` exports no sampling operator at all |
+| C4 | a paged KV cache | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed; `AttentionOptions.Pages` + `Block` |
+| C5 | an f16 KV cache | 007, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **closed** | none needed; halves the cache |
+| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | open | host, before submission; a 608 KB logits readback per token |
+| C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | open | convert on the host at load; [001 §3](001-weights.md) |
+| C8 | **f32 activations against f16 or int8 weights** | 010 | [#5](https://github.com/golang-design/accel/issues/5) | open, narrowed | `Cast` before every projection: 7 per layer, 252 per forward pass |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
-| C10 | importing host memory as a device buffer | 001 | [#7](https://github.com/golang-design/accel/issues/7) | open | copy through a view; every weight copied twice on unified memory |
-| **C11** | **a KV cache longer than 128 positions** | 007, 010, **044** | [#8](https://github.com/golang-design/accel/issues/8) | **designed — blocking** | none. `Attention` refuses $C > 128$; see [005 §2.3](005-kv-cache.md) |
-| C12 | binding a `LayerState` view to `Attention` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states, ports and bindings for a 36-layer model |
+| C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed, differently** | none needed; `Buffer.Access` writes converted bytes straight into device memory |
+| **C11** | **a KV cache longer than 128 positions** | 007, 010, **044** | [#8](https://github.com/golang-design/accel/issues/8) | **open — blocking** | none |
+| C12 | binding a `LayerState` view to `Attention` or `ScatterRows` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states for 36 layers. Layer 0 works; every layer at a non-zero offset is refused |
 
-**This table is a dated snapshot and accel is moving under it fast.** Within one
-day of filing: `RoPE` changed signature, per-row sampling and argmax landed in
-the corpus, `Attention` accepted an f16 cache, and
-[044](https://github.com/golang-design/accel/blob/main/specs/044-unbounded-context.md)
-was written for C11. Three rows went from `open` to `landed` while this file was
-being edited.
+**This table is a dated snapshot and accel is moving under it fast.** Within a
+day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
+accepted an f16 cache and a page table, and `Buffer.Access` removed the host
+copy. As of **2026-08-24**.
 
-The states below are as of **2026-08-24**. They are hand-maintained and will go
-stale; the tests are what will say what is true, which is
-[010-D1](#decision-record) and why [010-D6](#decision-record) generates this
-table at M10.
+### How a row's state is decided
 
-**A row is `landed` when accel's exported surface does the thing.** C3 is the
-row that shows why the distinction is worth keeping: the per-row sampling
-*kernels* landed, and no exported `tensor` operator binds a draws tensor, so
-nothing about what tgo can write has changed.
+**By a probe, not by a commit message.** These states were re-derived by
+recording the graph tgo intends to build against the accel that is checked out
+and reading what it refuses. That is not ceremony — it changed three verdicts
+that reading commits had got wrong:
 
-**States.** `landed` — accel's exported surface does it.
+- **C8 looked closed and is not.** `MatMul` gained f32 operands, but it requires
+  the two operands to *share* a dtype. A transformer's activations are f32 and
+  its weights are f16 or int8, because a 4B model is 16 GB in f32. So f32
+  operands remove the casts only for a model that stores f32 weights, which is
+  the one configuration nobody runs. The row is narrowed to what would actually
+  close it: a **mixed** GEMM.
+- **C1 looked closed and is half closed.** Paging landed; batching did not.
+  `q`'s rank is the phase, so a batch axis is read as a prefill and refused for
+  a missing `BaseName`.
+- **C10 closed by a different answer than the one asked for.** The request was a
+  buffer *over* caller memory; accel pointed the problem the other way with
+  `Buffer.Access`, which needs no lifetime promise. Better than the ask, and
+  invisible from the issue title.
+
+This is [010-D1](#decision-record) in miniature, and it is why
+[010-D6](#decision-record) generates the table at M10.
+
+**States.** `closed` — accel's exported surface does the thing, verified by the
+probe. `open` — it does not. `won't fix, correctly` — see below.
 `designed` — accel
 [043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
 specifies it and the code does not do it yet. `open` — filed, not yet designed.
@@ -93,7 +106,14 @@ rows above being **the same mistake seen five times**. That is the argument for
 a validating consumer: no single one of C1–C5 looks like a design decision from
 inside accel, and together they are one.
 
-C11 is the second argument, and a different one. It is not a subtle design
+The second argument is C8, and it is about the difference between a report being
+**accepted** and a cost being **removed**. accel took the argument, relaxed the
+refusal, and the 252 casts are still there — because the report named the
+symptom (*f16-only*) rather than the shape (*mixed precision*). A consumer that
+stops measuring once a fix lands reports a win that did not happen. The
+follow-up is on the same issue, with the probe output in it.
+
+C11 is the third, and a different kind again. It is not a subtle design
 tension — it is a hard refusal with an honest error message, sitting in a
 library whose own tests all pass, because no test inside accel asks for a cache
 longer than a workgroup. **A gap can be fully documented, correctly refused, and
