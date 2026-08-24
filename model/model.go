@@ -19,11 +19,12 @@
 //     run through a generic path, because a model run with the wrong
 //     architecture produces fluent wrong text and nobody finds out (004-D2).
 //
-// The forward pass is not here. specs/004-model-graph.md §6 states it as a
-// fourth [Builder] method, Forward(g *nn.Graph, in Inputs) *tensor.Tensor, and
-// it is the one row of §6 this package does not yet carry. The blocks it would
-// call now exist in tgo/nn; adding it extends [Builder] with one method and
-// changes nothing else here.
+// The forward pass is here too, as §6's fourth [Builder] method. It arrived
+// with the graph: [Declare] records §3's ports, scalars and cache states,
+// [Builder.Forward] records the nodes of §3's table, and [Record] is the two
+// in one call. Declaring the method makes this package import tgo/nn, and so
+// accel's tensor layer, which is the cost of having the registry and the graph
+// agree on one weight-port name (§4's Port column is what both read).
 package model
 
 import (
@@ -35,7 +36,10 @@ import (
 	"strings"
 	"sync"
 
+	"golang.design/x/accel/tensor"
+
 	"github.com/latere-ai/tgo/chat"
+	"github.com/latere-ai/tgo/nn"
 )
 
 // configName is the file Open reads. A checkpoint directory always has one; a
@@ -43,14 +47,10 @@ import (
 const configName = "config.json"
 
 // Builder is what one architecture contributes: the parsed config, the weight
-// map that config implies, and the prompt format the model was tuned on.
+// map that config implies, the forward pass, and the prompt format the model
+// was tuned on.
 //
-// specs/004-model-graph.md §6 states a fourth method,
-// Forward(g *nn.Graph, in Inputs) *tensor.Tensor, which this interface does not
-// yet declare. Declaring it would make model import nn, and nn imports accel's
-// tensor layer, so the registry — which a caller uses to ask what a directory
-// claims to be — would pull in a device-facing dependency to answer a question
-// about config.json. It is added with the forward pass itself.
+// specs/004-model-graph.md §6: adding a model is one file and one init.
 type Builder interface {
 	// Config is the parsed config.json. Fields a specific architecture adds
 	// beyond §5's table are reachable through the concrete builder type.
@@ -59,6 +59,15 @@ type Builder interface {
 	// Weights is the weight map for this config: specs/004-model-graph.md §4,
 	// with the layer templating expanded and the shapes filled in.
 	Weights() []WeightSpec
+
+	// Forward records the forward pass on g, reading the ports in, and
+	// returns the last position's logits, [1, vocab] f32
+	// (specs/004-model-graph.md §3).
+	//
+	// It records no output and binds no buffer: the ports are [Declare]'s and
+	// the values are the caller's. A step whose ports do not describe this
+	// config returns nil and leaves the reason on g.
+	Forward(g *nn.Graph, in Inputs) *tensor.Tensor
 
 	// Template renders a conversation into the exact prompt bytes this model
 	// was trained on (specs/003-chat-template.md).

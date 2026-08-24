@@ -39,6 +39,20 @@ const threshold = 90.0
 var exempt = map[string]string{
 	"internal/covercheck": "this program; it gates coverage and is not gated by it",
 	"cmd/tgo":             "argument parsing and process wiring; the packages under it carry the logic",
+
+	// The tier rule's *decisions* are fully covered -- decide() is a pure
+	// function of availability precisely so every branch is testable on a
+	// machine that has neither a Metal device nor a checkpoint. What is not
+	// covered is the handful of statements that ACT on those decisions:
+	// opening a Metal device, failing when one was promised and is absent,
+	// and reporting a device-open error. Reaching them needs a machine with
+	// Metal (ci-metal.yml has one; this gate does not) or a deliberately
+	// broken device. Exempted rather than faked, because a mock device here
+	// would cover the statements and prove nothing about accel.
+	//
+	// specs/010-conformance.md §4. Revisit if the package grows logic that is
+	// not tier plumbing.
+	"internal/conformance": "device-open and Metal-present branches, unreachable without a Metal device; the tier decisions they act on are pure and fully covered",
 }
 
 // block is one coverage record: a statement range and how often it ran.
