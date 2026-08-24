@@ -148,7 +148,7 @@ with $m$ the token's absolute position.
 `tensor.RoPE(b, x, rotaryDim, baseName, positions *Tensor)` takes the base as a
 scalar — a model constant every row shares — and the **position as a u32 tensor,
 one entry per row**. It refuses a positions tensor whose length is not the row
-count.
+count. Landed upstream and verified by probe.
 
 Since `x` is reshaped to `[rows, d_h]` with `rows = T·H`, the positions tensor
 repeats each token's position $H$ times:
@@ -223,6 +223,14 @@ Roughly $22L + 7$ nodes: **799** for a 36-layer model. Seven of the per-layer
 nodes are `Cast` (rows 5, 17, 20, 23 and the two inside `Linear`'s quantized
 form), which is [010 C8](010-conformance.md) — 252 dispatches per forward pass
 existing only to satisfy a dtype check.
+
+> **Those casts did not go away when `MatMul` gained f32 operands.** `MatMul`
+> requires its two operands to share a dtype, and this model's weights are f16
+> or int8 while its activations are f32. Dropping the casts would mean f32
+> weights, which doubles the model's footprint and, at $M=1$, loses the
+> matrix-vector kernel — so decode would take the tiled GEMM with seven of eight
+> rows idle. The table above is what tgo records at every precision anyone
+> actually runs. See [010 §2.1](010-conformance.md).
 
 ### 3.1 Decode is the same graph at $T = 1$
 
