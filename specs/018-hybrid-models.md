@@ -109,6 +109,50 @@ The full-attention quarter needs nothing new:
 - `head_dim: 256` with $d/H = 213$ — a case [004 §5](004-model-graph.md) already
   refuses to infer, and reads from the config instead.
 
+## 4.1 The depthwise convolution composes, and was checked
+
+`linear_conv_kernel_dim: 4` needs no kernel. Built against accel and run:
+
+```
+COMPILES: 14 selections
+max |device - reference| = 6.217e-08
+```
+
+as $K$ shifted windows over a **left-padded** input, each scaled by its tap row
+and summed — `Contiguous(Slice(x, 0, K-1-i, T+K-1-i))` times a broadcast
+`[1, C]` weight, accumulated. The left pad makes causality **structural**: no
+operator needs to know the convolution is causal.
+
+**Cost, stated honestly:** 14 dispatches for what one kernel would do, plus
+$K-1$ packing copies of a `[T, C]` tensor per layer. Across 48 linear layers
+that is real. So this is one less kernel to be *blocked on*, not one less kernel
+to *want*.
+
+## 4.2 What a recurrent state needs, which is not what a cache needs
+
+accel's answer to [#17](https://github.com/golang-design/accel/issues/17)
+identified something this spec had only gestured at: `State` conflates a
+per-**position** cache with a per-**sequence** recurrent state, and that is a
+type distinction the library has no name for. accel recorded that if the
+operator is built, **the state distinction is made first**.
+
+What tgo needs from a recurrent state, in order:
+
+| operation | analogue today |
+| --- | --- |
+| **carry** across submissions — a decode step is one submission per token, so the state must survive from $t$ to $t+1$ | `State` does this |
+| **snapshot** a sequence's state somewhere it can be kept | **none** |
+| **restore** a snapshot into a slot | **none** |
+| index at a position | **never** — there is nothing at a position |
+
+Snapshot and restore are **copy-shaped**; everything a KV cache does is
+**address-shaped**. That is the cleanest statement of why they are two types.
+
+It also settles [016 §10.1](016-prefix-cache.md)'s open question: prefix reuse
+over a recurrent layer *is* ollama's snapshot-and-restore, and tgo would need
+both mechanisms, chosen per layer — 16 paged KV layers beside 48 snapshotted
+recurrent ones **in one forward pass**, not two models.
+
 ## 5. What tgo does now
 
 Nothing. This spec is `blocked` on
@@ -140,6 +184,7 @@ legitimate and this spec becomes `deferred` with the reason — the same shape
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
 | 018-D1 | Qwen3.8-27B is out of v0, and said so publicly | list it as a target and hope | 48 of 64 layers are inexpressible; implying otherwise is the overclaiming this tree exists to avoid |
-| 018-D2 | file the operator as a question, not a proposal | propose a kernel shape | tgo does not know accel's kernel constraints; #17 asks whether it is in scope first |
+| 018-D2 | file the operator as a question, not a proposal | propose a kernel shape | tgo does not know accel's kernel constraints; #17 asked whether it is in scope first. **Outcome:** accel answered *in scope, recorded, not scheduled*, and found a deeper problem tgo could not see — that `State` conflates two types ([§4.2](#42-what-a-recurrent-state-needs-which-is-not-what-a-cache-needs)) |
+| 018-D5 | check what composes before asking for a kernel | ask for the convolution too | the depthwise causal convolution composes today ([§4.1](#41-the-depthwise-convolution-composes-and-was-checked)), so the ask is one kernel rather than two |
 | 018-D3 | a hybrid cache is per layer *type*, not one shape | force the recurrent state into `State`'s per-position model | a recurrent state has one value per sequence and no positions to index |
 | 018-D4 | record that ollama's snapshot design is forced here | keep treating it as a workload difference | [016 §10.1](016-prefix-cache.md) read it as a choice about concurrency; for a recurrent layer it is the only option |
