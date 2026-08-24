@@ -27,21 +27,30 @@ The suite prints them as a table. The table is the deliverable.
 Each entry: what tgo wanted, which accel spec owns it, what tgo does instead,
 and what that costs. Kept in sync with the skipping tests, one per row.
 
-| # | what tgo cannot do | accel spec | workaround | cost |
-| --- | --- | --- | --- | --- |
-| C1 | batched paged attention from `tensor` | 010, 030 | one sequence per submission | no batching at all; throughput is 1/N of what the hardware gives |
-| C2 | RoPE at per-row positions | 010, 025 | scalar offset, single sequence | blocks C1 even once C1 exists |
-| C3 | independent per-slot sampling draws | 028, 039 | host sampling, one sequence | blocks C1 |
-| C4 | a paged KV cache (`pagetable` is internal) | 030 | one contiguous state per session | capacity reserved for the longest sequence; see [005 §2](005-kv-cache.md) |
-| C5 | an f16 KV cache (`Attention` requires f32) | 007, 010 | f32 | 2× the cache memory; 1.2 GB at 4k context for Qwen3-4B |
-| C6 | penalties and temperature on device | 039 | host, before submission | a full $V$-wide logits readback per step |
-| C7 | bf16 arithmetic (storage exists, no operator reads it) | 002, 010 | convert to f16 at load | see [001 §3](001-weights.md) overflow rule |
-| C8 | an f32 GEMM (`MatMul` requires f16 operands) | 010 | cast activations per projection | one extra pass over the activations per projection |
-| C9 | a strided view into `MatMul` | 025 | host-side transpose at load | [001 §4](001-weights.md); correct, but forecloses runtime reshaping |
-| C10 | importing host memory as a device buffer without a copy | 001 | copy through a view | peak host memory is one shard plus one tensor |
+Every row is filed upstream. The issue number is part of the row, so a reader
+can follow the argument rather than take the cost on trust.
+
+| # | what tgo cannot do | accel spec | filed | workaround | cost |
+| --- | --- | --- | --- | --- | --- |
+| C1 | batched paged attention from `tensor` | 010, 030 | [#1](https://github.com/golang-design/accel/issues/1) | one sequence per submission | no batching at all |
+| C2 | RoPE at per-row positions | 010, 025 | [#2](https://github.com/golang-design/accel/issues/2) | scalar offset, single sequence | blocks C1 even once C1 exists |
+| C3 | independent per-slot sampling draws | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | host sampling, one sequence | blocks C1 |
+| C4 | a paged KV cache (`pagetable` is internal) | 030 | [#1](https://github.com/golang-design/accel/issues/1) | one contiguous state per session | capacity reserved for the longest sequence; [005 §2](005-kv-cache.md) |
+| C5 | an f16 KV cache (`Attention` requires f32) | 007, 010 | [#4](https://github.com/golang-design/accel/issues/4) | f32 | 2× the cache; 1.21 GB at 4k context for Qwen3-4B |
+| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | host, before submission | a 608 KB logits readback per token |
+| C7 | bf16 arithmetic (storage exists, no operator reads it) | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | convert to f16 at load | the one inexact conversion in the pipeline; [001 §3](001-weights.md) |
+| C8 | an f32 GEMM (`MatMul` requires f16 operands) | 010 | [#5](https://github.com/golang-design/accel/issues/5) | cast before every projection | 7 casts per layer, 252 dispatches for a 36-layer model |
+| C9 | a strided view into `MatMul` | 025 | — | host-side transpose at load | [001 §4](001-weights.md); correct, and forecloses runtime reshaping |
+| C10 | importing host memory as a device buffer | 001 | [#7](https://github.com/golang-design/accel/issues/7) | copy through a view | every weight copied twice on unified memory |
+
+C9 is not filed: accel's refusal there is the *correct* one — a silently copied
+strided view would hide a real cost — and the host-side transpose is the right
+answer, not a workaround. It stays in the table because it constrains what tgo
+can do at graph time, which is what this table is for.
 
 **A row leaves this table only when its test stops skipping.** Nothing is
-removed because it was worked around.
+removed because it was worked around, and nothing is removed because an issue
+was closed.
 
 ## 3. Numbers tgo reports back
 
