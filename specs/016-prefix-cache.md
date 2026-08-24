@@ -94,6 +94,24 @@ different $h_i$ there, because their $h_{i-1}$ differ. Without the chain they
 would collide and the second request would silently attend to the first's
 context.
 
+### 3.1 The hash is a security boundary, so $H$ is not free choice
+
+A hash collision here does not corrupt data — it hands one request **another
+request's KV**, and the output stays fluent. So $H$ must be chosen adversarially,
+not for speed:
+
+- **$H$ is SHA-256**, and the chain input includes the salt of §7.
+- A fast non-cryptographic hash is permitted **only with a per-process random
+  seed**, because a predictable one lets an attacker compute a colliding block
+  offline and then submit a prompt that reads somebody else's cache. vLLM hit
+  exactly this ([vllm#12621](https://github.com/vllm-project/vllm/issues/12621))
+  and now keeps a per-process seed for non-cryptographic algorithms while
+  deriving a fixed one for SHA-256, so that separate processes can share a cache
+  without weakening collision resistance.
+
+tgo takes the same split and the same reasoning. The earlier draft of this spec
+wrote $H$ and said nothing about it, which is how the property gets lost.
+
 ## 4. The structure: a hash map, not a trie
 
 vLLM hashes chained blocks into a map; sglang keeps a radix trie of token
@@ -173,8 +191,30 @@ prompts.
 This is not hypothetical and it is not specific to tgo; it is inherent to
 cross-request KV reuse, and most published inference stacks share by default.
 
-The decision: **the cache is scoped, and the default scope is the process, with
-an explicit knob.** [009 §7](009-server.md) says tgo serves one model with no
+### 7.1 Two mechanisms, and tgo takes both
+
+vLLM and sglang both solve this with a **caller-supplied `cache_salt`**: an
+opaque string mixed into the first block's hash, which the chain then propagates
+to every block after it. Blocks match only within the same salt.
+
+That is more expressive than a server-side scope and it is the right primitive
+for the layer that knows who the caller is — a gateway can salt by tenant id,
+which tgo cannot do because [009 §7](009-server.md) says tgo has no notion of a
+tenant. But it **fails open**: a caller who sets no salt shares globally, so the
+default is the unsafe one.
+
+So tgo takes both, and they compose:
+
+- **`cache_salt`** on the request, mixed into $h_0$ exactly as vLLM does. The
+  layer with tenant identity supplies it.
+- **scope** on the server, which bounds what a *missing* salt can reach.
+
+The scope is what makes the default safe; the salt is what makes it precise.
+Neither alone is enough: a scope cannot express "these two sessions are the same
+customer", and a salt cannot protect a caller who forgot it.
+
+**The decision: the cache is scoped, the default scope is the process, and a
+request may narrow further with a salt.** [009 §7](009-server.md) says tgo serves one model with no
 authentication and no tenancy — so within one tgo process there is no tenant
 boundary to cross, and sharing is correct. The moment something in front of it
 multiplexes users, the operator must scope the cache, and tgo makes that
@@ -243,7 +283,60 @@ design is buildable and the benefit is zero until C11 closes**, which is the
 same sentence as [005 §2.3](005-kv-cache.md) and the reason C11 is first in
 priority.
 
-## 10. What this is not
+## 10. Against vLLM and sglang
+
+Read from their source rather than from their papers, at the versions checked
+out on 2026-08-24.
+
+| | vLLM | sglang | tgo |
+| --- | --- | --- | --- |
+| structure | chained block hashes → map | radix trie of token sequences | chained block hashes → map |
+| chained hash | yes | yes | yes |
+| granularity | block-aligned | page-aligned | block-aligned |
+| refcount | yes | `lock_ref` per node | yes |
+| eviction | LRU over unreferenced blocks | pluggable — LRU, LFU — over a heap of evictable **leaves** | LRU over unreferenced blocks |
+| isolation | `cache_salt` per request | `cache_salt` per request | **salt *and* server scope** |
+| batch-shape determinism | opt-in `VLLM_BATCH_INVARIANT`, beta, needs SM 8.0+ | — | measured, not eliminated |
+| preemption | recompute | retract (recompute) | recompute |
+
+**Where tgo agrees, it agrees for the same reasons**, and that is worth saying:
+chaining, block alignment, refcounting and recompute-over-swap are not
+independent inventions here. Two mature systems converged on them, and a design
+that differed would need an argument this one does not have.
+
+**Where it differs, three times:**
+
+1. **Map over trie.** sglang's trie earns its complexity by answering "what
+   shares this prefix", which a scheduler wants. Its cost is visible in its own
+   eviction: the heap must re-examine a parent when its last child is freed
+   (`if len(x.parent.children) == 0 and x.parent.lock_ref == 0`), because
+   interior nodes are entangled. vLLM chose the map and tgo follows.
+   [016-D3](#decision-record) records the trie as the answer if
+   [008](008-scheduler.md) ever needs the query.
+
+2. **Isolation defaults.** Both of them make isolation a caller's job and share
+   globally when the caller says nothing. tgo adds a server scope *underneath*
+   the salt, so the unsafe case requires a decision rather than an omission
+   ([§7.1](#71-two-mechanisms-and-tgo-takes-both)). This is the one place tgo
+   thinks the prior art has the default the wrong way round.
+
+3. **Batch-shape determinism.** vLLM built a batch-invariant mode to *eliminate*
+   the divergence a cache hit introduces. tgo **measures** it instead
+   ([§6](#6-correctness-two-subtleties-one-of-which-is-real)). Not because
+   measuring is better — invariance is strictly more useful — but because
+   vLLM's mode is beta, hardware-gated, and costs performance, and tgo has no
+   basis for a bound it has not taken. If accel later offers reduction-order
+   guarantees, this becomes a real option rather than an aspiration.
+
+**What tgo does not have that both of them do**: multimodal and LoRA identity in
+the hash key. vLLM mixes image hashes and the LoRA id into `extra_keys` for the
+obvious reason — the same tokens under a different adapter are different KV.
+tgo has neither feature, and [004-D2](004-model-graph.md) makes both additive.
+**Recorded here so that whoever adds one remembers this key exists**, because
+forgetting it is silent: an adapter's KV would be served to a request that did
+not ask for it.
+
+## 11. What this is not
 
 **Not Anthropic's `cache_control`.** That is an explicit, caller-declared
 breakpoint. tgo's caching is automatic and needs no annotation, so
@@ -267,5 +360,6 @@ wants determinism.
 | 016-D4 | block-aligned sharing only | share partial blocks | two sequences writing one block at different offsets is a correctness problem; the cost is ≤ 31 tokens |
 | 016-D5 | a refcount-0 block is cached, not freed; freed LRU under pressure, hash entry removed in the same step | free at refcount 0 | the cache *is* the retained blocks. The paired removal is the invariant §8 tests directly |
 | 016-D6 | measure cold-vs-warm divergence; do not claim bit-exactness | assert transparency | a reused prefix was computed under a different prefill shape, and floating point is not associative |
-| 016-D7 | cache scope is explicit, default `process`, with `session` as the safe non-zero setting | share globally and silently | cross-request KV reuse is a membership oracle over other users' prompts; `session` keeps the multi-turn win with no cross-user leak |
+| 016-D7 | **both** a server-side scope (default `process`) and a request `cache_salt` | share globally and silently; a salt alone, as vLLM and sglang do | a salt is precise but fails open when omitted; a scope makes the default safe but cannot say "same customer". They compose ([§7.1](#71-two-mechanisms-and-tgo-takes-both)) |
+| 016-D9 | $H$ is SHA-256; a fast hash needs a per-process random seed | any fast hash | a collision hands one request another's KV. vLLM shipped a predictable non-crypto hash and had to fix it ([§3.1](#31-the-hash-is-a-security-boundary-so-h-is-not-free-choice)) |
 | 016-D8 | tgo owns the block pool | ask accel to export `pagetable` | accel 030 declines to evict because eviction is policy, and it is right; the policy is §5 |

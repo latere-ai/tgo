@@ -88,6 +88,14 @@ swapped.
 - **$T = 0$ is greedy**, a distinct branch, not a division. It is also the
   branch that must be bit-exact.
 
+> vLLM's sampler states this ordering as the same sequence, and names the
+> property that justifies it: a stage is **argmax-invariant** if it cannot
+> change which token is the maximum. Logit bias and the penalties are not —
+> they reorder candidates — so they run before the greedy branch is taken.
+> Temperature, `min_p`, top-$k$ and top-$p$ are, so they run after. That is a
+> cleaner statement of why the greedy branch sits where it does than "it is a
+> special case", and it is the test to apply when a new stage is added.
+
 > accel 043 §6 adopts this ordering into
 > [039](https://github.com/golang-design/accel/blob/main/specs/039-sampling-policy.md)'s
 > scope, on the grounds that it is documentation rather than code. When 039 is
