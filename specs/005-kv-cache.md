@@ -68,29 +68,28 @@ rebind, and rebinding is all it turned out to be.
 
 A contiguous cache is a paged one with an identity table and a block size of
 one, so this is not a second design — it is the shape tgo binds when `Pages` is
-nil. **Two states per layer**, $2L$ in total:
+nil. **One state per role, sliced per layer** — two allocations for the whole model:
 
-$$\text{Shape}_{K_\ell} = \text{Shape}_{V_\ell} = [\,C,\; H_{kv},\; d_h\,]$$
+$$\text{Shape}_{K} = \text{Shape}_{V} = [\,L,\; C,\; H_{kv},\; d_h\,]$$
 
-with per-layer capacity $C$, $H_{kv}$ key/value heads and head dimension $d_h$.
-Position $t$ of layer $\ell$ is row $t$ of state $\ell$.
+with $L$ layers, per-layer capacity $C$, $H_{kv}$ key/value heads and head
+dimension $d_h$. Layer $\ell$'s window is `LayerState(b, s, ℓ)`, giving
+`[C, H_kv, d_h]`, and position $t$ of layer $\ell$ is row $t$ of that.
 
-> **This is not the design tgo wanted.** One state of $[L \cdot C, H_{kv}, d_h]$
-> with `LayerState(b, s, ℓ)` per layer is the natural shape, and it is what
-> `LayerState` exists for. `Attention` refuses it:
+> **This is the design tgo wanted, and for one milestone it could not have it.**
+> `Attention` and `ScatterRows` both refused a view at a non-zero offset, with
+> the instruction "use one state per layer" — 72 states, ports and bindings for a
+> 36-layer model where the natural count is two. tgo filed it as
+> [accel#9](https://github.com/golang-design/accel/issues/9); accel closed it,
+> and a probe confirms both operators now bind a layer view.
+> [C12](010-conformance.md).
 >
-> ```
-> a layer view binds a range of a resource, which a slot cannot express yet;
-> use one state per layer
-> ```
->
-> So a 36-layer model declares **72 states**, 72 ports, and 72 entries in
-> `Bindings.Buffers`, where the natural count is two. Filed as
-> [accel#9](https://github.com/golang-design/accel/issues/9) and
-> [010 C12](010-conformance.md). The instruction in the refusal is followed
-> rather than worked around, and it is likely subsumed by 043's `Pages` binding:
-> a page table is inherently a ranged view into a larger allocation, so whatever
-> makes `Pages` bindable probably makes a non-zero offset bindable too.
+> The prediction in the original report held: it was subsumed by the paging work,
+> because a page table is inherently a ranged view into a larger allocation and
+> whatever makes `Pages` bindable makes an offset bindable.
+
+The cost is that layer windows must be *proven* disjoint rather than disjoint by
+construction, which is the test in §7.
 
 ### 2.2 Paged, which is what tgo builds
 
@@ -241,10 +240,9 @@ one, against the signatures accel has, and rebinds.
   attention output equals a host reference over the same $T+1$ rows. This is
   accel's own `TestPrefillAndDecodeAgree` invariant, one layer up, on a real
   model's shapes.
-- **Layer states are independent.** Writing layer $i$ leaves every byte of layer
-  $j \ne i$ unchanged. Trivially true with $2L$ states, and the test stays
-  because it is what would break first if [accel#9](https://github.com/golang-design/accel/issues/9)
-  lands and tgo collapses to one pair.
+- **Layer windows are disjoint.** Writing layer $i$ leaves every byte of layer
+  $j \ne i$ unchanged. This is the test §2.1 buys its two allocations with, and
+  it is no longer trivial now that the layers share one buffer.
 - **A paged prefill's output matches the host oracle**, not merely its `base`
   scalar. Asserting the scalar is what let [C13](010-conformance.md) pass as
   working for a day.
@@ -259,10 +257,10 @@ one, against the signatures accel has, and rebinds.
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
-| 005-D1 | ~~one state pair for the model, `LayerState` per layer~~ → **two states per layer, $2L$ total** | the one-pair design | **Amended 2026-08-24, and it was wrong as first written.** `Attention` refuses a layer view outright and says "use one state per layer". 72 states for a 36-layer model. [accel#9](https://github.com/golang-design/accel/issues/9) |
+| 005-D1 | **one state pair for the model, `LayerState` per layer** | one state per layer | **Amended twice on 2026-08-24, and it ends where it started.** First written as one pair; corrected to $2L$ when `Attention` was found to refuse a layer view; restored when [accel#9](https://github.com/golang-design/accel/issues/9) closed and a probe confirmed both `Attention` and `ScatterRows` bind one. 2 allocations, not 72 |
 | 005-D2 | context capacity is a session parameter defaulting to 4096 | the model's `max_position_embeddings` | a 32k default would reserve 9.66 GB before the first token |
 | 005-D3 | print the cache cost when capacity is raised | allocate and fail | the user learns the number when they ask, not from an OOM |
 | 005-D4 | no paging, no f16 cache; both filed upstream | a private page table in tgo | forbidden by [000 D1](000-decisions.md); the arithmetic *was* the filing. **Amended 2026-08-24 (twice):** accel 043 adopted both, then landed both. tgo now builds a paged f16 cache — and gets nothing for it until [C11](010-conformance.md), because the cap applies to the pool ([§2.3](#23-the-ceiling-128-positions)) |
 | 005-D5 | build one cache path against today's signatures and rebind | a paged path behind a flag, switched when 043 lands | **Vindicated.** Four of the seven changes in §6 landed within a day, all as binding changes. A flagged second path would have been written and deleted without ever running |
-| 005-D6 | follow the "use one state per layer" instruction rather than route around it | reshape the cache to hide the refusal | the noise is visible and filed; a hidden workaround would not be |
+| 005-D6 | follow the "use one state per layer" instruction rather than route around it | reshape the cache to hide the refusal | the noise was visible and filed, and the filing is what closed it. A hidden workaround would still be in the code |
 | 005-D7 | do not compose attention from primitives to beat the 128 ceiling | build score-MatMul / Softmax / value-MatMul in tgo | forbidden by [000 D1](000-decisions.md); accel 007 assigns the fallback to `Attention`, and composing it here would hide the register's most important row |

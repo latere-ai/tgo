@@ -29,22 +29,22 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 
 | # | what tgo cannot do | accel spec | filed | state | workaround, and what it costs |
 | --- | --- | --- | --- | --- | --- |
-| C1 | a **batched** decode (B sequences, one token each) | 040, 043 | [#1](https://github.com/golang-design/accel/issues/1) | open | one sequence per submission. `q`'s rank is the *phase* — rank 3 is a prefill — so a batch axis has nowhere to go |
+| C1 | a **batched** decode (B sequences, one token each) | 040 | [#1](https://github.com/golang-design/accel/issues/1) | **open** | one sequence per submission. `q`'s rank is the *phase*, so a batch axis is read as a prefill |
 | C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
-| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | open | host sampling. The per-row kernels landed in the corpus; `tensor` exports no sampling operator at all |
-| C4 | a paged KV cache | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed; `AttentionOptions.Pages` + `Block` |
-| C5 | an f16 KV cache that can be **written**, or paged | 007, 010, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **reopened** | f32. `Attention` *reads* f16; `ScatterRows` writes f32 only, prefill over f16 is refused, and paged+f16 is refused — so f16 is read-only and excludes paging |
-| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | open | host, before submission; a 608 KB logits readback per token |
-| C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | open | convert on the host at load; [001 §3](001-weights.md) |
-| C8 | **f32 activations against f16 or int8 weights** | 010 | [#5](https://github.com/golang-design/accel/issues/5) | open, narrowed | `Cast` before every projection: 7 per layer, 252 per forward pass |
+| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#3](https://github.com/golang-design/accel/issues/3) | **open** | host sampling. The per-row kernels exist in the corpus; `tensor` exports no sampling operator |
+| C4 | a paged KV **decode** | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed |
+| C5 | an f16 KV cache that can be **written**, or paged | 007, 010, 043 §5 | [#4](https://github.com/golang-design/accel/issues/4) | **open** | f32. `Attention` *reads* f16; `ScatterRows` writes f32 only, prefill over f16 is refused, and paged+f16 is refused |
+| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host, before submission; a 608 KB logits readback per token |
+| C7 | bf16 anywhere — no GEMM reads it, **and `Cast` cannot widen it** | 002, 010 | [#5](https://github.com/golang-design/accel/issues/5) | **open** | convert on the host at load; [001 §3](001-weights.md) |
+| C8 | **f32 activations against f16 or int8 weights** | 010 | [#5](https://github.com/golang-design/accel/issues/5) | **open** | `Cast` before every projection: 4 per layer, 144 per forward pass |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
-| C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed, differently** | none needed; `Buffer.Access` writes converted bytes straight into device memory |
-| C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed. accel 044 shipped the tiling loop; 4096 verified |
-| **C13** | **a paged *prefill*** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **open — blocking 016** | none. `Attention` **accepts `Pages` on a prefill, ignores it, and returns a wrong answer** |
-| C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | open | the embedding is f32 (1.56 GB on Qwen3-4B) or int8; a tied head costs ~3× the file tensor |
-| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | open | int8 decode takes the per-element kernel; the matvec selection is gated on f16 |
+| C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed** | none needed; `Buffer.Access` |
+| C11 | a KV cache longer than 128 positions | 007, 010, 044 | [#8](https://github.com/golang-design/accel/issues/8) | **closed** | none needed; 4096 verified |
+| C12 | binding a `LayerState` view to `Attention` or `ScatterRows` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | **closed** | none needed. **2 states, not 72** — [005 §2.1](005-kv-cache.md) |
+| C13 | a paged **prefill** | 010, 030 | [#10](https://github.com/golang-design/accel/issues/10) | **closed** | none needed. Verified by value: reversing the page table moves the output by 0.61, and `Selections()` names the paged causal prefill kernel |
+| C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed; the embedding may be f16 |
+| C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed; `Selections()` names it at $M=1$ |
 | C16 | a dispatch mixing prefill chunks and decode steps | 040 | — | open | accel 040 owns it; chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
-| C12 | binding a `LayerState` view to `Attention` or `ScatterRows` | 007, 030 | [#9](https://github.com/golang-design/accel/issues/9) | open | one state per layer: 72 states for 36 layers. Layer 0 works; every layer at a non-zero offset is refused |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
 day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
@@ -127,6 +127,32 @@ makes cross-request prefix sharing inexpressible, so it blocks
 
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
+
+### 2.2 Ten issues closed; six rows did not
+
+On 2026-08-24 accel closed ten of the eleven issues tgo filed. A re-audit of
+every row at HEAD `cb82904`, asserting values and reading `Selections()` rather
+than checking that a graph compiles:
+
+| closed upstream **and** verified closed | closed upstream, **still open here** |
+| --- | --- |
+| C2, C4, C10, C11, C12, C13, C14, C15 | C1, C5, C7, C8 |
+
+**Eight of those are real and two of them change this project's shape.** C12
+collapses the KV cache from 72 states to 2. C13 was the blocking row — a paged
+prefill now honours its page table, verified by reversing the table and watching
+the output move — which unblocks [016](016-prefix-cache.md) entirely.
+
+**Four are not, and each closed against a report that named a symptom.** C1's
+issue was titled for the *block pool*, which landed; the batch axis it also
+asked for did not. C5's asked for an f16 *cache* and got the read path. C7 and
+C8 shared one issue about `MatMul` being f16-only, which was answered with an
+f32 GEMM — and a transformer's operands are never the same dtype, so the casts
+remain.
+
+The lesson is not that accel closed things carelessly. **Each fix matched its
+issue's title.** It is that a title is a summary and a register row is a
+capability, and only the second one is testable.
 
 > **That rule stopped being hypothetical on 2026-08-24.** accel closed
 > [#4](https://github.com/golang-design/accel/issues/4) and

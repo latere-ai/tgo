@@ -79,7 +79,8 @@ A model has to fit in memory. Roughly:
 | int8 | ~1.06 | 4.3 GB |
 
 int8 costs some accuracy, by a bounded amount that tgo measures rather than
-assumes. Above about 8 GB of weights, f16 stops being an option on the machines
+assumes. f16 sits between the two and is available for every weight, including
+the embedding table. Above about 8 GB of weights, f16 stops being an option on the machines
 tgo targets, so int8 is not an optimisation there — it is the only way the model
 loads.
 
@@ -103,9 +104,8 @@ capacity.
 
 Most of what you send is usually the same as last time: a system prompt, tool
 definitions, the earlier turns of a conversation. tgo remembers the work it
-already did for that shared beginning and skips it, within a conversation.
-Sharing one system prompt across *different* requests needs a change in the
-layer below and is not available yet.
+already did for that shared beginning and skips it — both within a conversation
+and across separate requests that share a system prompt.
 
 You do not ask for this and you do not annotate anything. It happens when the
 beginning of your prompt matches one tgo has seen, and the saving is

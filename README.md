@@ -30,9 +30,10 @@ runtime to install beside it.
 > measured rather than asserted: the whole Qwen3-4B graph — 36 layers, a 151936
 > vocabulary, a 4096-position cache — compiles against accel today, as four
 > plans (prefill and decode, f16 and int8) of up to 730 nodes and 1013 kernel
-> selections. What is *not* proven is that the numbers would be right; that
-> needs the parity oracle, which needs code.
-> [`specs/011-sequencing.md`](specs/011-sequencing.md) has the table.
+> selections. Prefix caching is expressible too. The only thing still blocked
+> upstream is continuous batching, which is post-v0. What is *not* proven is
+> that the numbers would be right; that needs the parity oracle, which needs
+> code. [`specs/011-sequencing.md`](specs/011-sequencing.md) has the table.
 
 ## Why this exists
 
@@ -57,9 +58,16 @@ than adding it.
 
 A sixth — attention capped at 128 positions, which made no model servable — tgo
 filed, designed, and accel implemented. The tenth is the interesting one:
-`Attention` *accepts* a page table on a prefill and silently ignores it. Every
-finding before it was a refusal; that one returns a fluent wrong answer, and it
-took a probe that asserted a value rather than reading an error to see it.
+`Attention` *accepted* a page table on a prefill and silently ignored it. Every
+finding before it was a refusal; that one returned a fluent wrong answer, and it
+took a probe asserting a value rather than reading an error to see it. It is
+fixed, and it is why tgo's register is decided by measurement.
+
+**Ten of the eleven issues are now closed, and six register rows are still
+open.** That is not a complaint: each fix matched its issue's title, and four of
+those titles named a symptom rather than the cost. It is the reason the register
+records *capabilities* rather than tickets — a title is a summary, and only a
+capability is testable.
 
 The register of what accel cannot do yet — with the arithmetic for each — is
 [`specs/010-conformance.md`](specs/010-conformance.md). **It is this project's
@@ -77,9 +85,9 @@ Lessons taken deliberately from [ollama](https://github.com/ollama/ollama),
 | Byte-level BPE, streaming decode | pure Go, no `tokenizers` dependency | designed |
 | Chat templates | per model, with user text that cannot forge a turn | designed |
 | OpenAI, Anthropic and Responses APIs | three wire dialects, one adapter, via `llmdialect` | designed |
-| Paged KV, continuous batching | vLLM's contribution | blocked on accel |
-| Prefix caching | reuse an earlier turn's KV within a session | designed |
-| Cross-request prefix sharing | one system prompt, many requests | blocked on accel |
+| Paged KV cache | vLLM's contribution | designed |
+| Continuous batching | many sequences per step | blocked on accel |
+| Prefix caching | reuse an earlier turn's KV, and a system prompt across requests | designed |
 | Constrained decoding | a JSON schema compiled to a token mask | designed, after batching |
 | GGUF | needs a super-block kernel accel does not register | blocked |
 

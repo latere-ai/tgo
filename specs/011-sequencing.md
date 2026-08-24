@@ -37,7 +37,7 @@ of a broken model.
 | M8 | CLI | `tgo run` generates from a local checkpoint |
 | M9 | server ([009](009-server.md)) | handler suite against the fake engine; one golden per dialect; one real end-to-end |
 | M10 | conformance report ([010](010-conformance.md)) | the register table is generated from the tests; §3 numbers measured |
-| M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. Single-session reuse is unblocked; **cross-request sharing waits on [C13](010-conformance.md)** |
+| M10b | prefix caching ([016](016-prefix-cache.md)) | warm equals cold greedy; the evicted-hash test passes; cold-vs-warm divergence measured. **Fully unblocked** — [C13](010-conformance.md) closed, so cross-request sharing is expressible too |
 | M11 | real weights | a Qwen3 dense checkpoint is coherent at f16 and int8, on both backends |
 
 M11 is the gate in [000](000-decisions.md)'s "what v0 is". Everything before it
@@ -54,7 +54,6 @@ flowchart LR
   M5 --> M6["M6 decode loop"]
   M6 --> M7["M7 sampling"] --> M8["M8 CLI"] --> M9["M9 server"]
   M9 --> M10["M10 report"] --> M11["M11 real weights"]
-  C13["accel#10<br/>paged prefill drops Pages"] -.blocks.-> M10b["M10b prefix cache<br/>cross-request sharing"]
   C1["accel#1<br/>no batch axis"] -.blocks.-> M12["post-v0 batching"]
 ```
 
@@ -73,11 +72,11 @@ What remains blocked is post-v0 and narrower:
 
 | | blocked on |
 | --- | --- |
-| M10b's **cross-request** prefix sharing | [C13](010-conformance.md) — a paged prefill drops its page table |
 | continuous batching ([008](008-scheduler.md)) | [C1](010-conformance.md) — `q`'s rank is the phase, so a batch has no axis |
 
-M10b's **single-session** reuse — the $1 - 1/n$ multi-turn win, which is most of
-the value — is not blocked.
+**Batching is the only thing left that is blocked upstream**, and it is post-v0.
+Everything in M1–M11, plus prefix caching in full, is expressible against accel
+as it stands.
 
 ### 2026-08-24 — the forward pass compiles
 

@@ -96,14 +96,16 @@ code exists yet. [011 §2](011-sequencing.md) is the order, [011 §2.1](011-sequ
 is what is gated upstream, and [011 §4](011-sequencing.md) is where outcomes are
 recorded as they land.
 
-The one thing to know before reading further: **v0 is no longer blocked
-upstream.** `tensor.Attention` refused a cache longer than 128 positions —
-shorter than a system prompt — and accel closed it on 2026-08-24 with a design
-tgo wrote. A 4096-position cache is verified.
+The one thing to know before reading further: **v0 is not blocked upstream, and
+neither is prefix caching.** accel closed ten of the eleven issues tgo filed,
+including the two that mattered — a KV cache capped at 128 positions, and a
+paged prefill that accepted its page table and silently ignored it.
 
-What is still blocked is post-v0: cross-request prefix sharing
-([C13](010-conformance.md) — a paged prefill silently drops its page table) and
-continuous batching ([C1](010-conformance.md)).
+**Six register rows are still open**, four of them against closed issues,
+because each fix matched its issue's title and four of those titles named a
+symptom rather than the cost. [010 §2.2](010-conformance.md) has the audit. The
+only one that blocks a feature is [C1](010-conformance.md), continuous batching,
+which is post-v0.
 
 ## The one thing to understand before contributing
 

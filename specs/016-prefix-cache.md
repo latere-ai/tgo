@@ -284,46 +284,42 @@ small device test for the reuse itself. No weights.
 | concurrent identical-prefix inserts keep one block, under `-race` | §10.4 |
 | **the identical prompt submitted twice** returns the same completion, and the second prefills exactly one token | §3.1 — the case the chat path cannot produce |
 
-## 9. What accel gives, and the one thing it does not
+## 9. What accel gives, verified by value
 
-Re-probed against accel HEAD by asserting values, not by reading refusals —
+Re-audited at accel HEAD by asserting outputs, not by reading refusals —
 [010-D7](010-conformance.md), a rule this section is the reason for.
 
-**Available:** a cache of any capacity ([C11](010-conformance.md) closed, accel
-044), a paged **decode** (`AttentionOptions.Pages` + `Block`), per-row
-positions, and `BaseName` to prefill a suffix at a non-zero base.
+**Everything this spec needs is now reachable.** A cache of any capacity
+([C11](010-conformance.md)), a paged decode ([C4](010-conformance.md)), per-row
+positions ([C2](010-conformance.md)), `BaseName` to prefill a suffix at a
+non-zero base, and — as of 2026-08-24 — a **paged prefill**
+([C13](010-conformance.md)):
 
-**Not available, and this blocks the spec:** a paged **prefill**.
+```
+selection: Attention -- the paged causal prefill kernel: blocks of 32
+           addressed through a page table, one workgroup per query position
+reversing the page table moves the output, max diff 0.6057
+```
 
-> `Attention` accepts `Pages` on a prefill, **drops it**, and reads the cache
-> contiguously. The `if prefill { … return }` branch returns above the
-> `case opts.Pages != nil` switch and its inputs are `{q, k, v, Lengths}` — the
-> page table never reaches the kernel. Measured: identity versus reversed page
-> table, worst absolute difference **0.74**, with `Selections()` reporting the
-> contiguous kernel both times. `Block` is unvalidated on that path too.
->
-> [accel#10](https://github.com/golang-design/accel/issues/10),
-> [010 C13](010-conformance.md).
+The value test is the point. **For one day this section said the opposite, on
+the strength of a probe that only checked the graph compiled.** `Attention`
+accepted `Pages` on a prefill, dropped it, and read the cache contiguously;
+tgo's probe recorded it as working and this spec claimed cross-request sharing
+was expressible when it was not. tgo filed it as
+[accel#10](https://github.com/golang-design/accel/issues/10), accel shipped the
+kernel, and the same test now shows the table being honoured.
 
-A paged decode is only useful over blocks a paged prefill wrote, so
-**cross-request block sharing is not expressible today.** What is expressible is
-the single-sequence case: one session's own cache, contiguous, reusing its
-earlier turns — which is the $1 - 1/n$ multi-turn win and most of the value.
-Cross-request sharing of a system prompt waits on C13.
+That episode is why [010-D7](010-conformance.md) exists, and it is left visible
+rather than tidied away: **the spec was confidently wrong because its evidence
+was the absence of an error.**
 
-**An earlier draft of this section said the opposite**, on the strength of a
-probe that only checked the graph compiled. That is the mistake
-[010-D7](010-conformance.md) now exists to prevent, and it is worth leaving
-visible: the spec was confidently wrong for a day because its evidence was the
-absence of an error.
-
-Two further constraints:
+Two constraints remain:
 
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
 - **f16 is read-only and excludes paging** ([C5](010-conformance.md)), so this
-  is an f32 design.
+  is an f32 design. That is the one row that would halve the pool.
 
 ## 10. Against vLLM and sglang
 

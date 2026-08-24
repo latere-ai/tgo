@@ -89,7 +89,9 @@ $$y = x W, \quad x \in \mathbb{R}^{M \times K},\ W \in \mathbb{R}^{K \times N}$$
 
 f32 in, f32 out; the f16 exists only between the two. `MatMul` selects the
 matrix-vector kernel at $M = 1$, which is every decode step, and
-`Plan.Selections()` reports which and why.
+`Plan.Selections()` reports which and why. **`QuantMatMul` selects one too**, as
+of [C15](010-conformance.md) — so the int8 path, which is what `auto` picks for
+a large model, is no longer the one without a decode specialisation.
 
 Qwen3 has no biases on its projections, so `tensor.Linear`'s fused epilogue is
 unused here. It stays specified because [000 §4](000-decisions.md)'s table lists
@@ -353,7 +355,7 @@ Qwen3, with the Hugging Face names on the left:
 
 | checkpoint tensor | shape in file | port | transpose | **permute** | notes |
 | --- | --- | --- | --- | --- | --- |
-| `model.embed_tokens.weight` | `[V, d]` | `embed` | **no** | no | rows are gathered; `[V,d]` is already row-per-token |
+| `model.embed_tokens.weight` | `[V, d]` | `embed` | **no** | no | rows are gathered; `[V,d]` is already row-per-token. **f16 or int8** — accel gained an f16 `GatherRows` ([C14](010-conformance.md)), so the embedding no longer has to be f32 |
 | `model.layers.ℓ.input_layernorm.weight` | `[d]` | `ℓ.attn_norm` | no | no | gain |
 | `model.layers.ℓ.self_attn.q_proj.weight` | `[H·d_h, d]` | `ℓ.wq` | **yes** → `[d, H·d_h]` | **yes** | [§2.5.2](#252-the-fix-is-a-load-time-permutation-and-its-order-is-forced) |
 | `model.layers.ℓ.self_attn.k_proj.weight` | `[H_kv·d_h, d]` | `ℓ.wk` | **yes** | **yes** | as above |
@@ -375,7 +377,9 @@ table transposed. Two consequences:
 - the loader uploads **two** planes from one file tensor: `[V,d]` untransposed
   for `GatherRows`, and `[d,V]` transposed for the `MatMul`. They are different
   layouts, so they cannot share a buffer, and the "tied" saving is in the file,
-  not on the device;
+  not on the device. Both may now be **f16** ([C14](010-conformance.md)), so the
+  tie costs 2× the file tensor rather than the 3× it would have when
+  `GatherRows` demanded f32;
 - a checkpoint that is tied *and* ships an `lm_head.weight` is a contradiction.
   The loader refuses rather than picking one.
 

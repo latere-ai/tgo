@@ -172,6 +172,12 @@ the LM head are the largest tensors in a small model and the most sensitive to
 quantization, and holding those two at f16 while everything else is int8 is a
 common and defensible point.
 
+> Until 2026-08-24 that recommendation named a configuration accel refused:
+> `GatherRows` read f32 only, so an f16 embedding was not expressible and the
+> choice was 1.56 GB at f32 or int8 with nothing between. tgo filed it as part
+> of [accel#11](https://github.com/golang-design/accel/issues/11) and it landed
+> ([C14](010-conformance.md)). The middle width now exists.
+
 **The bound is measured, not assumed.** `quant.Int8ErrorBound` gives, for a dot
 product, the distance from the unquantized result. The load-time check runs it
 over sampled blocks of the real tensors:
