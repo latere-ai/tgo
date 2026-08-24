@@ -146,6 +146,57 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-25 — Wave 3 shipped: the forward pass agrees with the oracle
+
+`model`'s Qwen3 graph and KV cache, `sample`, and `internal/conformance`. Ten
+packages, every gate green including `-race`, coverage floor measuring all ten.
+
+**The forward pass runs on the CPU backend and matches a float64 reference**
+derived from the mathematics rather than from the graph code
+([010-D2](010-conformance.md)). That is the check that proves the model rather
+than proving it compiles.
+
+**Each of the three load-bearing tests was mutation-tested**, because a passing
+test proves nothing until it has been shown it can fail:
+
+- moving QK-norm to after RoPE kills two tests by a factor of **15,000 over
+  tolerance** — the silent-coherence bug [004 §2.4](004-model-graph.md) warns
+  about, which nothing downstream would report;
+- decode at $T=1$ against prefill's last row, over one cache both plans bind;
+- the last-row slice — see below.
+
+**Writing the §3.2 test found that the obvious test does not work.** Transient
+bytes do *not* catch an LM head running over every position, because
+`PortLogits` is an **output** port: its buffer is the caller's and never appears
+in `Plan.Memory()`. Measured by mutation — slicing `[0,t)` instead of
+`[t-1,t)` left transients identical at 38912 bytes across a 36× vocabulary
+change. The claim is now checked where it lives, on the declared shape of the
+port, with the reason in the comment so the next reader does not "fix" it back.
+
+**The conformance harness is what makes the rest checkable**, and its tolerances
+are a **type rather than a number** — [010-D3](010-conformance.md) enforced by
+the compiler instead of by discipline. A caller composes the stages its
+computation actually has and the bound falls out, so widening one means adding a
+term somebody has to argue for out loud. Six parity tests exercise it: RMSNorm,
+SwiGLU, MatMul at f32 and at f16, int8, and RoPE.
+
+**Two things this session got wrong and corrected.** `PrimitiveAbs` enters the
+budget *relatively*, not absolutely — a cosine's absolute error becomes relative
+to whatever that cosine multiplies — and the first test asserted the opposite.
+And the tier rule's device branches are exempted from the coverage floor with a
+stated reason rather than covered by a mock, because a mock device would cover
+the statements and prove nothing about accel.
+
+> **Wave 3 was interrupted.** All three agents hit an account limit mid-write.
+> The partial work was salvaged rather than rerun: the packages were
+> substantially complete and needed one API fix (`Float16.F32`, not
+> `.Float32`), the parity tests, and the conformance tests. Recorded because
+> "the wave was rebuilt from scratch" and "the wave was finished by hand" are
+> different provenances and the second is this one.
+
+**Wave 4 next**: the engine and the decode loop ([007](007-engine.md)), then the
+CLI and the server.
+
 ### 2026-08-24 — Wave 2 shipped, and the target checkpoint corrected a spec
 
 `weights`, `nn`, `internal/oracle` and `model`. Nine packages now, every gate

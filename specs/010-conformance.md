@@ -374,9 +374,18 @@ the storage format, not by the accumulator.** That is also why C8 matters less
 for accuracy than it does for bandwidth.
 
 **A tolerance that had to be raised to make a test pass is a finding, not a
-fix.** The rule is enforced socially and by a comment on every tolerance
-constant naming which term above produced it. A constant with no derivation is
-a bug report waiting to be written.
+fix.**
+
+**Enforced by the type, not socially.** `internal/conformance` has no way to
+write a tolerance down: a comparison takes a `Terms`, and every constructor is
+one row of the table above or one ceiling from accel's own numerics spec. A
+caller composes the stages its computation actually has —
+`AccumF32(k).And(StoreF16(2)).And(Magnitude(scale))` — and the bound falls out.
+Widening one means **adding a term**, which is an argument somebody has to make
+out loud, and `Terms.Explain()` prints what produced the number.
+
+The zero `Terms` is exact equality, which is a legitimate claim about an
+operation that only moves bytes.
 
 ## 6. Reporting
 

@@ -346,7 +346,15 @@ $V = 151936$ that is 304M values, **1.2 GB** — larger than the int8 weights of
 the model producing it.
 
 Slicing to the last row *before* the head makes it $V$ values, 608 KB. It is a
-one-line mistake to make and it does not fail, it just allocates. §7 has the
+one-line mistake to make and it does not fail, it just allocates.
+
+> **And transient memory does not catch it**, which is worth stating because the
+> obvious test is the wrong one. `PortLogits` is an **output** port, so its
+> buffer belongs to the caller and never appears in `Plan.Memory()`. Measured:
+> slicing `[0,t)` instead of `[t-1,t)` left transients **identical at 38912
+> bytes** across a 36× change in vocabulary. The claim is checkable on the
+> declared **shape of the output port** — a port of `[T, V]` is the bug,
+> whatever it costs — and that is what §8's row asserts. §7 has the
 test.
 
 The `Contiguous` after the `Slice` is deliberate: `Slice` returns a view with a
