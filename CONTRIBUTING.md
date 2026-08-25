@@ -54,6 +54,14 @@ not exist.
   ([010-D3](specs/010-conformance.md)).
 - **A linter or checker must be negative-tested.** One that passes vacuously is
   the failure it exists to catch.
+- **No two dimensions in a test fixture may be equal.** A config where the layer
+  count equals the key/value head count, or the vocabulary equals the
+  intermediate size, is the *identity* for every confusion between them, so a
+  wrong shape reads as correct. This has cost three waves: twelve surviving
+  mutants in `model`, the whole f16 permutation path in `weights` (where
+  `head_dim = 2` makes the rotary permutation the identity), and a
+  layer/kv-head swap in `cmd/tgo`. Where a collision is unavoidable, say so in
+  the fixture's comment and name what it cannot discriminate.
 
 The coverage floor is 90% per package, not per repository — an average lets a
 well-tested package carry an untested one. Exemptions live in

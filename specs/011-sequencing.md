@@ -173,6 +173,57 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-25 — Wave 4 shipped: the framework runs, and measures itself
+
+`tgo` (the public API and decode loop), `cmd/tgo`, and the conformance
+register. Twelve packages, every gate green, the coverage floor measuring
+eleven.
+
+**`tgo run`, `tgo bench` and `tgo info` work against the real 596M-parameter
+Qwen3-0.6B checkpoint.** The first benchmark, and the reason
+[017-D1](017-benchmarks.md) exists:
+
+| batch | tokens/s | steps | p50 | host | submit | device | readback |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.00 | 1 | 3560.8s | 0.00% | 0.01% | **99.99%** | 0.00% |
+
+**99.99% device.** A throughput number alone could not have said that; the
+breakdown attributes the cost to accel's kernels rather than to tgo's loop,
+which is the question [010 §1](010-conformance.md) says this project exists to
+answer. The JSON record carries [017-D4](017-benchmarks.md)'s full conditions
+and **names what it cannot measure as missing rather than printing zeros** —
+plan compile time, the batch curve, the vLLM comparison.
+
+**Two upstream findings, both from running a real model rather than reading
+one.** This is the second time that method has beaten inspection:
+
+- [accel#19](https://github.com/golang-design/accel/issues/19) — `Contiguous`
+  is the **only kernel in the corpus with no MSL artifact**, so any graph that
+  slices cannot run on Metal. [004 §3.2](004-model-graph.md) *requires*
+  slicing before the LM head, so the dense path is CPU-only until it lands, and
+  the refusal arrives at compile time after a 1.4 GB upload.
+- [accel#20](https://github.com/golang-design/accel/issues/20) — accel's CPU
+  backend dispatches workgroups **serially**, by its own documentation. 32
+  minutes for a 4-token prefill of 596M parameters. Not a bug; the serial loop
+  is simply now on the critical path of a real workload.
+
+**One gap closed by hand.** The engine recorded all four terms and exported no
+way to set or read a recorder, so `tgo bench` printed the breakdown as *missing*.
+The implementer reported that rather than printing zeros, which was right;
+`WithRecorder` now threads it through, and the table above is the result.
+
+**And a rule, now written where it will be read: no two dimensions in a test
+config may be equal.** The root package had `synthLayers` and `synthKVHeads`
+both 2 — the identity for every confusion between them. That exact shape cost
+[Wave 2](#2026-08-24--wave-2-shipped-and-the-target-checkpoint-corrected-a-spec)
+twelve surviving mutants and Wave 3 its whole f16 permutation path.
+
+**Wave 5 next**: the OpenAI/Anthropic/Responses server ([009](009-server.md)),
+prefix caching ([016](016-prefix-cache.md)), and the vLLM comparison
+([010 §3.1](010-conformance.md)) — which needs [accel#19](https://github.com/golang-design/accel/issues/19)
+or [accel#20](https://github.com/golang-design/accel/issues/20) to produce a
+number worth publishing.
+
 ### 2026-08-25 — Wave 3 shipped: the forward pass agrees with the oracle
 
 `model`'s Qwen3 graph and KV cache, `sample`, and `internal/conformance`. Ten

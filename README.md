@@ -19,11 +19,14 @@ install beside it. You cross-compile it the way you cross-compile any Go
 program.
 
 > [!IMPORTANT]
-> **tgo does not run yet.** The design is complete and reviewable; the code is
-> not written. There is nothing to install and nothing to try.
+> **Early, and slower than it will be.** tgo loads a real Qwen3 checkpoint and
+> generates text today. Two things in the layer below make it impractical for
+> real use right now: its GPU path cannot run a model yet, and its CPU path
+> executes work one piece at a time. Both are being worked on upstream and
+> neither is a design problem here.
 >
-> This page describes what tgo will do. [`docs/`](docs/) explains how it fits
-> together, and [`specs/`](specs/) is the design itself.
+> So: worth reading and worth trying on a small model. Not yet worth deploying.
+> [`docs/orientation.md`](docs/orientation.md) explains what runs where.
 
 ## Why you might want it
 
@@ -54,7 +57,7 @@ on Apple silicon.
 | --- | --- |
 | **Models** | Qwen3 dense — 0.6B through 32B — from Hugging Face safetensors. The hybrid-attention models (Qwen3.5, Qwen3.8) need work in the layer below first |
 | **Precision** | f16 or int8, chosen by what fits your machine, and always overridable |
-| **Devices** | CPU everywhere, Metal on Apple silicon; more as they arrive |
+| **Devices** | CPU everywhere. Metal on Apple silicon is **not usable yet** — the layer below is missing one piece a language model needs |
 | **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
 | **Serving** | streaming, logprobs, seeded reproducible output, and prompt caching that reuses work across turns and requests |
 | **As a library** | open a model, hold a conversation, stream tokens |

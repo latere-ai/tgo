@@ -63,12 +63,18 @@ API has and another lacks is reported rather than dropped quietly.
 
 | backend | where | status |
 | --- | --- | --- |
-| CPU | everywhere | accel: working |
-| Metal | Apple silicon | accel: working |
+| CPU | everywhere | **works, and is slow.** The layer below runs each piece of work in turn rather than in parallel, so a small model takes minutes per token today |
+| Metal | Apple silicon | **not usable for a language model yet.** One operation a transformer needs has no GPU implementation, so the graph is refused when it is compiled |
 | Vulkan | Linux, Windows | accel: designed, unbuilt |
 | D3D12, WebGPU | | accel: designed, unbuilt |
 
-tgo picks the best available by default, and you can force one.
+tgo picks the best available by default, and you can force one with
+`--device cpu` or `--device metal`.
+
+Both limits are in the compute layer rather than in tgo, both are reported
+upstream, and neither changes anything about how you use tgo once they lift.
+They are stated here because a framework that is quiet about being slow is
+wasting your afternoon.
 
 ## Precision, and why it is chosen for you by default
 

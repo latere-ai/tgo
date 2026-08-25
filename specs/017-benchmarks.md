@@ -106,6 +106,31 @@ An inference benchmark is easy to make say what you want. These are binding.
 6. **The comparison is reproducible from the repository**: one command, the
    harness in tree, the prompts checked in.
 
+## 4.1 What the first real run measured
+
+Qwen3-0.6B at f16 on accel's CPU backend, 2026-08-25:
+
+| batch | tokens/s | p50 step | host | submit | device | readback |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.00 | 3560.8s | 0.00% | 0.01% | **99.99%** | 0.00% |
+
+**The breakdown did its job on the first run.** 99.99% device says the cost is
+accel's kernels and not tgo's loop, which is a conclusion a throughput number
+cannot support — and the readback share [C6](010-conformance.md) predicted
+would dominate is 0.00%, because the kernels are so much slower that nothing
+else is visible. Both are findings, and neither would exist without §1's split.
+
+The two causes are upstream and filed:
+[accel#19](https://github.com/golang-design/accel/issues/19) (no Metal path for
+`Contiguous`, so this is CPU) and
+[accel#20](https://github.com/golang-design/accel/issues/20) (the CPU backend
+dispatches serially).
+
+**A comparison against vLLM is not worth running yet**, and §4 rule 1 is why:
+publishing a loss of this magnitude against a framework whose kernels are years
+of hand-tuned CUDA would report a fact about accel's backend maturity dressed as
+a fact about tgo. The row waits for a backend that can finish a token.
+
 ## 5. Where the numbers go
 
 `tgo bench` writes a Markdown table and a JSON record. The JSON is what a
@@ -134,4 +159,5 @@ performance has a history rather than a current value.
 | 017-D3 | off by default, allocation-free when on | always on | an instrument that changes what it measures is not one |
 | 017-D4 | losses are published, with hardware, model, precision and policy | headline wins | a benchmark without its conditions is decoration |
 | 017-D5 | report a batch-size curve, not a point | the best batch size | [008 §1](008-scheduler.md)'s ceiling falls as context grows, and a point hides it |
-| 017-D6 | JSON record gates regressions like the coverage gate | eyeball the table | a number nobody enforces drifts |
+| 017-D6 | JSON record gates regressions like the coverage gate | eyeball the table | a number nobody enforces drifts. **Unbuilt as of 2026-08-25**: the record is written and shaped for a checker (versioned schema, byte-stable encoding, a named note per unmeasured axis) and nothing reads it yet |
+| 017-D7 | the engine takes a caller's `Recorder` through a session option | keep the recorder internal | the engine recorded all four terms and exported no way to set or read one, so `tgo bench` could only print the breakdown as missing — which is the single number 017-D1 says cannot attribute a regression |
