@@ -59,7 +59,10 @@ func TestRealCheckpointEndToEnd(t *testing.T) {
 	const capacity = 2
 
 	started := time.Now()
-	m, err := Open(dir, WithDevice(CPU), WithContext(capacity))
+	// Auto rather than CPU: accel#19 is closed, so Metal runs the forward pass
+	// and is what a user on this hardware gets. The CPU pin here was a
+	// workaround for that gap and outlived it.
+	m, err := Open(dir, WithContext(capacity))
 	if err != nil {
 		t.Fatalf("Open(%s): %v", dir, err)
 	}

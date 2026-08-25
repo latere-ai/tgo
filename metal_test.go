@@ -4,37 +4,31 @@
 package tgo
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/latere-ai/tgo/internal/conformance"
 )
 
-// TestMetalCannotYetRunTheForwardPass pins an upstream gap rather than working
-// around it.
+// TestMetalRunsTheForwardPass is the positive form of a test that used to
+// assert the opposite, and the history is the point.
 //
 // specs/004-model-graph.md §3.2 slices the last row before the LM head and
-// calls tensor.Contiguous on the result, because accel refuses a strided
-// operand into MatMul rather than copying behind the caller's back. That
-// packing kernel carries no MSL artifact, so **every** tgo graph — synthetic or
-// real, prefill or decode — is refused at compile time on Metal:
+// packs it, because accel refuses a strided operand into MatMul rather than
+// copying behind the caller's back. That packing kernel was the only one in
+// accel's corpus with no MSL artifact, so **every** tgo graph — synthetic or
+// real, prefill or decode — was refused at compile time on Metal:
 //
-//	kernel Pack carries no MSL artifact, so it cannot run on Metal;
-//	it is outside the subset specs/021-metal-bringup.md section 5 lowers
+//	kernel Pack carries no MSL artifact, so it cannot run on Metal
 //
-// The refusal is accel's and it is correct; what it means for tgo is that the
-// device this framework exists to be fast on cannot run it at all. It is a
-// register row, not a bug in this package, and there is nothing to route around
-// — composing the slice out of the graph would mean running the LM head over
-// every position, which is specs/004-model-graph.md 004-D4's 1.2 GB.
-//
-// This test asserts the *current* state, so it fails in either direction: when
-// accel lowers Pack the assertion below stops holding and this test should be
-// deleted along with [TestRealCheckpointEndToEnd]'s WithDevice(CPU).
-func TestMetalCannotYetRunTheForwardPass(t *testing.T) {
+// tgo filed it as accel#19 and accel lowered it the same day, so the device
+// this framework exists to be fast on runs it now. The test that pinned the
+// gap said to delete itself when that happened; this replaced it rather than
+// vanishing, because a backend that worked once and quietly stopped is exactly
+// what specs/010-conformance.md §4's tier 2 exists to catch.
+func TestMetalRunsTheForwardPass(t *testing.T) {
 	// The tier rule decides whether this machine runs tier 2 at all
-	// (specs/010-conformance.md §4); the device it returns is closed by its own
-	// cleanup and tgo opens its own.
+	// (specs/010-conformance.md §4): a skip where no device is present, and a
+	// failure where TGO_REQUIRE_METAL promises one.
 	_ = conformance.Device(t, conformance.Tier2)
 
 	dir := checkpoint{tie: true}.write(t)
@@ -48,19 +42,18 @@ func TestMetalCannotYetRunTheForwardPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	collect(t, st)
-	err = st.Err()
-	if err == nil {
-		t.Fatal("Metal compiled a tgo forward pass. accel has lowered the packing " +
-			"kernel: delete this test and the WithDevice(CPU) in the end-to-end test")
+	got, events := collect(t, st)
+	if err := st.Err(); err != nil {
+		t.Fatalf("Metal refused a forward pass: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Pack") {
-		t.Errorf("Metal refused with %v; the known gap is the packing kernel and this is "+
-			"a different one", err)
+	if got == "" || len(events) == 0 {
+		t.Errorf("Metal produced %d event(s) and %q; a stream that ends clean with "+
+			"nothing in it is indistinguishable from one that never ran",
+			len(events), got)
 	}
-	// And the failure poisons the session, which is §7 holding for a compile
-	// refusal as much as for a device fault.
-	if err := s.usable(); err == nil {
-		t.Error("a refused compile left the session usable")
+	// The session survives, which is what separates a working backend from one
+	// that happens not to have errored yet.
+	if err := s.usable(); err != nil {
+		t.Errorf("a completed generation left the session unusable: %v", err)
 	}
 }

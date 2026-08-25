@@ -238,6 +238,24 @@ func Register() []Row {
 		State:     Open,
 		StateNote: "not scheduled",
 		Cost:      "read safetensors and quantize at load ([012](012-gguf.md))",
+	}, {
+		ID:     "C18",
+		Cannot: "`Contiguous` on Metal",
+		Specs:  []string{"010", "021"},
+		Issue:  19,
+		State:  Closed,
+		Cost: "none needed. It was the only kernel in the corpus with no MSL " +
+			"artifact, so every graph that slices — which " +
+			"[004 §3.2](004-model-graph.md) requires — was refused at compile. " +
+			"Fixed upstream the day it was filed",
+	}, {
+		ID:     "C19",
+		Cannot: "a CPU backend that dispatches in parallel",
+		Specs:  []string{"006"},
+		Issue:  20,
+		State:  Open,
+		Cost: "none. Workgroups run serially, so a 4-token prefill of 0.6B takes " +
+			"3560s; a user without a GPU meets this",
 	}}
 	return rows
 }
