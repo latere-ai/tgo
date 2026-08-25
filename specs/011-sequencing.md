@@ -235,6 +235,23 @@ three findings it produced — the sharpest being that **submit is 15.61% of a
 decode step**, which is the largest non-kernel cost tgo has and the first one
 that is not upstream.
 
+**Two gates caught their author, which is the point of having them.** The Metal
+test written to assert *"this cannot work"* began failing because it works; its
+own comment said to delete it, and it was replaced by its positive form instead,
+since a backend that worked once and quietly stopped is what tier 2 exists to
+catch. And the register generator rejected a hand-edit of
+[010 §2](010-conformance.md) — including a row-order difference no reader would
+have flagged — which is [010-D6](010-conformance.md) doing exactly its job.
+
+**And one class of bug that only CI could find.** Five tests passed on macOS and
+Linux and failed on Windows, whose timer granularity is about 15ms: a fake that
+returned instantly made the wall clock around it zero, and an assertion that a
+readback duration was positive was too strong for a 2-layer fixture whose real
+readback is a few hundred microseconds. Both now assert **observation counts
+rather than durations**, and `CONTRIBUTING.md` carries the rule. Worth recording
+because the failure mode is invisible on the two platforms most of this was
+developed on.
+
 **Wave 5 next**: the OpenAI/Anthropic/Responses server ([009](009-server.md)),
 prefix caching ([016](016-prefix-cache.md)), and the submit overhead above —
 which is the axis [000 §11](000-decisions.md) says tgo should win and the thing
