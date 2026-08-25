@@ -126,8 +126,13 @@ token is 169ms.
    cost is roughly fixed, so it is amortised over a 64-token prefill and paid in
    full by a one-token decode — which is the shape [008 §1](008-scheduler.md)
    argues batching fixes, visible in a measurement rather than in an argument.
-   It is the largest non-kernel cost tgo has, and the first thing worth
-   attacking that is **not** upstream.
+   It is the largest non-kernel cost tgo has. Filed as
+   [accel#21](https://github.com/golang-design/accel/issues/21) with the ratio,
+   because a ~790-node graph resubmitted per token is a per-dispatch cost meeting
+   a step that does little arithmetic per node — and because
+   [000 §11](000-decisions.md) says the parts that are not matrix multiplication
+   are where tgo should win, so measuring itself losing 15% of a step to
+   plumbing is the finding, not a footnote.
 2. **Readback is 1.59%, not the dominant term.** [C6](010-conformance.md) — the
    608 KB of logits per token — is real and is an order of magnitude smaller
    than the submit overhead beside it. The register row stands; its priority

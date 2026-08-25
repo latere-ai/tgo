@@ -213,6 +213,14 @@ tgo accepted the closure and widened the rule. See
 `speclint` enforces (3), which is the one a linter can see. (1) and (2) are
 enforced by the re-audit in §2.2, which is where the gap surfaced.
 
+> **And the generator stopped being aspirational on 2026-08-25.** 010-D6 was
+> written when the register was maintained by hand, and `internal/conformance`
+> now emits §2's table from `Register()` with a test that fails when the two
+> disagree. It caught its author's own hand-edit on the first attempt: two new
+> rows in the wrong position, which a reader comparing the two would not have
+> flagged. The table above is generated output — **edit `Register()`, not this
+> section.**
+>
 > **That rule stopped being hypothetical on 2026-08-24.** accel closed
 > [#4](https://github.com/golang-design/accel/issues/4) and
 > [#5](https://github.com/golang-design/accel/issues/5), and a probe against the
@@ -408,4 +416,5 @@ that is the same failure this project exists to catch in accel.
 | 010-D9 | performance against vLLM is a measured table per axis, losses included | a headline throughput claim | tgo will lose raw NVIDIA kernel throughput for a long time and should win host overhead first; one number hides both ([§3.1](#31-performance-against-vllm-and-which-axes-are-winnable)) |
 | 010-D8 | an open row cites an open issue; a blocked spec names a durable upstream record, issue **or** named artifact; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread; demand an open issue for every blocker | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
 | 010-D7 | a probe asserts a value against the oracle and varies optional bindings | record the graph and read the refusal | the refusal-based rule was blind to C13 and reported a false green in its own spec |
+| 010-D10 | the generator is the source of truth; §2's table is its output | edit the table and reconcile the code later | **Demonstrated 2026-08-25.** A hand-edit adding two rows to §2 was caught by the drift test within one CI run, including a row-order difference nobody would have noticed by eye. Adding a row means editing `Register()`, which is one place rather than two |
 | 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |
