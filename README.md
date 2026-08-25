@@ -20,7 +20,7 @@ program.
 
 > [!IMPORTANT]
 > **Early, and it works.** tgo loads a real Qwen3 checkpoint and generates text
-> on Apple silicon today — about 12 tokens a second on a 0.6B model, with a
+> on Apple silicon today — about 18 tokens a second on a 0.6B model, with a
 > 170ms wait for the first one.
 >
 > Two caveats worth knowing before you plan around it. Without a GPU it is very

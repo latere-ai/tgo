@@ -63,7 +63,7 @@ API has and another lacks is reported rather than dropped quietly.
 
 | backend | where | status |
 | --- | --- | --- |
-| Metal | Apple silicon | **works.** About 12 tokens a second on a 0.6B model, with a 170ms wait for the first |
+| Metal | Apple silicon | **works.** About 18 tokens a second on a 0.6B model, with a 170ms wait for the first |
 | CPU | everywhere | **works, and is currently very slow** — minutes per token rather than a fraction of a second. The compute layer below runs each piece of work in turn rather than in parallel. Use it for correctness, not for speed |
 | Vulkan | Linux, Windows | accel: designed, unbuilt |
 | D3D12, WebGPU | | accel: designed, unbuilt |

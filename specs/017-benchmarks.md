@@ -110,12 +110,25 @@ An inference benchmark is easy to make say what you want. These are binding.
 
 Qwen3-0.6B at f16, 2026-08-25, on an 8-core Apple machine.
 
-**On Metal**, 64 prompt tokens and 32 decode steps after 4 warm-up steps:
+**On Metal**, 64 prompt tokens and 32 decode steps after 4 warm-up steps, before
+and after accel's [#21](https://github.com/golang-design/accel/issues/21) fix:
 
-| phase | tokens/s | p50 | p90 | p99 | host | submit | device | readback |
+| decode | tokens/s | p50 | p90 | p99 | host | submit | device | readback |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| decode | 12.57 | 61.6ms | 78.9ms | 474.7ms | 0.93% | **15.61%** | 81.88% | 1.59% |
-| prefill | 379.03 | 168.9ms | — | — | 0.54% | 1.12% | 97.89% | 0.44% |
+| before | 12.57 | 61.6ms | 78.9ms | 474.7ms | 0.93% | **15.61%** | 81.88% | 1.59% |
+| **after** | **17.97** | 54.2ms | 61.5ms | **76.5ms** | 0.64% | **3.34%** | **94.62%** | 1.39% |
+
+Prefill before the fix: 379.03 tokens/s, 168.9ms, 97.89% device.
+
+**+43% throughput from one upstream change, and the p99 fell 84%** — from
+474.7ms to 76.5ms, so the tail collapsed by more than the median moved. A
+per-call reflection frame rebuild produces occasional very slow calls rather
+than a uniform tax, so removing it removed the variance. [017-D2](#decision-record)
+chose percentiles for a different reason; this is the first time they paid for
+themselves.
+
+Device is now **94.62%** of a decode step, which is the shape a decode step
+should have: the framework spends its time in kernels rather than around them.
 
 Cold start is 27.6s (model load and every first compile); warm time to first
 token is 169ms.
@@ -126,8 +139,14 @@ token is 169ms.
    cost is roughly fixed, so it is amortised over a 64-token prefill and paid in
    full by a one-token decode — which is the shape [008 §1](008-scheduler.md)
    argues batching fixes, visible in a measurement rather than in an argument.
-   It is the largest non-kernel cost tgo has. Filed as
-   [accel#21](https://github.com/golang-design/accel/issues/21) with the ratio,
+   **Filed as [accel#21](https://github.com/golang-design/accel/issues/21) and
+   since fixed**, which is the row above. accel attributed it further than this
+   instrument could: not a per-*step* submission cost as tgo assumed, but a
+   per-*node* one — the cost of calling Objective-C from Go through reflection,
+   about five message sends per dispatch over a ~790-node graph. The lesson kept
+   in [017-D1](#decision-record)'s terms: the breakdown says *how much* and
+   never *where*, so the useful report is the number and the shape, not a theory
+   about the cause. Filed with the ratio,
    because a ~790-node graph resubmitted per token is a per-dispatch cost meeting
    a step that does little arithmetic per node — and because
    [000 §11](000-decisions.md) says the parts that are not matrix multiplication
