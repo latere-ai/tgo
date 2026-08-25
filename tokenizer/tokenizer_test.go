@@ -135,7 +135,7 @@ func TestTieBreakIsLeftmost(t *testing.T) {
 	}
 }
 
-// TestReferenceVectors is the load-bearing test of 002-D5 and it cannot be
+// TestReferenceVectors is the decisive test of 002-D5 and it cannot be
 // written yet: the vectors have to come from the reference implementation, and
 // generating them from this package would make the test assert that the code
 // does what it does.

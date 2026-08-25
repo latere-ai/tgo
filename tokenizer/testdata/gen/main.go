@@ -64,7 +64,7 @@ func mapBytes(s string) string {
 	return string(out)
 }
 
-// head is the hand-fixed prefix of the merge list. Its ranks are load-bearing;
+// head is the hand-fixed prefix of the merge list. Its ranks are fixed;
 // tokenizer_test.go asserts them so the fixture cannot drift out from under the
 // tests that cite the spec.
 var head = [][2]string{

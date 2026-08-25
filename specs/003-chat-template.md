@@ -170,7 +170,7 @@ sequenceDiagram
   Note over R: on the next turn, this turn's<br/><think> block is stripped
 ```
 
-Four details that are load-bearing and easy to lose:
+Four details that are easy to lose and break the prompt:
 
 1. **The newline after `assistant` is part of the prompt.** Without it the
    model's first generated token is that newline, and every downstream

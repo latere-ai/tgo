@@ -24,7 +24,7 @@
 // rule in it is a function in this package with a test, not a branch inside a
 // flag handler.
 //
-// Five things are load-bearing and are stated here because a reader of the
+// Five things are stated here because a reader of the
 // output has to be able to check them:
 //
 //   - The precision choice is printed with the two footprints and the budget it

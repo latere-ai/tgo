@@ -30,7 +30,7 @@ type Phase uint8
 
 // The phases a step can belong to. Prefill is the zero value so that a Step
 // built by a caller that forgot the field is attributed to the phase whose
-// statistics are least load-bearing.
+// statistics matter least.
 const (
 	Prefill Phase = iota
 	Decode

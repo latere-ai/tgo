@@ -267,7 +267,7 @@ derived from the mathematics rather than from the graph code
 ([010-D2](010-conformance.md)). That is the check that proves the model rather
 than proving it compiles.
 
-**Each of the three load-bearing tests was mutation-tested**, because a passing
+**Each of the three tests that prove the model was mutation-tested**, because a passing
 test proves nothing until it has been shown it can fail:
 
 - moving QK-norm to after RoPE kills two tests by a factor of **15,000 over

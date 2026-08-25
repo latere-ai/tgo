@@ -28,8 +28,8 @@ func TestParseBench(t *testing.T) {
 	}
 }
 
-// TestParseBenchRefusals walks the refusals. The batch one is the load-bearing
-// case: a run that silently measured batch 1 while the user asked for 8 is the
+// TestParseBenchRefusals walks the refusals. The batch one is the case that
+// matters: a run that silently measured batch 1 while the user asked for 8 is the
 // dishonest table 017-D4 exists to prevent.
 func TestParseBenchRefusals(t *testing.T) {
 	for _, tc := range []struct {

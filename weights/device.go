@@ -72,7 +72,7 @@ func (a *arena) mapped() bool { return a.kind == accel.MemoryShared }
 // a block, so a request for the whole pool lands in the class above the one the
 // pool's single free block sits in. A sixteenth plus one granularity is past
 // the widest that round-up can be, and alloc retries in a fresh pool anyway, so
-// the arithmetic is a first choice rather than a load-bearing one.
+// the arithmetic is a first choice rather than a requirement.
 const poolHeadroom = 16
 
 // alloc returns a buffer of count elements of dt.

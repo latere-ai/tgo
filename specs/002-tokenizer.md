@@ -215,7 +215,7 @@ buffer is about text.
 All of it runs on a **small checked-in tokenizer** built from a synthetic
 vocabulary, plus the fixed vectors from the real one. Neither needs a model.
 
-> The fixed vectors are the load-bearing test and the one that costs something
+> The fixed vectors are the decisive test and the one that costs something
 > to produce: they must come from the reference implementation, not from tgo.
 > Generating them from tgo's own output would make the test assert that the code
 > does what it does.
