@@ -106,30 +106,54 @@ An inference benchmark is easy to make say what you want. These are binding.
 6. **The comparison is reproducible from the repository**: one command, the
    harness in tree, the prompts checked in.
 
-## 4.1 What the first real run measured
+## 4.1 What the first real runs measured
 
-Qwen3-0.6B at f16 on accel's CPU backend, 2026-08-25:
+Qwen3-0.6B at f16, 2026-08-25, on an 8-core Apple machine.
 
-| batch | tokens/s | p50 step | host | submit | device | readback |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.00 | 3560.8s | 0.00% | 0.01% | **99.99%** | 0.00% |
+**On Metal**, 64 prompt tokens and 32 decode steps after 4 warm-up steps:
 
-**The breakdown did its job on the first run.** 99.99% device says the cost is
-accel's kernels and not tgo's loop, which is a conclusion a throughput number
-cannot support — and the readback share [C6](010-conformance.md) predicted
-would dominate is 0.00%, because the kernels are so much slower that nothing
-else is visible. Both are findings, and neither would exist without §1's split.
+| phase | tokens/s | p50 | p90 | p99 | host | submit | device | readback |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| decode | 12.57 | 61.6ms | 78.9ms | 474.7ms | 0.93% | **15.61%** | 81.88% | 1.59% |
+| prefill | 379.03 | 168.9ms | — | — | 0.54% | 1.12% | 97.89% | 0.44% |
 
-The two causes are upstream and filed:
-[accel#19](https://github.com/golang-design/accel/issues/19) (no Metal path for
-`Contiguous`, so this is CPU) and
-[accel#20](https://github.com/golang-design/accel/issues/20) (the CPU backend
-dispatches serially).
+Cold start is 27.6s (model load and every first compile); warm time to first
+token is 169ms.
 
-**A comparison against vLLM is not worth running yet**, and §4 rule 1 is why:
-publishing a loss of this magnitude against a framework whose kernels are years
-of hand-tuned CUDA would report a fact about accel's backend maturity dressed as
-a fact about tgo. The row waits for a backend that can finish a token.
+**Three findings the breakdown produced that a throughput number could not:**
+
+1. **Submit is 15.61% of a decode step and 1.12% of a prefill.** Per-dispatch
+   cost is roughly fixed, so it is amortised over a 64-token prefill and paid in
+   full by a one-token decode — which is the shape [008 §1](008-scheduler.md)
+   argues batching fixes, visible in a measurement rather than in an argument.
+   It is the largest non-kernel cost tgo has, and the first thing worth
+   attacking that is **not** upstream.
+2. **Readback is 1.59%, not the dominant term.** [C6](010-conformance.md) — the
+   608 KB of logits per token — is real and is an order of magnitude smaller
+   than the submit overhead beside it. The register row stands; its priority
+   does not.
+3. **p99 is 7.7× p50** (474ms against 61.6ms). Percentiles were
+   [017-D2](#decision-record)'s reason for existing, and a mean would have hidden
+   this entirely.
+
+**On the CPU backend**, the same model needed **3560s for a 4-token prefill** —
+99.99% device, everything else below 0.01%. That is
+[accel#20](https://github.com/golang-design/accel/issues/20): the backend
+dispatches workgroups serially. Recorded because it is the number a user without
+a GPU meets.
+
+> Metal produced nothing at all until 2026-08-25: `Contiguous` was the only
+> kernel in accel's corpus with no MSL artifact, and
+> [004 §3.2](004-model-graph.md) requires it before the LM head. Filed as
+> [accel#19](https://github.com/golang-design/accel/issues/19), fixed upstream
+> the same day, and these are the first numbers after it.
+
+**A comparison against vLLM is still not worth running**, and §4 rule 1 is why.
+12.57 tokens/s on a 0.6B model against years of hand-tuned CUDA would report a
+fact about kernel maturity dressed as a fact about tgo. The row waits for
+[011 M13](011-sequencing.md), and what would make it meaningful first is the
+submit overhead in finding 1 — the one axis [000 §11](000-decisions.md) says tgo
+should win.
 
 ## 5. Where the numbers go
 

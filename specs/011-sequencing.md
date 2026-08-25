@@ -198,10 +198,10 @@ plan compile time, the batch curve, the vLLM comparison.
 one.** This is the second time that method has beaten inspection:
 
 - [accel#19](https://github.com/golang-design/accel/issues/19) — `Contiguous`
-  is the **only kernel in the corpus with no MSL artifact**, so any graph that
-  slices cannot run on Metal. [004 §3.2](004-model-graph.md) *requires*
-  slicing before the LM head, so the dense path is CPU-only until it lands, and
-  the refusal arrives at compile time after a 1.4 GB upload.
+  was the **only kernel in the corpus with no MSL artifact**, so any graph that
+  slices could not run on Metal, and [004 §3.2](004-model-graph.md) *requires*
+  slicing before the LM head. **Filed and fixed upstream the same day**, which
+  is what turned this wave from a CPU-only result into a working model.
 - [accel#20](https://github.com/golang-design/accel/issues/20) — accel's CPU
   backend dispatches workgroups **serially**, by its own documentation. 32
   minutes for a 4-token prefill of 596M parameters. Not a bug; the serial loop
@@ -218,11 +218,27 @@ both 2 — the identity for every confusion between them. That exact shape cost
 [Wave 2](#2026-08-24--wave-2-shipped-and-the-target-checkpoint-corrected-a-spec)
 twelve surviving mutants and Wave 3 its whole f16 permutation path.
 
+**tgo generates coherent text on Metal.** After
+[accel#19](https://github.com/golang-design/accel/issues/19) closed:
+
+```
+$ tgo run --prompt "The capital of France is" --max-tokens 12 --temp 0
+Okay, the user is asking about the capital of
+13 prompt tokens, 12 generated, 4.17 tokens/second
+```
+
+Byte-identical across runs, which is [006-D3](006-sampling.md)'s greedy
+determinism holding on a real model. Measured properly at 64 prompt tokens and
+32 decode steps: **12.57 tokens/s decode, 379 tokens/s prefill**, 169ms warm
+time to first token. [017 §4.1](017-benchmarks.md) has the breakdown and the
+three findings it produced — the sharpest being that **submit is 15.61% of a
+decode step**, which is the largest non-kernel cost tgo has and the first one
+that is not upstream.
+
 **Wave 5 next**: the OpenAI/Anthropic/Responses server ([009](009-server.md)),
-prefix caching ([016](016-prefix-cache.md)), and the vLLM comparison
-([010 §3.1](010-conformance.md)) — which needs [accel#19](https://github.com/golang-design/accel/issues/19)
-or [accel#20](https://github.com/golang-design/accel/issues/20) to produce a
-number worth publishing.
+prefix caching ([016](016-prefix-cache.md)), and the submit overhead above —
+which is the axis [000 §11](000-decisions.md) says tgo should win and the thing
+that would make a vLLM comparison worth publishing.
 
 ### 2026-08-25 — Wave 3 shipped: the forward pass agrees with the oracle
 

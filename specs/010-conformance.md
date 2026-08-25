@@ -45,6 +45,8 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C14 | an f16 `GatherRows` | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed |
 | C15 | a quantized matrix-vector kernel at $M=1$ | 010 | [#11](https://github.com/golang-design/accel/issues/11) | **closed** | none needed |
 | C16 | a **batched prefill**, or prefill and decode in one dispatch | 040 | [#16](https://github.com/golang-design/accel/issues/16) | **open** | prefills run alone. Chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
+| C18 | `Contiguous` on Metal | 010, 021 | [#19](https://github.com/golang-design/accel/issues/19) | **closed** | none needed. It was the only kernel in the corpus with no MSL artifact, so every graph that slices — which [004 §3.2](004-model-graph.md) requires — was refused at compile. Fixed upstream the day it was filed |
+| C19 | a CPU backend that dispatches in parallel | 006 | [#20](https://github.com/golang-design/accel/issues/20) | **open** | none. Workgroups run serially, so a 4-token prefill of 0.6B takes 3560s; a user without a GPU meets this |
 | C17 | GGUF's K-quant super-blocks | 010 | [#15](https://github.com/golang-design/accel/issues/15), not planned | **open, not scheduled** | read safetensors and quantize at load ([012](012-gguf.md)) |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
