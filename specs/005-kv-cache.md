@@ -46,9 +46,14 @@ than by reading commits:
 
 | | state |
 | --- | --- |
-| capacity ≤ **128 positions**, paged or not | [C11](010-conformance.md), **blocking** |
-| a `LayerState` view at a non-zero offset is refused, by `Attention` and `ScatterRows` alike | [C12](010-conformance.md) |
-| `q`'s rank is the *phase*, so there is no batch axis | [C1](010-conformance.md) |
+| capacity ≤ 128 positions | [C11](010-conformance.md) — **closed 2026-08-24** |
+| a `LayerState` view at a non-zero offset | [C12](010-conformance.md) — **closed**; the cache is 2 states, not $2L$ |
+| `q`'s rank is the *phase*, so there is no batch axis | [C1](010-conformance.md) — **closed**; a rank-4 `q` is a batch |
+
+**Every constraint this section was written around is gone.** The table is kept
+rather than deleted because the arithmetic in [§3](#3-the-number-before-and-after)
+is what argued them closed, and a reader who meets that argument should be able
+to see what it was arguing against.
 
 ### 1.2 Paging is a binding, not a second cache
 

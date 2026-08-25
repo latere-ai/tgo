@@ -213,7 +213,20 @@ field appears in the loss header" would pass over the bug.
 
 So the handler parses those fields from the **raw body** alongside
 `DecodeRequest`, and **subtracts** them from `Loss.Fields()` before emitting the
-header. `top_k` is the same defect from the other side: it is in `ir.Request`, so
+header.
+
+**The subtraction is per dialect, and getting that wrong is a real defect rather
+than a tidiness issue.** The set of names tgo honours is a *union* across four
+surfaces — `max_tokens`, `max_completion_tokens`, `max_output_tokens`, `stop`,
+`stop_sequences` — and subtracting the union everywhere reports a knob that set
+nothing as though it were honoured. Measured: `max_output_tokens` on
+`/v1/chat/completions` applied no bound, `X-Tgo-Loss` came back empty, and the
+completion ran to context exhaustion **with nothing saying so**. False in 12 of
+56 name-by-route cells.
+
+So each route subtracts the names *that route* applies, and §8's test is the
+whole matrix: every honoured wire name against every route, applied if and only
+if it is not reported. `top_k` is the same defect from the other side: it is in `ir.Request`, so
 `/v1/messages` honours it, while OpenAI Chat has no such field and it must not
 appear as a loss at all.
 
@@ -357,7 +370,7 @@ what proves the fake engine's contract matches the real one.
 | 009-D6 | `tools` returns what the model emitted | parse into a dialect's `tool_calls` | without [015](015-structured-output.md) nothing checks validity; parsing would assert what was not verified |
 | 009-D7 | metrics expose the readback share, queue wait, and loss | throughput only | the numbers that name tgo's upstream costs are visible in production |
 | 009-D8 | loopback by default; a public bind needs a flag | bind `0.0.0.0` by default | an unauthenticated server is not exposed by omission |
-| 009-D12 | subtract the fields tgo honours from `llmdialect`'s loss list | emit `Loss.Fields()` verbatim | the IR is narrower than `Policy`, so the header would report honoured knobs as dropped ([§4.1](#41-irrequest-is-narrower-than-policy-so-the-loss-list-must-be-corrected)) |
+| 009-D12 | subtract the fields tgo honours from `llmdialect`'s loss list, **per dialect** | emit `Loss.Fields()` verbatim; subtract the union everywhere | the IR is narrower than `Policy`, so the header would report honoured knobs as dropped. **Amended 2026-08-26:** the first wording was dialect-blind and shipped a defect — a name honoured on *some* route was subtracted on *every* route, so a request that set nothing ran to context exhaustion reporting no loss ([§4.1](#41-irrequest-is-narrower-than-policy-so-the-loss-list-must-be-corrected)) |
 | 009-D13 | tgo owns a per-dialect error encoder | expect `Frontend` to cover errors | `Frontend` has no error path and the dialects genuinely differ; ollama hand-writes both ([§5.1](#51-errors-need-a-per-dialect-encoder-which-the-frontend-half-does-not-give)) |
 | 009-D9 | serve three dialects via `llmdialect`'s `Frontend` half | OpenAI Chat only; reimplement the dialects in tgo | three surfaces for one adapter. `Backend` is a gateway's half and tgo never uses it |
 | 009-D10 | `llmdialect` is a `tgo/server` dependency, not a core one | make `ir.Request` the engine's argument | a library embedder inherits neither the IR types nor the dialect layer. **Verified 2026-08-24:** `latere.ai/x/pkg` is one module carrying golang-migrate, the OTEL SDK, goldmark and oauth2 — and none of it reaches a consumer. Go's module graph pruning keeps a consumer's `go.sum` at two lines and links **stdlib only** beside llmdialect's own packages ([§2.1](#21-what-the-dependency-actually-costs)) |

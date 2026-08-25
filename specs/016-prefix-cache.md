@@ -274,7 +274,7 @@ small device test for the reuse itself. No weights.
 | --- | --- |
 | a warm request produces the same tokens as a cold one (greedy) | the whole point |
 | hit length is block-aligned and never exceeds the true common prefix | §3 |
-| **the chained hash**: two prompts sharing an interior 32-token run do **not** share a block | §3's chain, the silent-collision bug |
+| **the chained hash**: two prompts sharing an interior run do **not** share a block, asserted **at `Publish`** | §3's chain. The collision does its damage at publish, not at acquire: a match loop stops at the first miss, so an interior block is never looked up, and the second prompt instead *adopts* the first's physical block when it publishes. A test written against "they do not share" without publishing passes under an unchained hash |
 | **a freed block's hash entry is gone**: force eviction, then request the evicted prefix, and assert a miss rather than a hit | §5's invariant, tested directly |
 | refcount: a block shared by two sequences survives one of them finishing | §5 |
 | eviction never frees a block at refcount > 0 | §5 |
