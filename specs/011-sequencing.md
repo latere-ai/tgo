@@ -242,6 +242,64 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-26 — Wave 5 shipped: tgo serves
+
+`server`, `internal/prefix`, `internal/hub`, and `serve`/`pull` in `cmd/tgo`.
+**Seventeen packages**, every gate green, the coverage floor measuring fourteen.
+
+**Verified against the real model, not against a fake.** `tgo serve` on
+Qwen3-0.6B, Metal, 217 admitted sessions at 256 positions:
+
+| | |
+| --- | --- |
+| OpenAI Chat | answers, `finish_reason`, usage |
+| Anthropic Messages | answers, thinking typed as a `thinking` block |
+| OpenAI Responses | answers, reasoning as a `summary_text` |
+| SSE | streams token by token, `reasoning_content` deltas |
+| `X-Tgo-Loss` | `service_tier, user` — advisory fields ran and were reported |
+| `n=4` | refused by name, with the reason and a remedy |
+| `/metrics` | in-flight per dialect, queue depth, wait histogram |
+| SIGINT | graceful, in-flight requests given 30s |
+
+That is [009-D2](009-server.md)'s rule working end to end: refuse what changes
+the answer, report what cannot.
+
+**What the reviews found, and none of it was in production code.** Every defect
+this wave was a *test* that appeared to cover a property and did not:
+
+- **`internal/hub`**: the lock suite proved the lock was *acquired* and never
+  that it was *held while bytes landed* — which is the entirety of
+  [013 §3](013-distribution.md)'s claim. The parallel bound was unproven because
+  the fake released its barrier before the held handlers could be counted. And
+  `openPart`'s truncate guarded a real corruption the fixture masked: a partial
+  longer than the body leaves stale bytes on the end, and the rename publishes
+  them.
+- **`internal/prefix`**: the chained-hash test — the one named for
+  [016-D2](016-prefix-cache.md) — was **insensitive to an unchained hash**. A
+  match loop stops at the first miss, so an interior block is never looked up;
+  the collision does its damage at **publish**, where the second prompt adopts
+  the first's physical block. 016 §8 now names publish.
+- **`server`**: [009-D12](009-server.md) was dialect-blind and shipped the
+  defect it caused. Amended.
+- **`cmd/tgo`**: the exactly-one-session admission boundary, where a machine
+  that can *just* run the model would be turned away by a message telling it to
+  lower a context that already fits.
+
+**The header drop was proved by mutation rather than by reading**, and the kill
+is not deleting the `Header.Del` line — it is changing the host comparison to
+Go's own `Hostname()`, which strips the port. Both test servers sit on
+127.0.0.1, so a port-stripped comparison sees one domain and forwards the token
+to the CDN, which 403s.
+
+**And a fourth degenerate fixture**, after three earlier waves: a page table that
+was the identity, so `Row` could be replaced by `return t` and everything passed
+— `Row` being the only consumer-facing arithmetic in that package.
+
+**Remaining**: [008](008-scheduler.md) continuous batching,
+[015](015-structured-output.md) structured output, and
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps — of which
+4-bit weights is the one that decides whether a 27B-class model is reachable.
+
 ### 2026-08-25 — Wave 4 shipped: the framework runs, and measures itself
 
 `tgo` (the public API and decode loop), `cmd/tgo`, and the conformance

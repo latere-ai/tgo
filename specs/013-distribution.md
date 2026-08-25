@@ -1,6 +1,6 @@
 ---
 title: "Distribution: fetching a checkpoint, and the cache it lands in"
-status: drafted
+status: implemented
 layer: load
 depends_on:
   - 000-decisions.md

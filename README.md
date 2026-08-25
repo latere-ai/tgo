@@ -93,8 +93,12 @@ if err := stream.Err(); err != nil {
 Or as a server, which speaks three APIs on the same model:
 
 ```sh
-tgo serve ./Qwen3-4B
+tgo pull Qwen/Qwen3-0.6B     # fetch a checkpoint into the cache
+tgo serve ./Qwen3-0.6B       # then serve it
 ```
+
+It answers OpenAI Chat Completions, Anthropic Messages and OpenAI Responses on
+the same model, streaming, so most clients work unchanged.
 
 ## How it is built, and why that matters to you
 

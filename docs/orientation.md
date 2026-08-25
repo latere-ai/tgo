@@ -47,7 +47,7 @@ can plan around instead of something you discover.
 ## Speaking to it
 
 tgo serves three wire APIs on top of the same engine, so most clients work
-unchanged:
+unchanged. Start it with `tgo serve <model-dir>`:
 
 | you send | route |
 | --- | --- |
@@ -56,8 +56,16 @@ unchanged:
 | OpenAI Responses | `/v1/responses` |
 
 They are translated through one neutral request shape rather than handled
-separately, so a feature works the same way whichever you use, and a field one
-API has and another lacks is reported rather than dropped quietly.
+separately, so a feature works the same way whichever you use.
+
+**A setting tgo cannot honour is never dropped quietly.** One that would change
+the answer — asking for four completions at once, say — is refused by name, with
+the reason. One that cannot change the answer runs anyway and comes back listed
+in an `X-Tgo-Loss` response header, so you can see what was ignored without
+reading the source.
+
+The server binds to localhost. Exposing it needs an explicit flag, and it says
+plainly that it has no authentication when you do.
 
 ## Backends
 
