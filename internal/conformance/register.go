@@ -130,9 +130,10 @@ func Register() []Row {
 		Cannot: "sampling of any kind at the `tensor` layer",
 		Specs:  []string{"028", "039"},
 		Issue:  6,
-		State:  Open,
-		Cost: "host sampling. The per-row kernels exist in the corpus; " +
-			"`tensor` exports no sampling operator",
+		State:  Closed,
+		Cost: "none needed. `tensor.Sample` composes the whole policy on the " +
+			"device — penalties, temperature, softmax, top-k, top-p and the " +
+			"categorical walk — and returns a token id",
 	}, {
 		ID:     "C4",
 		Cannot: "a paged KV **decode**",
@@ -153,8 +154,9 @@ func Register() []Row {
 		Cannot: "penalties and temperature on device",
 		Specs:  []string{"039"},
 		Issue:  6,
-		State:  Open,
-		Cost:   "host, before submission; a 608 KB logits readback per token",
+		State:  Closed,
+		Cost: "none needed. The policy runs on the device, so a step can return " +
+			"a token id rather than reading back 608 KB of logits",
 	}, {
 		ID:        "C7",
 		Cannot:    "a **bf16 GEMM**",
@@ -253,9 +255,19 @@ func Register() []Row {
 		Cannot: "a CPU backend that dispatches in parallel",
 		Specs:  []string{"006"},
 		Issue:  20,
+		State:  Closed,
+		Cost: "none needed upstream. The CPU backend remains far slower than " +
+			"Metal, which is a kernel-throughput question rather than a missing " +
+			"capability; use a GPU where there is one",
+	}, {
+		ID:     "C20",
+		Cannot: "a decode step whose submit cost is amortised",
+		Specs:  []string{"021"},
+		Issue:  21,
 		State:  Open,
-		Cost: "none. Workgroups run serially, so a 4-token prefill of 0.6B takes " +
-			"3560s; a user without a GPU meets this",
+		Cost: "none. Submit is 15.61% of a decode step against 1.12% of a " +
+			"prefill: a fixed per-dispatch cost over a ~790-node graph, paid in " +
+			"full by a one-token step ([017 §4.1](017-benchmarks.md))",
 	}}
 	return rows
 }

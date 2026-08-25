@@ -31,10 +31,10 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | --- | --- | --- | --- | --- | --- |
 | C1 | a **batched** decode | 040 | [#12](https://github.com/golang-design/accel/issues/12) | **closed** | none needed. Verified: two sequences of lengths 96 and 32 batched match two single runs to `0.00e+00` |
 | C2 | RoPE at per-row positions | 025, 043 | [#2](https://github.com/golang-design/accel/issues/2) | **closed** | none needed |
-| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host sampling. The per-row kernels exist in the corpus; `tensor` exports no sampling operator |
+| C3 | sampling of any kind at the `tensor` layer | 028, 039 | [#6](https://github.com/golang-design/accel/issues/6) | **closed** | none needed. `tensor.Sample` composes the whole policy on the device — penalties, temperature, softmax, top-k, top-p and the categorical walk — and returns a token id |
 | C4 | a paged KV **decode** | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed |
 | C5 | an f16 KV cache that can be **written**, or paged | 007, 010 | [#13](https://github.com/golang-design/accel/issues/13) | **closed** | none needed; `ScatterRows`, prefill and paged decode all take f16. **Halves the cache** |
-| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | **open** | host, before submission; a 608 KB logits readback per token |
+| C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | **closed** | none needed. The policy runs on the device, so a step can return a token id rather than reading back 608 KB of logits |
 | C7 | a **bf16 GEMM** | 002, 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open, narrowed** | convert on the host at load. `Cast` now widens bf16 to f32, so only the GEMM is missing, and a weight would not want a per-step cast anyway |
 | C8 | f32 activations against f16 or int8 weights | 010 | [#14](https://github.com/golang-design/accel/issues/14) | **closed** | none needed. **The cast chain is gone**: 1013 selections → 760 on the Qwen3 graph |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
@@ -47,8 +47,11 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C16 | a **batched prefill**, or prefill and decode in one dispatch | 040 | [#16](https://github.com/golang-design/accel/issues/16) | **open** | prefills run alone. Chunked prefill bounds latency and recovers no throughput ([008 §5](008-scheduler.md)) |
 | C17 | GGUF's K-quant super-blocks | 010 | [#15](https://github.com/golang-design/accel/issues/15), not planned | **open, not scheduled** | read safetensors and quantize at load ([012](012-gguf.md)) |
 | C18 | `Contiguous` on Metal | 010, 021 | [#19](https://github.com/golang-design/accel/issues/19) | **closed** | none needed. It was the only kernel in the corpus with no MSL artifact, so every graph that slices — which [004 §3.2](004-model-graph.md) requires — was refused at compile. Fixed upstream the day it was filed |
-| C19 | a CPU backend that dispatches in parallel | 006 | [#20](https://github.com/golang-design/accel/issues/20) | **open** | none. Workgroups run serially, so a 4-token prefill of 0.6B takes 3560s; a user without a GPU meets this |
-
+| C19 | a CPU backend that dispatches in parallel | 006 | [#20](https://github.com/golang-design/accel/issues/20) | **closed** | none needed upstream. The CPU backend remains far slower than Metal, which is a kernel-throughput question rather than a missing capability; use a GPU where there is one |
+| C20 | a decode step whose submit cost is amortised | 021 | [#21](https://github.com/golang-design/accel/issues/21) | **open** | none. Submit is 15.61% of a decode step against 1.12% of a prefill: a fixed per-dispatch cost over a ~790-node graph, paid in full by a one-token step ([017 §4.1](017-benchmarks.md)) |
+FAIL
+FAIL	github.com/latere-ai/tgo/internal/conformance	0.196s
+FAIL
 **This table is a dated snapshot and accel is moving under it fast.** Within a
 day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
 accepted an f16 cache and a page table, and `Buffer.Access` removed the host
@@ -131,17 +134,34 @@ makes cross-request prefix sharing inexpressible, so it blocks
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
 
-### 2.2 Thirteen rows closed, three open, and what that took
+### 2.2 Sixteen rows closed, four open, and what that took
 
-As of accel HEAD `ee659f6`, re-audited by asserting values and reading
-`Selections()`:
+Re-audited on 2026-08-25 against accel HEAD `05ff997` by recording graphs and
+reading `Selections()`, never by reading a commit message.
 
-**Closed: C1, C2, C4, C5, C8, C10, C11, C12, C13, C14, C15** — and C9 is a
-refusal that should stay. **Open: C3 and C6** (no sampling operator at the
-tensor layer, one issue), **C7** narrowed to a bf16 GEMM alone, **C16** (a
-batched step takes one token per sequence), and **C17** (GGUF, not scheduled).
+**Open: C7** (a bf16 GEMM), **C16** (a batched step takes one token per
+sequence, so a prefill cannot batch), **C17** (GGUF, not scheduled), and
+**C20** (submit is 15.6% of a decode step). C9 is a refusal that should stay.
+Everything else is closed.
 
-Three of those closures change what tgo builds:
+**The two that closed most recently are the ones tgo had carried longest.**
+`tensor.Sample` now composes the entire policy on the device — penalties,
+temperature, softmax, top-k, top-p and the categorical walk, eight kernels — and
+returns a token id. That closes **C3** (no sampling operator at all) and **C6**
+(the 608 KB logits readback per token) together, and it is the row
+[017 §4.1](017-benchmarks.md) measured at 1.59% of a decode step: real, and an
+order of magnitude smaller than the submit cost beside it.
+
+> **accel's composition order is not the one this tree specified**, and accel's
+> argument is better. [006 §3](006-sampling.md) truncated before the softmax,
+> as vLLM does; accel truncates after, because f32 rounding can make two
+> distinct logits equal probabilities, so a top-$k$ over logits keeps a
+> different boundary entry than the cumulative walk later sees. 006 was
+> corrected rather than the divergence recorded, since
+> [006-D1](006-sampling.md) makes tgo the *reference* for the device path and a
+> reference that composes differently is not one.
+
+Three earlier closures changed what tgo builds:
 
 - **row C1** — continuous batching is expressible. [008](008-scheduler.md) was
   `blocked` from the day it was written and is not any more.

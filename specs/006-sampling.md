@@ -68,11 +68,26 @@ func (s *Sampler) Probs(logits []float32, history []int, p Policy) []float32
 ## 3. The composition order, which is not arbitrary
 
 $$\ell \xrightarrow{\text{bias}} \ell^{(1)} \xrightarrow{\text{penalties}} \ell^{(2)}
-\xrightarrow{\;/T\;} \ell^{(3)} \xrightarrow{\text{top-}k} \xrightarrow{\text{top-}p}
-\xrightarrow{\text{softmax}} p \xrightarrow{\;u\;} \text{token}$$
+\xrightarrow{\;/T\;} \ell^{(3)} \xrightarrow{\text{softmax}} p
+\xrightarrow{\text{top-}k} \xrightarrow{\text{top-}p} \xrightarrow{\;u\;} \text{token}$$
 
 Each adjacency below is a decision, and §6 has a test that fails if it is
 swapped.
+
+> **Truncation moved after the softmax on 2026-08-25, and accel's argument is
+> why.** This spec had top-$k$ and top-$p$ acting on logits, which is what vLLM
+> does and is defensible. accel
+> [039](https://github.com/golang-design/accel/blob/main/specs/039-sampling-policy.md)
+> puts both after, on a sharper reason than "top-$p$ is a mass threshold":
+> **f32 rounding can make two distinct logits equal probabilities**, so a top-$k$
+> over logits keeps a different boundary entry than the cumulative walk later
+> sees. The mask and the walk must agree about which entries exist, and they only
+> do if both read the values the walk will read.
+>
+> tgo follows accel here because [006-D1](#decision-record) makes this package
+> the *reference* for accel's device path: a reference that composes differently
+> is not one. Recorded rather than silently rewritten, because the order was
+> argued from vLLM's and the argument was not wrong so much as weaker.
 
 - **Bias first.** `logit_bias` is a caller's absolute statement about a token; a
   penalty computed on a biased logit still means what it says, while biasing a
@@ -80,11 +95,20 @@ swapped.
 - **Penalties before temperature.** A penalty is a logit adjustment with a fixed
   meaning. Applied after dividing by $T$, its strength depends on $T$, so the
   same policy behaves differently at every temperature.
-- **Temperature before truncation.** Top-$p$ is a *mass* threshold and
-  temperature is what changes the mass. Truncating first makes $p$ mean
-  something different at each temperature.
+- **Temperature before the softmax, and both before truncation.** Top-$p$ is a
+  mass threshold and temperature is what changes the mass, so truncating first
+  makes $p$ mean something different at each temperature. Truncating after the
+  softmax additionally makes the mask and the walk agree on the boundary, per
+  the note above.
 - **Top-$k$ before top-$p$.** $k$ is a hard cap on the candidate count; $p$ then
-  trims within it. The reverse lets $p$ admit more than $k$.
+  trims within it. The reverse lets $p$ admit more than $k$, since top-$p$ is
+  relative to its own input's total — so each bound is one the other cannot
+  violate.
+- **Nothing renormalizes, and there is never a second softmax.** A mask leaves
+  the weights summing below one, which invites a fix; the fix is wrong, because
+  a softmax over a mask's output is near-uniform over the whole vocabulary
+  ($e^0 = 1$ for every dropped entry). The walk compares against
+  $u \times \text{total}$ instead.
 - **Both stages are capped at `TopMaxRounds` = 128 candidates** by accel's
   kernels. A $k$ above that, or a nucleus wider than that, is expressible on the
   host and unrepresentable on the device — so the host reference must refuse it
