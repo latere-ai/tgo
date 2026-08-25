@@ -6,3 +6,6 @@
 
 cover.out
 /dist/
+
+# Built by `go build` inside the command directory.
+/cmd/tgo/tgo

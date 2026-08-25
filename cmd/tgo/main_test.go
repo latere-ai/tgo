@@ -51,6 +51,23 @@ func TestRunDispatch(t *testing.T) {
 		t.Errorf("bench did not write the table:\n%s", stdout.String())
 	}
 
+	// serve and pull, through their own refusals: what is under test here is
+	// the switch, so each arm only has to reach a message no other arm
+	// produces. A `serve` case that fell through to the default would report an
+	// unknown command, and one wired to cmdInfo would report a model directory
+	// that could not be read.
+	stdout.Reset()
+	useFakeServable(t, fakeInfo(defaultContext))
+	err := run([]string{"serve", "--addr", "0.0.0.0:8080", dir}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--public") {
+		t.Errorf("run serve = %v, want 009-D8's refusal from cmdServe", err)
+	}
+	stdout.Reset()
+	err = run([]string{"pull", "./not-a-repo-id"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "Hugging Face repo id") {
+		t.Errorf("run pull = %v, want cmdPull's refusal", err)
+	}
+
 	stdout.Reset()
 	if err := run([]string{"help"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run help: %v", err)
@@ -69,7 +86,9 @@ func TestRunRefusals(t *testing.T) {
 		want string
 	}{
 		{"no command", nil, "no command"},
-		{"an unknown command", []string{"serve", "d"}, "unknown command \"serve\""},
+		// A word that is not a command and never will be: "serve" used to
+		// stand here, and it became one.
+		{"an unknown command", []string{"quantize", "d"}, "unknown command \"quantize\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr strings.Builder
@@ -272,7 +291,9 @@ func TestUsageDocumentsEveryFlag(t *testing.T) {
 	}{
 		{"run", firstOf(runFlagSet())},
 		{"bench", firstOf(benchFlagSet())},
+		{"serve", firstOf(serveFlagSet())},
 		{"info", firstOf(infoFlagSet())},
+		{"pull", firstOf(pullFlagSet())},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			documented := usageFlags(t, tc.command)

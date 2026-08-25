@@ -15,14 +15,21 @@ import (
 	"github.com/latere-ai/tgo/weights"
 )
 
-// modelDir parses fs over args and returns the one positional argument every
-// command takes: the model directory.
+// modelDir parses fs over args and returns the one positional argument the
+// commands that take a model take: the model directory.
+func modelDir(fs *flag.FlagSet, args []string) (string, error) {
+	return onePositional(fs, args, "model directory")
+}
+
+// onePositional parses fs over args and returns the one positional argument the
+// command takes, named by what so that every refusal below says which thing was
+// missing, duplicated or blank.
 //
 // The flag package writes its own diagnostics and calls os.Exit on an unknown
 // flag unless it is told otherwise, so every flag set here is created with
 // [flag.ContinueOnError] and a discarded output: a command line is refused by
 // returning an error, which is the form a test can assert.
-func modelDir(fs *flag.FlagSet, args []string) (string, error) {
+func onePositional(fs *flag.FlagSet, args []string, what string) (string, error) {
 	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
 		return "", fmt.Errorf("%w: %v", errUsage, err)
@@ -30,20 +37,20 @@ func modelDir(fs *flag.FlagSet, args []string) (string, error) {
 	switch rest := fs.Args(); len(rest) {
 	case 1:
 		if strings.TrimSpace(rest[0]) == "" {
-			return "", fmt.Errorf("%w: the model directory is empty", errUsage)
+			return "", fmt.Errorf("%w: the %s is empty", errUsage, what)
 		}
 		return rest[0], nil
 	case 0:
-		return "", fmt.Errorf("%w: no model directory", errUsage)
+		return "", fmt.Errorf("%w: no %s", errUsage, what)
 	default:
 		// The hint names the cause of the common case rather than the shape
 		// of the failure. [flag.FlagSet.Parse] stops at the first argument
 		// that is not a flag, so `tgo info <dir> --context 512` reaches here
 		// with three positional arguments and a user reading only "one model
 		// directory" has no way to see that their flag was never parsed.
-		return "", fmt.Errorf("%w: one model directory, and %d were given (%s); "+
+		return "", fmt.Errorf("%w: one %s, and %d were given (%s); "+
 			"flags go before it, since parsing stops at the first argument that is not a flag",
-			errUsage, len(rest), strings.Join(rest, " "))
+			errUsage, what, len(rest), strings.Join(rest, " "))
 	}
 }
 

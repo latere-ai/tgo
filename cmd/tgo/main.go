@@ -5,16 +5,21 @@
 //
 //	tgo run   [--prompt P] [--max-tokens N] [--temp T] [--seed S] [--precision f16|int8|auto] <model-dir>
 //	tgo bench [--tokens N] [--prompt-tokens N] [--batch N] [--json out.json] <model-dir>
+//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--device D] <model-dir>
 //	tgo info  <model-dir>
+//	tgo pull  [--revision R] [--token T] <repo-id>
 //
 // The flags come before the model directory, which is [flag.FlagSet.Parse]'s
 // rule and not a preference: parsing stops at the first argument that is not a
 // flag, so a flag written after the directory is a second positional argument
 // and is refused rather than applied.
 //
-// Every command takes --device auto|cpu|metal and --precision f16|int8|auto;
-// `tgo help` prints the whole surface, and TestUsageDocumentsEveryFlag holds it
-// against the flags the three commands declare.
+// Every command that opens a model -- run, bench, serve and info -- takes
+// --device auto|cpu|metal and --precision f16|int8|auto. `tgo pull` opens none
+// and takes neither: it turns a repo id into a directory the other four can be
+// pointed at. `tgo help` prints the whole surface, and
+// TestUsageDocumentsEveryFlag holds it against the flags the five commands
+// declare.
 //
 // The command is argument parsing and process wiring. Every number it prints is
 // computed by a package under it -- model parses the config, bench aggregates
@@ -24,7 +29,7 @@
 // rule in it is a function in this package with a test, not a branch inside a
 // flag handler.
 //
-// Five things are stated here because a reader of the
+// Six things are stated here because a reader of the
 // output has to be able to check them:
 //
 //   - The precision choice is printed with the two footprints and the budget it
@@ -49,6 +54,12 @@
 //     its decode loop writes to. The record says the four terms are missing and
 //     names the gap, rather than marshalling a report of zeros that reads as a
 //     measurement. See noBreakdownNote in record.go.
+//   - `tgo serve` prints the admission limit with the three terms it was
+//     divided out of, not as a bare count (specs/009-server.md §6). The
+//     available memory in that arithmetic is the device's MaxPoolBytes, which
+//     is a cap on one allocation rather than a report of free memory, so the
+//     derivation is what lets an operator see that a 16 GiB machine admitting
+//     one session is arithmetic and not a bug. See kvAdmission in serve.go.
 package main
 
 import (
@@ -75,11 +86,14 @@ func main() {
 // usage is the whole surface, in the order a new user meets it.
 const usage = `
 usage: tgo <command> [flags] <model-dir>
+       tgo pull [flags] <repo-id>
 
 commands:
   run     generate from a prompt, streaming tokens as they are produced
   bench   measure the host/submit/device/readback breakdown and write a report
+  serve   serve the model over HTTP in three wire dialects
   info    print the architecture, the precision choice and what memory it costs
+  pull    download a Hugging Face checkpoint and print where it landed
 
 run flags:
   --prompt P          the prompt text (default: a question about transformers)
@@ -106,30 +120,47 @@ bench flags:
   --context C         KV cache capacity in positions (default 4096)
   --device D          auto, cpu or metal (default auto)
 
+serve flags:
+  --addr host:port    where to listen (default 127.0.0.1:11434, loopback)
+  --public            allow a bind that is not loopback; this server has no
+                      authentication, so it is a flag rather than a default
+  --precision P       f16, int8 or auto (default auto)
+  --context C         KV cache capacity per session, in positions (default 4096)
+  --device D          auto, cpu or metal (default auto)
+
 info flags:
   --context C         KV cache capacity to price (default 4096)
   --precision P       f16, int8 or auto (default auto)
   --budget B          device bytes the weights may occupy; 0 asks the device
   --device D          auto, cpu or metal (default auto)
+
+pull flags:
+  --revision R        branch, tag or commit sha (default the repo's main)
+  --token T           Hugging Face access token (default $HF_TOKEN)
 `
 
 // run dispatches one command line. It returns an error rather than exiting so
 // that every refusal below is reachable from a test.
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: no command; one of run, bench or info is required", errUsage)
+		return fmt.Errorf("%w: no command; one of run, bench, serve, info or pull is required", errUsage)
 	}
 	switch cmd := args[0]; cmd {
 	case "run":
 		return cmdRun(args[1:], stdout, stderr)
 	case "bench":
 		return cmdBench(args[1:], stdout, stderr)
+	case "serve":
+		return cmdServe(args[1:], stdout, stderr)
 	case "info":
 		return cmdInfo(args[1:], stdout, stderr)
+	case "pull":
+		return cmdPull(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
 	default:
-		return fmt.Errorf("%w: unknown command %q; the commands are run, bench and info", errUsage, cmd)
+		return fmt.Errorf("%w: unknown command %q; the commands are run, bench, serve, info and pull",
+			errUsage, cmd)
 	}
 }
