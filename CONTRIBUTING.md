@@ -54,6 +54,13 @@ not exist.
   ([010-D3](specs/010-conformance.md)).
 - **A linter or checker must be negative-tested.** One that passes vacuously is
   the failure it exists to catch.
+- **A test that drives a fake through a channel must keep driving it until the
+  thing it waits for happens**, not until the thing it watches *appears*. A
+  generator blocked on a gate between tokens only reaches its cancellation check
+  after taking one, so a loop that stops nudging early parks it forever and then
+  reports the timeout as a behaviour failure. This failed only under `-race`,
+  where the timing is slow enough to lose a race the test did not know it had.
+  Yield in such a loop, too — a hot spin starves the goroutine under test.
 - **Do not assert that a duration is positive.** Windows' timer granularity is
   about 15ms, so a real interval of a few hundred microseconds measures as
   exactly zero, and every rate derived from it is zero. Five tests passed on

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -447,26 +448,45 @@ func TestAClientDisconnectCancelsGeneration(t *testing.T) {
 	// The stream must stop, and stop because the context did. Waiting on the
 	// channel rather than on a sleep is what makes this a test of the
 	// cancellation and not of a timer.
+	// Nudge until the stream stops, not merely until it appears.
+	//
+	// The generator blocks on the gate between tokens and only reaches its
+	// ctx.Err() check after taking one, so a loop that stops offering nudges
+	// the moment the stream exists can leave it parked forever and time out --
+	// reporting "kept generating" for a stream that never got the chance to
+	// notice. That is what this test did, and it failed only under -race,
+	// where the timing is slow enough to lose the race it did not know it had.
+	//
+	// The nudge is offered rather than pushed: a blocking send to a stopped
+	// generator would hang the test instead of failing it. The yield keeps the
+	// loop from starving that generator on a busy machine, which is the other
+	// half of why -race saw this and a normal run did not.
 	var st *fakeStream
-	deadline := time.Now().Add(10 * time.Second)
-	for st == nil && time.Now().Before(deadline) {
-		if got := eng.took(); len(got) == 1 {
-			st = got[0].streamOf()
+	deadline := time.Now().Add(20 * time.Second)
+	stopped := false
+	for !stopped && time.Now().Before(deadline) {
+		if st == nil {
+			if got := eng.took(); len(got) == 1 {
+				st = got[0].streamOf()
+			}
 		}
-		// A nudge the stopped stream will never take, so it is offered rather
-		// than pushed: a blocking send here would hang the test instead of
-		// failing it.
+		if st != nil {
+			select {
+			case <-st.stopped:
+				stopped = true
+			default:
+			}
+		}
 		select {
 		case gate <- struct{}{}:
 		default:
 		}
+		runtime.Gosched()
 	}
 	if st == nil {
 		t.Fatal("no stream was started")
 	}
-	select {
-	case <-st.stopped:
-	case <-time.After(10 * time.Second):
+	if !stopped {
 		t.Fatal("the stream kept generating after the client hung up")
 	}
 	if !st.cancelled {
