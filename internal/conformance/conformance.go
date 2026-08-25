@@ -25,6 +25,23 @@
 // nor a checkpoint. A rule that only runs where its inputs happen to be present
 // is a rule nobody has checked.
 //
+// # The register
+//
+// [Register] is the register itself and specs/010-conformance.md §2's table is
+// its output: [Document] renders the rows and a test fails when the spec and
+// the rows have parted. 010-D6 -- a hand-maintained register drifts within one
+// milestone, which is the exact failure this project exists to catch in accel,
+// so the table cannot be maintained beside the tests that produce it.
+//
+// Every open row is a named skipping test carrying the reason and the accel
+// spec that owns the gap (010-D1). The tests are generated from the rows too,
+// so the table cannot claim something no test tracks, and a row leaves the
+// register only when its test stops skipping.
+//
+// [Measurements] is §3: the five numbers tgo reports back, each a question
+// accel cannot answer about itself. [Publish] emits the register and the
+// numbers as the one generated document §6 asks for.
+//
 // # Tolerances
 //
 // Nothing here takes a tolerance as a number. A comparison takes [Terms], and
