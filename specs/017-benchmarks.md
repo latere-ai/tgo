@@ -160,11 +160,30 @@ token is 169ms.
    [017-D2](#decision-record)'s reason for existing, and a mean would have hidden
    this entirely.
 
-**On the CPU backend**, the same model needed **3560s for a 4-token prefill** —
-99.99% device, everything else below 0.01%. That is
-[accel#20](https://github.com/golang-design/accel/issues/20): the backend
-dispatches workgroups serially. Recorded because it is the number a user without
-a GPU meets.
+**On the CPU backend**, before and after accel's
+[#20](https://github.com/golang-design/accel/issues/20) worker pool:
+
+| | before | after | |
+| --- | ---: | ---: | --- |
+| prefill, per prompt token | 476.2s | **24.4s** | **19.5×** |
+| decode step, p50 | — | 108.8s | — |
+| device share | 99.99% | 99.98% | — |
+
+**19.5× against the 7.5× accel measured**, and the difference is the workload
+rather than either benchmark being wrong: theirs was one elementwise kernel over
+a flat buffer, where a pool's fixed cost is a real fraction of the work, and a
+transformer prefill is ~790 nodes of GEMM-shaped work that amortises it.
+
+**Device is 99.98% of a decode step**, so accel's question — whether the time is
+inside dispatches or between them — is answered: inside. The serial node walk
+they flagged as deliberate is not what tgo waits on, and there is nothing
+measurable between dispatches to recover.
+
+Against Metal on the same machine: **CPU decode is ~2000× slower per step**, and
+CPU prefill ~9000× slower per token. The pool moved this from unusable in any
+sense to unusable for inference and fine for correctness — which matters,
+because [010 §4](010-conformance.md)'s tier 1 runs on the CPU backend and just
+got 19.5× cheaper.
 
 > Metal produced nothing at all until 2026-08-25: `Contiguous` was the only
 > kernel in accel's corpus with no MSL artifact, and
