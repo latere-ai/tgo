@@ -54,6 +54,13 @@ not exist.
   ([010-D3](specs/010-conformance.md)).
 - **A linter or checker must be negative-tested.** One that passes vacuously is
   the failure it exists to catch.
+- **Do not assert that a duration is positive.** Windows' timer granularity is
+  about 15ms, so a real interval of a few hundred microseconds measures as
+  exactly zero, and every rate derived from it is zero. Five tests passed on
+  macOS and Linux and failed on Windows for this reason. Assert the
+  *observation count* — a term recorded on every step, a wall clock that
+  advanced — and where a fixture needs measurable time to pass, spend it
+  deliberately.
 - **No two dimensions in a test fixture may be equal.** A config where the layer
   count equals the key/value head count, or the vocabulary equals the
   intermediate size, is the *identity* for every confusion between them, so a

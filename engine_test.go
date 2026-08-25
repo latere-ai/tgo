@@ -860,10 +860,20 @@ func TestBenchInstrumentation(t *testing.T) {
 		t.Errorf("the decode breakdown sums to %v, want 1: a term outside the four is a "+
 			"term the model does not have", sum)
 	}
-	// The readback is the floor 007-D4 exists to measure, so it must be a
-	// term with something in it rather than a field nobody fills.
-	if r.Decode.Readback.P50 <= 0 {
-		t.Error("the decode readback measured zero; §5.1's floor is what this reports")
+	// The readback is the floor 007-D4 exists to measure, so the term must be
+	// *filled* rather than be a field nobody writes.
+	//
+	// Asserting a positive p50 is too strong and failed on Windows, whose timer
+	// granularity is about 15ms: this fixture is a 2-layer model with a 640-token
+	// vocabulary, so a real readback of a few hundred microseconds rounds to
+	// zero on a coarse clock while being perfectly correct. What discriminates
+	// "measured and small" from "never measured" is N, not the duration -- so
+	// that is what this checks, and it is the assertion that would actually fail
+	// if the loop stopped recording the term.
+	if r.Decode.Readback.N != r.Decode.Steps {
+		t.Errorf("the decode readback carries %d observations over %d steps; §5.1's "+
+			"floor is what this reports, and a term recorded on some steps and not "+
+			"others is not a measurement", r.Decode.Readback.N, r.Decode.Steps)
 	}
 }
 

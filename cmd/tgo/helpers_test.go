@@ -123,11 +123,27 @@ type fakeEngine struct {
 // Info reports what the fake resolved.
 func (f *fakeEngine) Info() engineInfo { return f.info }
 
+// clockFloor is how long a fake generation takes on the wall clock.
+//
+// The fake reports plausible per-step durations to the Recorder and returns
+// immediately, so the wall clock *around* it is however long nothing takes.
+// That is zero on Windows, whose timer granularity is about 15ms, and a
+// tokens-per-second computed from a zero interval is zero -- which failed five
+// tests there while passing everywhere else. The durations the fake reports are
+// fiction either way; what has to be real is that measurable time passes, so
+// the code that divides by it is exercised rather than short-circuited.
+//
+// 20ms rather than 1ms: comfortably above a 15.6ms tick, so the interval is a
+// couple of ticks rather than a rounding of one.
+const clockFloor = 20 * time.Millisecond
+
 // Generate emits one word per token and records one prefill step and one decode
 // step each, with durations that vary per step so that p50, p90 and p99 differ
 // and a report that collapsed them would be visible.
 func (f *fakeEngine) Generate(ctx context.Context, req genRequest) (genResult, error) {
 	f.requests = append(f.requests, req)
+	// See clockFloor: the caller measures the wall clock around this call.
+	defer time.Sleep(clockFloor)
 	if f.fail != nil {
 		return genResult{}, f.fail
 	}
