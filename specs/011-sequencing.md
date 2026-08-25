@@ -134,6 +134,75 @@ where [000 D8](000-decisions.md) puts the coverage gate, and it is the wave that
 parallelises cleanly. Wave 3 is the one that must be sequential: the forward
 pass, the cache and the loop are one dependency chain.
 
+## 2.3 What is missing that no spec covers
+
+The waves above are the *known* work. This section is the other list: what an
+inference framework has that this tree has never written down. It exists because
+a spec tree makes its own gaps invisible — everything in `specs/` is accounted
+for, so the absent things are absent from the accounting too.
+
+**Ranked by what decides whether tgo is usable, not by effort.**
+
+### 1. Four-bit weights — decides which models are reachable at all
+
+accel's `quant` registers one representation: int8, one fp16 scale per 32. There
+is no 4-bit path, and the arithmetic on the 27B target is decisive:
+
+| stored as | resident | fits |
+| --- | ---: | --- |
+| bf16 | 50.3 GiB | a large workstation |
+| **int8, all tgo has** | **25.1 GiB** | not a 24 GiB card |
+| int4 | 12.6 GiB | hardware people own |
+
+**This is a second blocker on Qwen3.8-27B that has nothing to do with
+[accel#17](https://github.com/golang-design/accel/issues/17)'s linear attention.**
+Even if that operator lands tomorrow, the model does not fit.
+
+And [001](001-weights.md) reads *full-precision safetensors and quantizes at
+load*, so running a 27B means downloading **50 GiB** to produce 25 GiB, when the
+file the ecosystem publishes for it is a 13 GiB 4-bit checkpoint. Filed as
+[accel#22](https://github.com/golang-design/accel/issues/22).
+
+### 2. Reading pre-quantized checkpoints — AWQ, GPTQ, GGUF
+
+Distinct from the above: even with 4-bit kernels, tgo would still quantize from
+full precision at load. AWQ and GPTQ dominate what is published for open weights
+and both use a group size of 128 with a **zero point**, which is a different
+shape from accel's symmetric per-32 int8. [012](012-gguf.md) covers GGUF's
+K-quants and is blocked; AWQ and GPTQ have no spec at all.
+
+### 3. `rope_scaling` — decides context length
+
+[004 §7](004-model-graph.md) **refuses** any `rope_scaling` it does not
+implement, which is the right refusal and means tgo is capped at a checkpoint's
+trained context. Qwen3 reaches its long-context modes through YaRN. Refusing is
+correct; not having it is a gap, and it is entirely tgo's rather than accel's —
+YaRN is a change to how $\theta_i$ is computed, and [004 §2.5](004-model-graph.md)
+already binds the base as a scalar.
+
+### 4. Multi-device — a permanent ceiling on model size
+
+accel opens one device. There is no tensor or pipeline parallelism anywhere in
+either project, so **the largest model tgo can ever run is the largest that fits
+one accelerator**. That is a legitimate scope decision and it should be a stated
+one rather than an omission.
+
+### 5. Things with no spec and no blocker
+
+| | why it matters |
+| --- | --- |
+| **speculative decoding** | the standard 2–3× decode win, and [017 §4.1](017-benchmarks.md) shows decode is 94.62% device — exactly the shape speculation attacks |
+| **embedding models** | a large share of what inference frameworks actually serve; tgo has no `/v1/embeddings` and no pooling |
+| **multimodal input** | [018 §1](018-hybrid-models.md) notes Qwen3.8 carries vision tokens and text-only is a coherent subset, but there is no path to images |
+| **LoRA adapters** | [011 §3](#3-what-is-deliberately-not-in-v0) lists it as not-v0; note [016 §10.3](016-prefix-cache.md) already records that an adapter must reach the prefix cache key |
+
+### What this section is not
+
+A backlog. Several of these are correct things to *not* do — multi-device may
+never be in scope, and refusing an unimplemented `rope_scaling` beats
+approximating it. The point is that each should be a decision somebody made
+rather than a question nobody asked.
+
 ## 3. Milestones
 
 ### 3.1 What is gated upstream, and what is not

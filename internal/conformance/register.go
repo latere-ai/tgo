@@ -261,6 +261,16 @@ func Register() []Row {
 			"remains between dispatches. The residual gap to Metal is kernel " +
 			"throughput rather than a missing capability",
 	}, {
+		ID:     "C21",
+		Cannot: "**4-bit weights**",
+		Specs:  []string{"027", "010"},
+		Issue:  22,
+		State:  Open,
+		Cost: "int8, so a 27B model is 25.1 GiB rather than 12.6 GiB and does " +
+			"not fit a 24 GiB device. A second blocker on the 27B target, " +
+			"independent of the linear attention in #17 " +
+			"([011 §2.3](011-sequencing.md))",
+	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",
 		Specs:  []string{"021"},
