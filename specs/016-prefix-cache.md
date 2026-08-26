@@ -254,7 +254,7 @@ possible rather than deciding it:
 | scope | when |
 | --- | --- |
 | `process` (default) | single-tenant: a CLI, one team's server, an agent runtime |
-| `session` | share within a conversation only; safe under multi-tenancy, and still captures the $1 - 1/n$ multi-turn win, which is most of the value |
+| `session` | share within a conversation only; safe under multi-tenancy. **From the server this row is empty — see [§7.2](#72-what-shipped-and-why-the-server-gets-none-of-it).** |
 | `off` | measurement, and comparison against a cold baseline |
 
 **`session` is the important row.** It is the scope that keeps the largest share
@@ -265,10 +265,52 @@ The documentation states the trade rather than burying it. An inference
 framework that silently makes one user's prompts detectable by another has made
 a security decision on the operator's behalf.
 
+### 7.2 What shipped, and why the server gets none of it
+
+Shipped 2026-08-26: `WithPrefixCache(CacheSession, n)` reuses a session's own
+prefix. The default is `off`, not the `process` this section chose, because
+`process` cannot be honoured at all: it needs the page-table port
+[§9](#9-what-accel-gives-verified-by-value) records as missing.
+
+**The larger correction is that `session` is unreachable from `tgo serve`, and
+the table above says the opposite.** `server/generate.go` opens one session per
+request and closes it on the way out — that is what returns the KV reservation
+[§6](#6-correctness-two-subtleties-one-of-which-is-real) accounts for. A session
+that is destroyed at the end of the request it was made for never sees a second
+turn, so there is no own-prefix to reuse. The $1 - 1/n$ win this table credits
+to `session` is a win only for a caller who holds a `Session` across
+generations, which today means an embedded caller and not the server.
+
+So: **no scope reuses anything from `tgo serve`.** The feature is real and
+tested at the library surface, and the product does not reach it.
+
+**And the refusal `CacheProcess` returns names the wrong obstruction.** It names
+the missing page-table port, which is the blocker for *block-level* sharing —
+arbitrary requests sharing arbitrary blocks, which is what
+[§4](#4-the-structure-a-hash-map-not-a-trie)'s pool and `internal/prefix` are
+for. It is **not** the blocker for cross-request reuse as such: a server that
+kept a pool of sessions and routed a request to the session already holding the
+longest matching prefix would get cross-request reuse with no page table and no
+accel change, because `Session.reusable` is a token comparison against that
+session's own history and each pooled session keeps its own contiguous,
+single-owner cache. That design trades this section's isolation argument for a
+different one — the affinity pool, not the block, becomes the thing a scope has
+to bound — and it changes when the KV reservation is released, so it is a
+decision to be made rather than a gap to be filled.
+
 ## 8. Tests
 
 Every one is host-side logic — the trie, the refcounts, the eviction — plus a
 small device test for the reuse itself. No weights.
+
+**The rows below are the POOLED path, which has no code yet.** Everything that
+mentions a block, a refcount, an eviction or a lease is waiting on the port in
+[§9](#9-what-accel-gives-verified-by-value); a table that reads as a test plan
+for shipped work would be the third false green in this document. What the
+session-local path shipped with is the first row, the last row, the seeded row,
+and one more that is not here: **a request refused after the rewind leaves the
+session's history intact**, which is what stops a rejected request from
+silently truncating the conversation it was rejected from.
 
 | test | what it catches |
 | --- | --- |
@@ -313,8 +355,17 @@ That episode is why [010-D7](010-conformance.md) exists, and it is left visible
 rather than tidied away: **the spec was confidently wrong because its evidence
 was the absence of an error.**
 
-Two constraints remain:
+Three constraints remain, and the third is tgo's own.
 
+- **tgo's graph declares no page-table port.** This section audits accel's
+  kernels. It does not audit the graph that would have to call them:
+  [004 §3](004-model-graph.md)'s port table has no page table in it, and
+  `nn.Attention` binds no `tensor.AttentionOptions.Pages` or `Block`. So
+  nothing in tgo can pass a page table however capable C13 is, and the port is
+  what [§4](#4-the-structure-a-hash-map-not-a-trie)'s pool is waiting on rather
+  than anything upstream. **This is the same defect as the one this section
+  records below, one layer in**: the evidence was accel's behaviour, and the
+  question was about tgo's.
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
