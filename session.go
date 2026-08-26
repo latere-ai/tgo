@@ -80,11 +80,12 @@ type Session struct {
 	// the page-table row it hands out. Both are nil unless the model was
 	// opened with WithPrefixCache(CacheProcess, ...).
 	//
-	// A lease lives for one request rather than for the conversation. Nothing
-	// is lost by that: a complete block is published before the lease goes, so
-	// the next turn finds it by hash, and holding a lease between requests
-	// would pin an idle conversation's blocks against every live one
-	// (016 §5).
+	// A lease lives for one request rather than for the conversation, and
+	// [Stream.finish] gives it back. Nothing is lost: a complete block is
+	// published as it is computed, so the next turn finds it by hash. What is
+	// avoided is an idle conversation holding a reference no live one can
+	// have, which with B blocks over N sessions is how a pool deadlocks
+	// (016 §5, 008 §3).
 	lease *prefix.Lease
 	pages []int
 
@@ -528,11 +529,10 @@ func (s *Session) acquire(ids []int, salt string) (int, error) {
 	if !s.shared {
 		return s.reusable(ids), nil
 	}
-	// The previous request's lease goes first. Its complete blocks are already
-	// published, so this Acquire finds them by hash -- including the ones this
-	// same conversation just generated. Releasing before acquiring rather than
-	// after is what makes a conversation's own tail available to its next turn
-	// without holding it across the gap.
+	// There is normally nothing to release here: a lease lives for one request
+	// and [Stream.finish] gives it back. This covers the request that never
+	// produced a stream -- a refusal after the lease, an abandoned start --
+	// so a session cannot accumulate two.
 	s.release()
 	l, err := s.m.blocks.pool.Acquire(prefix.Request{
 		IDs: ids, Session: s.salt, Salt: salt,

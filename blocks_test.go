@@ -11,11 +11,17 @@ import (
 
 // blockPoolCap is the shared pool's size, in positions. Whole blocks, and large
 // enough that two conversations fit beside each other.
-const blockPoolCap = 16 * CacheBlock
+const blockPoolCap = 8 * CacheBlock
 
 // sharedCap is a session's context in the shared tests: room for a system
-// prompt of several whole blocks and a continuation after it.
-const sharedCap = 8 * CacheBlock
+// prompt of two whole blocks and a continuation after it.
+//
+// Both constants are as small as the properties allow. Every test here runs a
+// real forward pass on the CPU backend, the race gate costs about an order of
+// magnitude on that arithmetic, and CONTRIBUTING measures that in CPU seconds
+// rather than wall -- so a fixture larger than the assertion needs is a gate
+// that goes red on a slower runner.
+const sharedCap = 4 * CacheBlock
 
 // sharedModel is the fixture with a process-scoped block pool.
 func sharedModel(t *testing.T, opts ...Option) *Model {
@@ -36,13 +42,13 @@ func sharedModel(t *testing.T, opts ...Option) *Model {
 // error.
 func TestABlockPoolGeneratesWhatAContiguousCacheDoes(t *testing.T) {
 	t.Parallel()
-	ids := promptIDs(1, 40)
+	ids := promptIDs(1, CacheBlock+2)
 
 	plain := openSynthetic(t)
-	want := request(t, session(t, plain, WithSessionContext(cacheCap)), ids, greedy(8))
+	want := request(t, session(t, plain, WithSessionContext(cacheCap)), ids, greedy(4))
 
 	paged := sharedModel(t)
-	got := request(t, session(t, paged, WithSessionContext(cacheCap)), ids, greedy(8))
+	got := request(t, session(t, paged, WithSessionContext(cacheCap)), ids, greedy(4))
 
 	sameGeneration(t, "a pooled session against a contiguous one", want, got)
 }
@@ -58,10 +64,10 @@ func TestTwoConversationsShareOneSystemPrompt(t *testing.T) {
 	t.Parallel()
 	m := sharedModel(t)
 
-	system := promptIDs(1, 3*CacheBlock)
+	system := promptIDs(1, 2*CacheBlock)
 
 	first := session(t, m, WithSessionContext(sharedCap))
-	one := request(t, first, extend(system, 7, 10, 0), greedy(4))
+	one := request(t, first, extend(system, 7, 10, 0), greedy(1))
 	if one.usage.CachedPromptTokens != 0 {
 		t.Fatalf("the first conversation reused %d positions from an empty pool",
 			one.usage.CachedPromptTokens)
@@ -69,7 +75,7 @@ func TestTwoConversationsShareOneSystemPrompt(t *testing.T) {
 
 	// A different conversation, in a session that has never seen these tokens.
 	second := session(t, m, WithSessionContext(sharedCap))
-	two := request(t, second, extend(system, 11, 10, 0), greedy(4))
+	two := request(t, second, extend(system, 11, 10, 0), greedy(1))
 
 	if two.usage.CachedPromptTokens == 0 {
 		t.Fatalf("a second conversation sharing %d leading tokens reused none of "+
@@ -103,12 +109,12 @@ func TestTwoConversationsShareOneSystemPrompt(t *testing.T) {
 func TestASharedHitGeneratesWhatAColdRunDoes(t *testing.T) {
 	t.Parallel()
 	m := sharedModel(t)
-	system := promptIDs(1, 3*CacheBlock)
+	system := promptIDs(1, 2*CacheBlock)
 	prompt := extend(system, 11, 10, 0)
 
 	// Cold: a pool that has never seen the system prompt.
 	cold := request(t, session(t, sharedModel(t), WithSessionContext(sharedCap)),
-		prompt, greedy(8))
+		prompt, greedy(4))
 	if cold.usage.CachedPromptTokens != 0 {
 		t.Fatalf("the cold run reused %d positions", cold.usage.CachedPromptTokens)
 	}
@@ -116,7 +122,7 @@ func TestASharedHitGeneratesWhatAColdRunDoes(t *testing.T) {
 	// Warm: another conversation computed the system prompt first.
 	request(t, session(t, m, WithSessionContext(sharedCap)),
 		extend(system, 7, 10, 0), greedy(4))
-	warm := request(t, session(t, m, WithSessionContext(sharedCap)), prompt, greedy(8))
+	warm := request(t, session(t, m, WithSessionContext(sharedCap)), prompt, greedy(4))
 	if warm.usage.CachedPromptTokens == 0 {
 		t.Fatal("the warm run reused nothing, so this measures no sharing")
 	}
@@ -134,10 +140,10 @@ func TestASharedHitGeneratesWhatAColdRunDoes(t *testing.T) {
 func TestASaltKeepsTwoConversationsApart(t *testing.T) {
 	t.Parallel()
 	m := sharedModel(t)
-	system := promptIDs(1, 3*CacheBlock)
+	system := promptIDs(1, 2*CacheBlock)
 
 	salted := session(t, m, WithSessionContext(sharedCap), WithCacheSalt("tenant-a"))
-	request(t, salted, extend(system, 7, 10, 0), greedy(4))
+	request(t, salted, extend(system, 7, 10, 0), greedy(1))
 
 	for _, c := range []struct {
 		name string
@@ -149,7 +155,7 @@ func TestASaltKeepsTwoConversationsApart(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			probe := session(t, m, append([]SessionOption{
 				WithSessionContext(sharedCap)}, c.opts...)...)
-			got := request(t, probe, extend(system, 11, 10, 0), greedy(4))
+			got := request(t, probe, extend(system, 11, 10, 0), greedy(1))
 			if got.usage.CachedPromptTokens != 0 {
 				t.Fatalf("%s reused %d positions of a prompt computed under another "+
 					"salt; the timing of that hit is a membership oracle over it",
@@ -161,7 +167,7 @@ func TestASaltKeepsTwoConversationsApart(t *testing.T) {
 	// And the same salt still shares, or the test above passes because nothing
 	// shares at all.
 	same := session(t, m, WithSessionContext(sharedCap), WithCacheSalt("tenant-a"))
-	got := request(t, same, extend(system, 13, 10, 0), greedy(4))
+	got := request(t, same, extend(system, 13, 10, 0), greedy(1))
 	if got.usage.CachedPromptTokens == 0 {
 		t.Fatal("a conversation under the same salt reused nothing, so the two " +
 			"refusals above prove no separation")
@@ -176,7 +182,7 @@ func TestAPooledSessionReleasesItsBlocks(t *testing.T) {
 	before := m.blocks.pool.Stats()
 
 	s := session(t, m, WithSessionContext(sharedCap))
-	request(t, s, promptIDs(1, 40), greedy(4))
+	request(t, s, promptIDs(1, CacheBlock+2), greedy(2))
 	if err := s.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -205,6 +211,8 @@ func TestAPooledSessionReleasesItsBlocks(t *testing.T) {
 func TestAPromptLargerThanThePoolIsRefused(t *testing.T) {
 	t.Parallel()
 	m := sharedModel(t)
+	// Past the pool and inside the context, so the pool is the limit that
+	// answers rather than the context reaching it first.
 	s := session(t, m, WithSessionContext(blockPoolCap*2))
 	ids := promptIDs(1, blockPoolCap+CacheBlock)
 	if _, err := s.start(context.Background(), ids, greedy(1)); err == nil {
@@ -274,7 +282,7 @@ func TestAPooledRequestCarriesItsKeyIntoTheBlockPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	st, err := l.generate(context.Background(), promptIDs(1, 40), greedy(2))
+	st, err := l.generate(context.Background(), promptIDs(1, CacheBlock+2), greedy(1))
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -287,5 +295,71 @@ func TestAPooledRequestCarriesItsKeyIntoTheBlockPool(t *testing.T) {
 		t.Fatalf("the session's block salt is %q and the request's key is %q; the two "+
 			"bound the same thing and a request excluded from a session's history "+
 			"would reach the same tokens through the pool", got, "tenant-a")
+	}
+}
+
+// TestAnIdleConversationPinsNoBlocks is the lease lifetime, and it is the one
+// thing about a shared pool that a per-session cache never had to decide.
+//
+// A lease is a refcount and not the key/value state. Every complete block is
+// published as it is computed, so giving the lease back at the end of a stream
+// keeps the blocks in the pool and the next request that shares the prefix --
+// including this conversation's own next turn -- finds them by hash. Holding it
+// between requests would instead make an idle conversation compete with running
+// ones for the single resource the process shares, which with B blocks over N
+// sessions is how a pool deadlocks.
+//
+// Both halves are asserted, because either alone passes on a broken pool: an
+// idle session holds nothing, *and* its next turn still reuses.
+func TestAnIdleConversationPinsNoBlocks(t *testing.T) {
+	t.Parallel()
+	m := sharedModel(t)
+	s := session(t, m, WithSessionContext(sharedCap))
+
+	first := promptIDs(1, 2*CacheBlock)
+	request(t, s, first, greedy(2))
+
+	if got := m.blocks.pool.Stats().InUse; got != 0 {
+		t.Fatalf("a conversation that finished its request holds %d blocks; a "+
+			"reference held by an idle session is a block no live conversation "+
+			"can have", got)
+	}
+	if got := m.blocks.pool.Stats().Cached; got == 0 {
+		t.Fatal("releasing the lease freed every block outright; a released block " +
+			"whose hash entry still names it is what the next request matches")
+	}
+
+	two := request(t, s, extend(first, 5, 8, 0), greedy(2))
+	if two.usage.CachedPromptTokens == 0 {
+		t.Fatal("the next turn reused nothing, so the blocks were released and lost " +
+			"rather than released and kept")
+	}
+	if want := len(first); two.usage.CachedPromptTokens != want {
+		t.Fatalf("the next turn reused %d positions of a %d-token opening it had "+
+			"already paid for", two.usage.CachedPromptTokens, want)
+	}
+}
+
+// TestARefusedSharedRequestLeavesTheConversationReusable: a request that does
+// not fit the pool leaves the conversation exactly as it found it, which is the
+// rule [Session.start] states above the rewind and which the lease sits below.
+func TestARefusedSharedRequestLeavesTheConversationReusable(t *testing.T) {
+	t.Parallel()
+	m := sharedModel(t)
+	s := session(t, m, WithSessionContext(blockPoolCap*2))
+
+	first := promptIDs(1, 2*CacheBlock)
+	request(t, s, first, greedy(2))
+
+	if _, err := s.start(context.Background(), promptIDs(2, blockPoolCap+CacheBlock),
+		greedy(1)); err == nil {
+		t.Fatal("a prompt longer than the pool was accepted")
+	}
+
+	two := request(t, s, extend(first, 5, 8, 0), greedy(2))
+	if two.usage.CachedPromptTokens != len(first) {
+		t.Fatalf("the turn after a refused request reused %d positions of a %d-token "+
+			"opening; the refusal cost the conversation what it had already paid for",
+			two.usage.CachedPromptTokens, len(first))
 	}
 }

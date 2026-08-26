@@ -126,11 +126,14 @@ serve flags:
                       authentication, so it is a flag rather than a default
   --precision P       f16, int8 or auto (default auto)
   --context C         KV cache capacity per session, in positions (default 4096)
-  --sessions N        pooled sessions: how many requests generate at once and
-                      how many conversations keep their cache between turns.
-                      Every one is reserved at startup and held until the
-                      process exits (default 0, which takes 4, or fewer if the
-                      device holds fewer)
+  --sessions N        pooled sessions: how many requests generate at once, and
+                      under --prefix-cache session how many conversations keep
+                      their cache between turns. Under --prefix-cache process
+                      the blocks are shared, so which session a request lands
+                      on stops deciding what it reuses and this is concurrency
+                      alone. Every one is reserved at startup and held until
+                      the process exits (default 0, which takes 4, or fewer if
+                      the device holds fewer)
   --prefix-cache S    off, session or process: reuse the key/value state a
                       conversation already paid for, so a turn prefills only
                       what is new. session keeps every block inside one

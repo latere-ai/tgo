@@ -553,8 +553,9 @@ func prefixCacheLine(scope tgo.CacheScope) string {
 			"bit for bit"
 	case tgo.CacheProcess:
 		return "on, shared across every session; two conversations with the same system\n" +
-			"                    prompt prefill it once between them, and a request's " +
-			"cache_salt is what\n                    keeps tenants apart"
+			"                    prompt prefill it once between them, a request's " +
+			"cache_salt is what\n                    keeps tenants apart, and --sessions " +
+			"is concurrency rather than\n                    reuse depth"
 	}
 	return "off; every request prefills its whole prompt. --prefix-cache reuses what a\n" +
 		"                    conversation already paid for, which is the reason to pool " +

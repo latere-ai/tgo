@@ -77,7 +77,14 @@ func newBlockPool(dev *accel.Device, c *model.Config, scope prefix.Scope,
 		})
 		if err != nil {
 			_ = bp.close()
-			return nil, fmt.Errorf("tgo: allocating the shared %s state: %w", a.label, err)
+			// Named in the operator's own terms, because the number that
+			// produced it is theirs: the pool is sessions x context positions,
+			// and a device that cannot hold it is answered by lowering one of
+			// the two rather than by reading an allocator's error.
+			return nil, fmt.Errorf("tgo: the shared prefix cache needs %s for its %s "+
+				"state at %d positions, and the device refused it: %w; lower "+
+				"--sessions or --context, which are the two numbers that produced "+
+				"the pool", bytesText(int64(n)*4), a.label, bp.positions, err)
 		}
 		*a.dst = b
 	}

@@ -458,3 +458,86 @@ func TestAdmissionAboveThePoolIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// processPoolServer is [poolServer] with the block pool shared across every
+// session rather than a cache per session.
+func processPoolServer(t *testing.T, n int) (*server.Server, *recordingEngine) {
+	t.Helper()
+	m, err := tgo.Open(writeCheckpoint(t), tgo.WithDevice(tgo.CPU), tgo.WithContext(256),
+		tgo.WithPrefixCache(tgo.CacheProcess, 256))
+	if err != nil {
+		t.Fatalf("tgo.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Errorf("Model.Close: %v", err)
+		}
+	})
+	pe, err := server.WrapPool(m, synthName, n)
+	if err != nil {
+		t.Fatalf("server.WrapPool: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := pe.Close(); err != nil {
+			t.Errorf("PoolEngine.Close: %v", err)
+		}
+	})
+	eng := &recordingEngine{PoolEngine: pe}
+	srv, err := server.New(eng, server.WithNotice(&strings.Builder{}),
+		server.WithConcurrency(pe.Sessions()))
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	return srv, eng
+}
+
+// TestAProcessPoolSharesAcrossConversations is the process scope over the wire,
+// and it is the thing no session-scoped cache can do at any pool size.
+//
+// Two *different* conversations, sharing a long opening turn and diverging
+// after it. Under [tgo.CacheSession] the second is cold whichever session it
+// lands on, because a session reuses only what it computed itself. Under
+// [tgo.CacheProcess] it reuses the shared opening, and a request carrying a
+// cache_salt does not.
+func TestAProcessPoolSharesAcrossConversations(t *testing.T) {
+	s, eng := processPoolServer(t, 2)
+
+	// Long enough that the shared run covers a whole block: sharing is
+	// block-aligned, so a common prefix shorter than one block reuses nothing
+	// and the test would read a working pool as a broken one.
+	shared := strings.Repeat("the quick brown fox jumps over the lazy dog. ", 4)
+	body := func(salt, tail string) string {
+		extra := ""
+		if salt != "" {
+			extra = `,"cache_salt":"` + salt + `"`
+		}
+		return chatBody(extra, shared+tail)
+	}
+	for _, c := range []struct {
+		what string
+		salt string
+		tail string
+		want string
+	}{
+		{"the first conversation", "", "what is one?", "cold"},
+		{"a second conversation on the same opening", "", "what is two?", "warm"},
+		{"a third, under a salt", "tenant-a", "what is three?", "cold"},
+		{"a fourth, under the same salt", "tenant-a", "what is four?", "warm"},
+	} {
+		w := do(t, s, http.MethodPost, "/v1/chat/completions", body(c.salt, c.tail))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d: %s", c.what, w.Code, w.Body.String())
+		}
+		got := eng.counts()
+		n := got[len(got)-1]
+		if c.want == "cold" && n != 0 {
+			t.Fatalf("%s reused %d positions; the pool fails closed, so a salt shares "+
+				"with nobody rather than with everybody", c.what, n)
+		}
+		if c.want == "warm" && n == 0 {
+			t.Fatalf("%s reused nothing of an opening another conversation had already "+
+				"paid for; a process-scoped pool that shares nothing is a "+
+				"session-scoped one with a page table attached", c.what)
+		}
+	}
+}

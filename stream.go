@@ -439,6 +439,23 @@ func (st *Stream) finish(err error) {
 	if st.s.live == st {
 		st.s.live = nil
 	}
+	// The blocks go back here and not at the next request.
+	//
+	// A lease is a refcount, not the key/value state: every complete block was
+	// published as it was computed, so releasing keeps them in the pool and the
+	// next request that shares the prefix finds them by hash -- including this
+	// conversation's own next turn. What a lease does hold is a *reference*,
+	// and a reference held by an idle session is a block no live conversation
+	// can have. With a pool of B blocks and N sessions, holding across requests
+	// makes idle conversations compete with running ones for the one resource
+	// the process shares, which is the shape specs/008-scheduler.md §3 calls a
+	// deadlock.
+	//
+	// The cost is the tail: the partial block at the end, which no hash entry
+	// names and which therefore cannot be found again. That is at most
+	// CacheBlock-1 positions re-prefilled on the next turn, and it is
+	// specs/016-prefix-cache.md 016-D4's rounding rather than a new loss.
+	st.s.release()
 }
 
 // abandon ends the stream with no further events, for a caller who moved on.
@@ -448,6 +465,10 @@ func (st *Stream) abandon() {
 	if st.s.live == st {
 		st.s.live = nil
 	}
+	// Same as [Stream.finish]: an abandoned stream's blocks are no more this
+	// session's than a finished one's, and a caller who walked away from a
+	// completion is the case most likely to leave them held for good.
+	st.s.release()
 }
 
 // firstStop is the index of the earliest stop string in s, or -1.
