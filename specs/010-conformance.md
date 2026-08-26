@@ -52,15 +52,7 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C19 | a CPU backend that dispatches in parallel | 006 | [#20](https://github.com/golang-design/accel/issues/20) | **closed** | none needed. The worker pool landed: 19.5x per prompt token on a real model, and device is 99.98% of a step, so nothing measurable remains between dispatches. The residual gap to Metal is kernel throughput rather than a missing capability |
 | C21 | **4-bit weights** | 027, 010 | [#22](https://github.com/golang-design/accel/issues/22) | **open** | int8, so a 27B model is 25.1 GiB rather than 12.6 GiB and does not fit a 24 GiB device. A second blocker on the 27B target, independent of the linear attention in #17 ([011 §2.3](011-sequencing.md)) |
 | C20 | a decode step whose submit cost is amortised | 021 | [#21](https://github.com/golang-design/accel/issues/21) | **open** | none. Submit is 15.61% of a decode step against 1.12% of a prefill: a fixed per-dispatch cost over a ~790-node graph, paid in full by a one-token step ([017 §4.1](017-benchmarks.md)) |
-FAIL
-FAIL	github.com/latere-ai/tgo/internal/conformance	0.245s
-FAIL
-FAIL
-FAIL	github.com/latere-ai/tgo/internal/conformance	0.280s
-FAIL
-FAIL
-FAIL	github.com/latere-ai/tgo/internal/conformance	0.196s
-FAIL
+
 **This table is a dated snapshot and accel is moving under it fast.** Within a
 day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
 accepted an f16 cache and a page table, and `Buffer.Access` removed the host

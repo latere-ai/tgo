@@ -4,6 +4,7 @@
 package conformance
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -24,7 +25,23 @@ func specTable(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", specFile, err)
 	}
-	lines := strings.Split(string(b), "\n")
+	table, err := registerBlock(strings.Split(string(b), "\n"))
+	if err != nil {
+		t.Fatalf("%s: %v", specFile, err)
+	}
+	return table
+}
+
+// registerBlock is specTable's reading, separated from the file so it can be
+// given a document rather than only the one on disk.
+//
+// The block runs from the header to the next blank line, and every line in it
+// has to be a table row. Stopping at the first line that is not a row would be
+// the obvious reading and it is the wrong one: it makes anything spliced
+// directly under the table invisible, which is how three runs of `go test`
+// output came to sit inside §2. A generated block's extent is decided by the
+// document, not by how far the generated part happens to reach.
+func registerBlock(lines []string) (string, error) {
 	start := -1
 	for i, l := range lines {
 		if l == header {
@@ -33,19 +50,68 @@ func specTable(t *testing.T) string {
 		}
 	}
 	if start < 0 {
-		t.Fatalf("%s has no register table starting with\n\t%s\n"+
+		return "", fmt.Errorf("no register table starting with\n\t%s\n"+
 			"specs/010-conformance.md §2 is generated from Register(); a table "+
 			"with a different header is a table this package no longer produces",
-			specFile, header)
+			header)
 	}
 	var table strings.Builder
-	for _, l := range lines[start:] {
+	for i, l := range lines[start:] {
+		if l == "" {
+			return table.String(), nil
+		}
 		if !strings.HasPrefix(l, "|") {
-			break
+			return "", fmt.Errorf("line %d is inside the register table and is "+
+				"not a table row:\n\t%s\n"+
+				"specs/010-conformance.md §2 is generated from Register(); the "+
+				"block runs to the next blank line and holds nothing else",
+				start+i+1, l)
 		}
 		table.WriteString(l + "\n")
 	}
-	return table.String()
+	return "", fmt.Errorf("the register table runs to the end of the file with no " +
+		"blank line after it; §2 is a generated block and needs an end")
+}
+
+// TestSplicedOutputIsInsideTheTable is the regression for what was on main:
+// three runs of `go test` output sat between the last register row and the
+// paragraph under it, and every gate passed.
+//
+// The bug was in the reading, not in the register, so this gives the reading a
+// document instead of the file. The corrupted shape is the exact one that
+// shipped — no blank line before the spliced text, none after.
+func TestSplicedOutputIsInsideTheTable(t *testing.T) {
+	rows := []string{"| C1 | a thing | 040 | — | closed | none |"}
+	clean := append([]string{"# spec", "", header}, append(rows, "", "prose")...)
+
+	got, err := registerBlock(clean)
+	if err != nil {
+		t.Fatalf("a clean document: %v", err)
+	}
+	if want := header + "\n" + rows[0] + "\n"; got != want {
+		t.Errorf("a clean document read as %q, want %q", got, want)
+	}
+
+	spliced := append([]string{"# spec", "", header}, append(append(append([]string{},
+		rows...), "FAIL", "FAIL\tgithub.com/latere-ai/tgo/internal/conformance\t0.245s"),
+		"", "prose")...)
+	if _, err := registerBlock(spliced); err == nil {
+		t.Fatal("output spliced under the last register row read as a clean table; " +
+			"specs/010-conformance.md §2 is the project's primary output and a " +
+			"guard blind to text inside it is not guarding it")
+	} else if !strings.Contains(err.Error(), "FAIL") {
+		t.Errorf("the refusal does not quote the offending line: %v", err)
+	}
+}
+
+// TestTheRegisterTableIsTerminated is the other end of the same reading: a
+// generated block with no blank line after it has no end, and reading to EOF
+// would make the last row's neighbour a matter of luck.
+func TestTheRegisterTableIsTerminated(t *testing.T) {
+	unterminated := []string{header, "| C1 | a thing | 040 | — | closed | none |"}
+	if _, err := registerBlock(unterminated); err == nil {
+		t.Fatal("a table running to the end of the file read as terminated")
+	}
 }
 
 // TestTheSpecTableIsGenerated is 010-D6.
