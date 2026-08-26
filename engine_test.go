@@ -718,7 +718,7 @@ func TestThinkingBlocksAreTypedEvents(t *testing.T) {
 	}
 	sp := m.special
 	st2 := newStream(t.Context(), session(t, m, WithSessionContext(64)),
-		[]int{1}, greedy(1), 0)
+		[]int{1}, greedy(1), 0, nil)
 	word := m.tok.Encode("hello", false)
 	seq := []int{sp.think[0]}
 	seq = append(seq, word...)
@@ -983,7 +983,8 @@ func TestATruncatedCodePointAtEndOfStreamIsStillDelivered(t *testing.T) {
 		t.Skip("the fixture vocabulary holds no token the decoder holds back")
 	}
 
-	st := newStream(t.Context(), session(t, m, WithSessionContext(64)), []int{1}, greedy(1), 0)
+	st := newStream(t.Context(), session(t, m, WithSessionContext(64)), []int{1}, greedy(1), 0,
+		nil)
 	st.emit(partial)
 	if len(st.queue) != 0 {
 		t.Fatalf("a partial code point was emitted before it was complete: %+v", st.queue)

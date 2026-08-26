@@ -146,7 +146,7 @@ func (s *Server) decode(front llmdialect.Frontend, w http.ResponseWriter,
 	if err != nil {
 		return nil, badRequest("tgo: %v", err)
 	}
-	out, aerr := adapt(d, req, ex, keys(top), s.eng.VocabSize())
+	out, aerr := adapt(d, req, ex, keys(top), s.eng)
 	if aerr != nil {
 		return nil, aerr
 	}

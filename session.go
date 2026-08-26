@@ -15,6 +15,7 @@ import (
 
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
+	"github.com/latere-ai/tgo/internal/grammar"
 	"github.com/latere-ai/tgo/model"
 )
 
@@ -366,6 +367,19 @@ func (s *Session) start(ctx context.Context, ids []int, p Policy) (*Stream, erro
 	if err := p.check(s.m.cfg.VocabSize); err != nil {
 		return nil, err
 	}
+	// Compiled here rather than inside the loop, and before anything is
+	// rewound: a schema the compiler refuses is a request that will not run,
+	// and it must leave the conversation exactly as it found it. The
+	// compilation is also cached on the Model, so a second request carrying
+	// the same schema pays for a map lookup (015-D1).
+	var gram *grammar.Grammar
+	if len(p.Schema) > 0 {
+		g, err := s.m.grammar(p.Schema)
+		if err != nil {
+			return nil, err
+		}
+		gram = g
+	}
 	if len(ids) == 0 {
 		return nil, errors.New("tgo: the prompt is empty; there is nothing to condition on")
 	}
@@ -397,7 +411,7 @@ func (s *Session) start(ctx context.Context, ids []int, p Policy) (*Stream, erro
 	// still generate from.
 	reuse := s.reusable(ids)
 	s.rewind(reuse)
-	st := newStream(ctx, s, ids, p, reuse)
+	st := newStream(ctx, s, ids, p, reuse, gram)
 	s.live = st
 	return st, nil
 }

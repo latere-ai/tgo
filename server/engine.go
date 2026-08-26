@@ -34,6 +34,16 @@ type Engine interface {
 	// which is what [WithKVBudget] divides into an admission limit.
 	CacheBytesPerSession() int64
 
+	// CheckSchema reports whether a requested JSON schema can be compiled to
+	// a per-step token mask over this model's vocabulary.
+	//
+	// It is on the engine and not in adapt.go because the compilation needs
+	// the vocabulary, and it is separate from generation because a schema the
+	// compiler refuses is a 400 that must be answered before a session is
+	// allocated. The error is the compiler's, naming the construct and the
+	// obstruction (015-D4).
+	CheckSchema(schema []byte) error
+
 	// NewSession allocates one conversation. One per in-flight request.
 	NewSession(spec SessionSpec) (Session, error)
 }
@@ -97,6 +107,8 @@ func (e *modelEngine) Name() string                { return e.name }
 func (e *modelEngine) Context() int                { return e.m.Info().Context }
 func (e *modelEngine) VocabSize() int              { return e.m.Info().VocabSize }
 func (e *modelEngine) CacheBytesPerSession() int64 { return e.m.Info().CacheBytesPerSession }
+
+func (e *modelEngine) CheckSchema(schema []byte) error { return e.m.CheckSchema(schema) }
 
 func (e *modelEngine) NewSession(spec SessionSpec) (Session, error) {
 	opts := []tgo.SessionOption{tgo.WithThinking(spec.Thinking)}

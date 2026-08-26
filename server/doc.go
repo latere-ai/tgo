@@ -29,14 +29,20 @@
 // # Refuse what changes the answer, record what does not
 //
 // A field whose absence changes what the model computes is refused by name --
-// n > 1, a structured-output schema, an image, a logit_bias id outside the
-// vocabulary. A field that is advisory runs and is reported: every one lands in
-// the X-Tgo-Loss response header and in the tgo_request_loss_total counter
-// (009-D2). llmdialect's own loss report is the input to that list and not the
-// output of it: ir.Request carries no seed, logit_bias or penalties, so its
-// frontends report each as unrepresentable while tgo implements every one, and
-// the subtraction takes them back out, per dialect, because a name is honoured
-// only on the surfaces that define it (009-D12). See loss.go for the tables.
+// n > 1, an image, a logit_bias id outside the vocabulary, a JSON schema the
+// grammar compiler will not compile. A schema it will compile is honoured
+// instead: response_format, output_format and text.format all reach
+// [github.com/latere-ai/tgo.Policy]'s Schema, and the refusal that remains
+// carries the compiler's own reason -- the keyword and the obstruction --
+// because "unsupported" sends a caller to bisect their own schema
+// (specs/015-structured-output.md 015-D4). A field that is advisory runs and is
+// reported: every one lands in the X-Tgo-Loss response header and in the
+// tgo_request_loss_total counter (009-D2). llmdialect's own loss report is the
+// input to that list and not the output of it: ir.Request carries no seed,
+// logit_bias or penalties, so its frontends report each as unrepresentable
+// while tgo implements every one, and the subtraction takes them back out, per
+// dialect, because a name is honoured only on the surfaces that define it
+// (009-D12). See loss.go for the tables.
 //
 // # Concurrency
 //

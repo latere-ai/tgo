@@ -11,12 +11,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/model"
 	"github.com/latere-ai/tgo/server"
+	"github.com/latere-ai/tgo/tokenizer"
 )
 
 // The end-to-end test 009-D4 asks for: a real [tgo.Model], through the real
@@ -324,4 +326,200 @@ func answerOf(t *testing.T, w *httptest.ResponseRecorder) string {
 		t.Fatalf("choices = %d: %s", len(body.Choices), w.Body.String())
 	}
 	return body.Choices[0].Message.ReasoningContent + "|" + body.Choices[0].Message.Content
+}
+
+// A request carrying a schema, through the real handler, over a real model,
+// comes back as a document that parses and that matches the schema.
+//
+// This is the whole of specs/015-structured-output.md reachable from a request:
+// `response_format` is mapped onto [tgo.Policy], the schema is compiled against
+// the model's own vocabulary, and the mask is applied on every step. Every
+// other test of the grammar runs against a vocabulary the test built; this one
+// runs against a byte-level BPE, which is where the bytes a token stands for
+// stop being the bytes a vocabulary file spells it with.
+func TestASchemaThroughTheServerProducesADocumentThatMatchesIt(t *testing.T) {
+	dir := writeCheckpoint(t)
+	m, err := tgo.Open(dir, tgo.WithDevice(tgo.CPU), tgo.WithContext(512))
+	if err != nil {
+		t.Fatalf("tgo.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Errorf("Model.Close: %v", err)
+		}
+	})
+	s, err := server.New(server.Wrap(m, synthName), server.WithNotice(&strings.Builder{}))
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+
+	const budget = 64
+	body := `{"model":"` + synthName + `","max_tokens":` + strconv.Itoa(budget) +
+		`,"messages":[{"role":"user","content":"describe a place"}],` +
+		`"logit_bias":` + banWhitespace(t, dir) + `,` +
+		`"response_format":{"type":"json_schema","json_schema":{"name":"place","strict":true,` +
+		`"schema":` + placeSchema + `}}}`
+	w := do(t, s, http.MethodPost, "/v1/chat/completions", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	answer := contentOf(t, w)
+	if !json.Valid([]byte(answer)) {
+		t.Fatalf("the answer is not valid JSON: %q", answer)
+	}
+	var got struct {
+		City    string `json:"city"`
+		Capital bool   `json:"capital"`
+	}
+	dec := json.NewDecoder(strings.NewReader(answer))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("the answer does not match the schema: %v: %q", err, answer)
+	}
+	if got.City != "oslo" {
+		t.Errorf(`city = %q, want "oslo", the only member of its enum: %q`, got.City, answer)
+	}
+	// The properties are in the schema's order, which is one of the compiler's
+	// narrowings and is what a caller reading the raw body sees.
+	if i, j := strings.Index(answer, `"city"`), strings.Index(answer, `"capital"`); i > j {
+		t.Errorf("the properties are not in the schema's order: %q", answer)
+	}
+	// It ended because the document was complete, not because it ran out of
+	// budget. A grammar carrying no stop ids masks every token away on the step
+	// after the last brace, so this is the assertion that says the stop set
+	// reached the compiler.
+	if reason := finishOf(t, w); reason != "stop" {
+		t.Errorf("finish_reason = %q, want %q: the completion was cut off rather than "+
+			"finished: %q", reason, "stop", answer)
+	}
+}
+
+// placeSchema is the fixture's schema: two required properties, of different
+// types, in a closed object.
+//
+// Its language is finite, which is what makes the budget above a bound rather
+// than a hope. An "integer" property would not be: JSON Schema spells a
+// magnitude bound as "maximum", the compiler refuses that as arithmetic on the
+// value, and a model whose weights are arbitrary will type digits for as long
+// as it is allowed to. That is the package's documented narrowing seen from the
+// test's side, and the honest answer is a schema whose language ends.
+const placeSchema = `{"type":"object","properties":{` +
+	`"city":{"type":"string","enum":["oslo"]},` +
+	`"capital":{"type":"boolean"}},` +
+	`"required":["city","capital"],"additionalProperties":false}`
+
+// banWhitespace is a logit_bias member banning every token that carries an
+// ASCII space, tab, newline or carriage return.
+//
+// It is a property of this fixture and not of constrained decoding. JSON admits
+// whitespace before every token, so the grammar admits it too; the synthetic
+// checkpoint's weights are arbitrary and it draws a space as readily as a
+// brace, and a run that spends its budget on indentation says nothing about the
+// mask. With whitespace banned the structural tokens are the only admissible
+// ones, so the budget above is a real bound rather than a hope.
+//
+// The ban is a large finite number rather than negative infinity because it
+// travels as JSON, which has no spelling for an infinity.
+func banWhitespace(t *testing.T, dir string) string {
+	t.Helper()
+	tk, err := tokenizer.Load(filepath.Join(dir, "tokenizer.json"))
+	if err != nil {
+		t.Fatalf("loading the fixture's tokenizer: %v", err)
+	}
+	bias := map[string]float64{}
+	for id := 0; id < synthVocab; id++ {
+		if strings.ContainsAny(string(tk.TextBytes(id)), " \t\n\r") {
+			bias[strconv.Itoa(id)] = -1e30
+		}
+	}
+	if len(bias) == 0 {
+		t.Fatal("the fixture holds no whitespace token, so this ban bans nothing")
+	}
+	raw, err := json.Marshal(bias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// contentOf reads the assistant's answer out of an OpenAI Chat body. Compare
+// answerOf, which joins the thinking block to it with a separator that is not
+// JSON.
+func contentOf(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the answer is not JSON: %v: %s", err, w.Body.String())
+	}
+	if len(body.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1: %s", len(body.Choices), w.Body.String())
+	}
+	return body.Choices[0].Message.Content
+}
+
+// finishOf reads finish_reason out of an OpenAI Chat body.
+func finishOf(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the answer is not JSON: %v: %s", err, w.Body.String())
+	}
+	if len(body.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1: %s", len(body.Choices), w.Body.String())
+	}
+	return body.Choices[0].FinishReason
+}
+
+// A schema the compiler refuses is a 400 through the real engine too, carrying
+// the compiler's reason, and no session is built.
+//
+// Every other refusal test in this package goes through fakeEngine, which does
+// its own compilation. That leaves [server.Wrap]'s one-line join to
+// [github.com/latere-ai/tgo.Model.CheckSchema] untested: an engine that
+// answered nil there would accept the request, allocate the session, and only
+// then fail inside the generation -- after taking the KV reservation this file
+// refuses in order to protect, and with the compiler's reason no longer on the
+// path a caller reads.
+func TestAnUncompilableSchemaIsRefusedByTheRealEngine(t *testing.T) {
+	dir := writeCheckpoint(t)
+	m, err := tgo.Open(dir, tgo.WithDevice(tgo.CPU), tgo.WithContext(512))
+	if err != nil {
+		t.Fatalf("tgo.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Errorf("Model.Close: %v", err)
+		}
+	})
+	s, err := server.New(server.Wrap(m, synthName), server.WithNotice(&strings.Builder{}))
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	// A numeric bound: the automaton counts characters, so a magnitude is
+	// arithmetic on the value and the compiler says so by name.
+	body := `{"model":"` + synthName + `","max_tokens":8,` +
+		`"messages":[{"role":"user","content":"how many"}],` +
+		`"response_format":{"type":"json_schema","json_schema":{"name":"n","strict":true,` +
+		`"schema":{"type":"integer","minimum":1}}}}`
+	w := do(t, s, http.MethodPost, "/v1/chat/completions", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	// The body is JSON, so the compiler's quotes around the keyword arrive
+	// escaped.
+	for _, want := range []string{"arithmetic on the value", `\"minimum\"`, "response_format"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the refusal does not carry %q: %s", want, w.Body.String())
+		}
+	}
 }

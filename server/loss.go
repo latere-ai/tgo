@@ -50,6 +50,7 @@ var honoured = map[string][]string{
 	"Seed":              {"seed"},
 	"MaxTokens":         {"max_tokens", "max_completion_tokens", "max_output_tokens"},
 	"Stop":              {"stop", "stop_sequences"},
+	"Schema":            {"response_format", "output_format", "text"},
 }
 
 // honouredWire is honoured flattened: every wire name some dialect applies.
@@ -82,10 +83,15 @@ var honouredEverywhere = []string{
 // name anyway would report a bound this server never applied as honoured. The
 // completion then runs unbounded and no channel says so, which is worse than
 // reporting an honoured knob as lost.
+// The schema is the sharpest case in the table: each dialect spells it
+// differently -- response_format, output_format, text.format -- and all three
+// names reach the same [github.com/latere-ai/tgo.Policy] field, so subtracting
+// the union would report a schema as enforced on the three routes that never
+// saw one.
 var honouredHere = map[ir.Dialect][]string{
-	ir.DialectOpenAIChat:        {"max_tokens", "max_completion_tokens", "stop"},
-	ir.DialectAnthropicMessages: {"max_tokens", "stop_sequences"},
-	ir.DialectOpenAIResponses:   {"max_output_tokens"},
+	ir.DialectOpenAIChat:        {"max_tokens", "max_completion_tokens", "stop", "response_format"},
+	ir.DialectAnthropicMessages: {"max_tokens", "stop_sequences", "output_format"},
+	ir.DialectOpenAIResponses:   {"max_output_tokens", "text"},
 	dialectLegacy:               {"max_tokens", "stop"},
 }
 

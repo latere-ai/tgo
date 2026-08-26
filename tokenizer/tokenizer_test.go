@@ -616,3 +616,65 @@ func TestRealTokenizer(t *testing.T) {
 		t.Log("no <|im_start|>; not a chat checkpoint")
 	}
 }
+
+// TextBytes is the seam a grammar mask reads the vocabulary through, and the
+// byte-level alphabet is what makes it a seam rather than a field access.
+//
+// A vocabulary file stores " the" as "Ġthe": the space is carried as U+0120 so
+// that every token is printable. A caller handed those display characters
+// instead of the bytes would constrain the wrong strings -- and would do it
+// silently, because "Ġthe" is a perfectly ordinary sequence of characters that
+// a grammar over text would accept in most places a token is legal.
+func TestTextBytesUndoesTheByteLevelAlphabet(t *testing.T) {
+	tk := load(t)
+	ids := tk.Encode(" and", false)
+	if len(ids) != 1 {
+		t.Fatalf("Encode(%q) = %v, want one id; the fixture holds it as one token", " and", ids)
+	}
+	if got := tk.TextBytes(ids[0]); !bytes.Equal(got, []byte(" and")) {
+		t.Errorf("TextBytes(%d) = %q, want %q; the byte-level alphabet was not undone",
+			ids[0], got, " and")
+	}
+	// The display form must not be what a caller sees, stated as its own
+	// assertion: equality with " and" above would also hold for a tokenizer
+	// that returned nothing at all if the want were empty.
+	if got := string(tk.TextBytes(ids[0])); strings.ContainsRune(got, 'Ġ') {
+		t.Errorf("TextBytes(%d) = %q, which is the vocabulary file's spelling", ids[0], got)
+	}
+}
+
+// A control token contributes no text, whatever its piece holds. Its piece
+// holds the ten characters of "<|im_end|>", and those characters are legal
+// inside a JSON string -- so a mask built from them would let the model end a
+// turn in the middle of a value.
+func TestTextBytesIsNilForEveryAddedToken(t *testing.T) {
+	tk := load(t)
+	for _, s := range []string{"<|endoftext|>", "<|im_start|>", "<|im_end|>", "<think>",
+		"<think>\n", "</think>"} {
+		id, ok := tk.Special(s)
+		if !ok {
+			t.Fatalf("the fixture has no %q", s)
+		}
+		if got := tk.TextBytes(id); got != nil {
+			t.Errorf("TextBytes(%d) = %q for %q, want nil", id, got, s)
+		}
+		// Decode still spells it out: the two differ deliberately, and a
+		// TextBytes that merely forwarded to Decode's table would pass the
+		// check above only by accident.
+		if got := tk.Decode([]int{id}); got != s {
+			t.Errorf("Decode(%d) = %q, want %q", id, got, s)
+		}
+	}
+}
+
+// An id outside the vocabulary is text-free rather than a panic: a model's
+// embedding matrix is commonly padded past the last real token, so a mask over
+// the logits row asks about ids this tokenizer never claims.
+func TestTextBytesIsNilOutsideTheVocabulary(t *testing.T) {
+	tk := load(t)
+	for _, id := range []int{-1, tk.VocabSize(), tk.VocabSize() + 64} {
+		if got := tk.TextBytes(id); got != nil {
+			t.Errorf("TextBytes(%d) = %q, want nil", id, got)
+		}
+	}
+}

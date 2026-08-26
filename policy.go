@@ -62,6 +62,36 @@ type Policy struct {
 	// (§7).
 	MaxTokens int
 
+	// Schema constrains the completion to a JSON document matching this JSON
+	// Schema, by masking away at every step the tokens that cannot continue
+	// one (specs/015-structured-output.md §1). The output parses by
+	// construction, so a retry loop around a model that emits JSON "most of
+	// the time" is unnecessary.
+	//
+	// The schema is compiled against the model's vocabulary, and a schema that
+	// cannot be compiled is refused by naming the construct rather than
+	// approximated: a keyword silently ignored produces a document that
+	// validates against a schema the caller did not write (015-D4).
+	// [Model.CheckSchema] performs that compilation on its own, which is what
+	// lets a server answer an uncompilable schema before it allocates
+	// anything, and it keeps the result so the request that follows pays
+	// nothing.
+	//
+	// Three narrowings of JSON Schema are deliberate and are the compiler's:
+	// an object's properties are emitted in the order the schema declares
+	// them, an object is closed, and "integer" admits the plain spelling.
+	// Each shrinks the admitted language, so a document produced here still
+	// validates against the schema. What is not narrowed is a number's
+	// magnitude, because JSON Schema spells that as "minimum", which is
+	// refused -- so a caller who needs one checks it after decoding.
+	//
+	// It is refused together with Stop: a stop string cuts the completion
+	// where it matched, which is half a document. MaxTokens is not refused,
+	// because a budget that runs out is reported -- CompletionTokens reaches
+	// it, and a server renders that as a length finish -- while a stop string
+	// that fires reports an ordinary end.
+	Schema []byte
+
 	// Stop ends the completion when one of these strings appears in the
 	// decoded text, and the text is cut before it.
 	//
@@ -70,6 +100,10 @@ type Policy struct {
 	// (006-D4, specs/002-tokenizer.md 002-D8). While a stop string is set the
 	// stream holds back the longest suffix of its output that could still
 	// begin one.
+	//
+	// Set together with Schema it is refused, not applied: the two end a
+	// completion by different rules, and the one that wins would cut a
+	// document Schema promised would parse.
 	Stop []string
 }
 
@@ -136,6 +170,20 @@ func (p Policy) check(vocab int) error {
 			return fmt.Errorf("tgo: Stop holds an empty string, which every completion " +
 				"contains before its first token")
 		}
+	}
+	// A stop string cuts the text at the point it matched and ends the stream
+	// with no error, so a stop that fires inside a document leaves a caller
+	// holding half of one and reading it as a completed answer. The two
+	// stopping rules are also different in kind: the grammar ends a generation
+	// where the document is complete, and Stop ends it where a substring
+	// appeared. Refused rather than silently ignored, because a stop string
+	// dropped without a word is the same request answered differently
+	// (015-D9).
+	if len(p.Schema) > 0 && len(p.Stop) > 0 {
+		return fmt.Errorf("tgo: Schema and Stop are set together; a stop string cuts the "+
+			"completion where it matched, so it would end a constrained request on half a "+
+			"document, and Schema promises one that parses. Drop Stop, or drop Schema: "+
+			"%q", p.Stop)
 	}
 	return nil
 }

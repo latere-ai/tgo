@@ -50,6 +50,7 @@ type Tokenizer struct {
 	added      []addedToken
 	addedFirst map[byte][]int // first content byte to indices into added
 	addedText  map[string]int
+	addedID    map[int]bool // the ids added_tokens claims, for TextBytes
 }
 
 // addedToken is one entry of tokenizer.json's added_tokens: a control token
@@ -90,6 +91,7 @@ func Parse(r io.Reader) (*Tokenizer, error) {
 		merges:     make(map[pair]int),
 		addedFirst: make(map[byte][]int),
 		addedText:  make(map[string]int),
+		addedID:    make(map[int]bool),
 	}
 	if err := t.applyNormalizer(f.Normalizer); err != nil {
 		return nil, err
@@ -294,6 +296,7 @@ func (t *Tokenizer) applyAdded(list []addedTokenJSON) error {
 		}
 		t.piece[a.ID] = []byte(a.Content)
 		t.addedText[a.Content] = a.ID
+		t.addedID[a.ID] = true
 		idx := len(t.added)
 		t.added = append(t.added, addedToken{id: a.ID, content: a.Content, special: a.Special})
 		t.addedFirst[a.Content[0]] = append(t.addedFirst[a.Content[0]], idx)
@@ -317,6 +320,28 @@ func (t *Tokenizer) applyAdded(list []addedTokenJSON) error {
 // Qwen3 returns 151669 here against an embedding of 151936. Use it to bound an
 // id, not to shape a tensor.
 func (t *Tokenizer) VocabSize() int { return len(t.piece) }
+
+// TextBytes returns the bytes an id contributes to decoded text, and nil for
+// an id that contributes none.
+//
+// It is the inverse of the byte-level alphabet and not the vocabulary file's
+// spelling: the id for " the" comes back as the four bytes of " the", not as
+// the five characters of "Ġthe". A caller that reasons about what a token puts
+// in the output -- a grammar masking the tokens that cannot continue a document
+// -- must read the bytes and not the surface form, because the surface form is
+// a different string that happens to be legal in most contexts.
+//
+// Nil for three cases, which are one case to a caller: an id out of range, an
+// id no table claims, and an added token. An added token is nil because its
+// piece holds its literal content, so "<|im_end|>" would otherwise read as ten
+// characters a caller could believe it is free to emit anywhere those
+// characters are legal.
+func (t *Tokenizer) TextBytes(id int) []byte {
+	if t.addedID[id] {
+		return nil
+	}
+	return t.bytesFor(id)
+}
 
 // Special resolves a control token by its literal text.
 func (t *Tokenizer) Special(text string) (int, bool) {

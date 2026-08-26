@@ -70,6 +70,25 @@ Sharing across sessions ([CacheProcess]) is refused rather than approximated.
 It needs the cache addressed through a page table, and tgo's graph declares no
 page-table port.
 
+# JSON that parses by construction
+
+[Policy.Schema] carries a JSON Schema, and the completion is masked against it
+at every step: a token that cannot continue a document matching the schema is
+given probability zero, so the output parses and matches without a retry loop
+(specs/015-structured-output.md §1). [Model.CheckSchema] is the same compilation
+on its own, for a caller who wants the refusal before the request, and it keeps
+what it compiled so the request that follows pays a map lookup.
+
+A schema that cannot be turned into a mask is refused by name rather than
+approximated -- "minimum" is arithmetic on a value and the automaton counts
+characters -- because a keyword silently ignored produces a document that
+validates against a schema the caller did not write (015-D4). Three narrowings
+are deliberate and all three shrink the admitted language: an object's
+properties are emitted in the schema's order, an object is closed, and
+"integer" admits the plain spelling. A number's magnitude is not narrowed,
+because a bound on it is spelled "maximum", so a caller who needs one checks it
+after decoding.
+
 # Errors
 
 A device failure mid-generation ends the stream with the error and leaves the

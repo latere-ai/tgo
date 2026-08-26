@@ -5,11 +5,13 @@ package tgo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
+	"github.com/latere-ai/tgo/internal/grammar"
 	"github.com/latere-ai/tgo/sample"
 	"github.com/latere-ai/tgo/tokenizer"
 )
@@ -110,6 +112,11 @@ type Stream struct {
 	// feed is the token the next decode step scores: the one just emitted.
 	feed int
 
+	// gram is this request's position in the grammar [Policy.Schema] compiled
+	// to, and is nil for an unconstrained request. Its state belongs to this
+	// stream; the caches behind it are the Model's and are shared (015-D1).
+	gram *grammar.State
+
 	// pending is the decoded text held back because it could still begin a
 	// stop string. It is empty whenever Policy.Stop is.
 	pending string
@@ -121,12 +128,19 @@ type Stream struct {
 
 // newStream prepares a request. Nothing is submitted until the first
 // [Stream.Next].
-func newStream(ctx context.Context, s *Session, ids []int, p Policy, reused int) *Stream {
+func newStream(ctx context.Context, s *Session, ids []int, p Policy, reused int,
+	g *grammar.Grammar) *Stream {
+
 	max := p.MaxTokens
 	if max <= 0 {
 		max = s.capacity - len(ids)
 	}
+	var st *grammar.State
+	if g != nil {
+		st = g.Start()
+	}
 	return &Stream{
+		gram:      st,
 		s:         s,
 		ctx:       ctx,
 		pol:       p,
@@ -237,12 +251,33 @@ func (st *Stream) advance() {
 	// else this function does: specs/017-benchmarks.md §1 treats the four
 	// terms as exhaustive, so the host's is the step minus the other three
 	// rather than a fifth measurement with a gap between them.
+	// The mask goes on before the draw, which is where 015-D2 puts it: the
+	// penalties and the temperature live inside Next, and both are monotone in
+	// the logit with -Inf as a fixed point, so a token masked here cannot be
+	// brought back by either.
+	if st.gram != nil {
+		if err := st.gram.Mask(logits); err != nil {
+			st.finish(fmt.Errorf("tgo: masking a constrained step: %w", err))
+			return
+		}
+	}
 	tok := st.sampler.Next(logits, s.history, st.sp)
 	st.feed = tok
 
 	if st.isStop(tok) {
 		st.finish(nil)
 	} else {
+		// Advance consumes the token that was drawn, and only a token that is
+		// part of the document. A stop id is the branch above: the stream does
+		// not emit it and does not count it, and the grammar admits it exactly
+		// where the document is already complete, so advancing over it would
+		// mutate a state nothing reads again.
+		if st.gram != nil {
+			if err := st.gram.Advance(tok); err != nil {
+				st.finish(fmt.Errorf("tgo: advancing a constrained step: %w", err))
+				return
+			}
+		}
 		st.usage.CompletionTokens++
 		st.emit(tok)
 		switch {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
+	"github.com/latere-ai/tgo/internal/grammar"
 	"latere.ai/x/pkg/llmdialect/ir"
 )
 
@@ -79,12 +81,47 @@ type fakeEngine struct {
 
 	mu       sync.Mutex
 	sessions []*fakeSession
+	schemas  [][]byte
 }
 
 func (e *fakeEngine) Name() string                { return fakeName }
 func (e *fakeEngine) Context() int                { return fakeContext }
 func (e *fakeEngine) VocabSize() int              { return fakeVocab }
 func (e *fakeEngine) CacheBytesPerSession() int64 { return fakeCacheBytes }
+
+// fakeStop is the id the fake's vocabulary ends a document on. It is not zero,
+// not 255 and not fakeVocab-1: an off-by-one in the stop wiring would land on
+// one of those and read as correct.
+const fakeStop = 301
+
+// CheckSchema compiles against a byte-level vocabulary of the fake's width.
+//
+// A real compilation and not a canned answer, so a handler test sees the same
+// refusal text a real model produces. The vocabulary is one token per byte
+// value plus one stop id: every byte is spellable, so a schema is refused here
+// exactly when the compiler refuses it and never because the fake could not
+// type something.
+func (e *fakeEngine) CheckSchema(schema []byte) error {
+	e.mu.Lock()
+	e.schemas = append(e.schemas, schema)
+	e.mu.Unlock()
+	pieces := make(grammar.Pieces, fakeVocab)
+	for b := 0; b < 256; b++ {
+		pieces[b] = []byte{byte(b)}
+	}
+	_, err := grammar.Compile(schema, pieces, grammar.Options{Stop: []int{fakeStop}})
+	if err != nil {
+		return fmt.Errorf("tgo: %w", err)
+	}
+	return nil
+}
+
+// checked returns the schemas the engine was asked about.
+func (e *fakeEngine) checked() [][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([][]byte(nil), e.schemas...)
+}
 
 func (e *fakeEngine) NewSession(spec SessionSpec) (Session, error) {
 	if e.sessionErr != nil {

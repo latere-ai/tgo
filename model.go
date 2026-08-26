@@ -16,6 +16,7 @@ import (
 	"golang.design/x/accel/tensor"
 
 	"github.com/latere-ai/tgo/chat"
+	"github.com/latere-ai/tgo/internal/grammar"
 	"github.com/latere-ai/tgo/model"
 	"github.com/latere-ai/tgo/safetensors"
 	"github.com/latere-ai/tgo/tokenizer"
@@ -115,6 +116,13 @@ type Model struct {
 
 	// mu is 007-D9's submission lock.
 	mu sync.Mutex
+
+	// schemas holds every grammar [Model.CheckSchema] has compiled, keyed on
+	// the schema body. Its own lock rather than mu: compiling walks the
+	// vocabulary, and doing that under the submission lock would stop every
+	// session in the process from decoding (schema.go).
+	schemaMu sync.Mutex
+	schemas  map[string]*grammar.Grammar
 
 	closeOnce sync.Once
 	closeErr  error

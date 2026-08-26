@@ -24,10 +24,10 @@ import (
 
 // fakeServerEngine is a model as [server.Engine] sees one.
 //
-// Five of its six methods are constants, which is all the paths under test
+// Five of its seven methods are constants, which is all the paths under test
 // need: `tgo serve` binds, prints and stops, and makes no request. NewSession
-// refuses, so a test that started generating by accident fails rather than
-// hanging.
+// and CheckSchema refuse, so a test that started generating, or compiled a
+// schema, by accident fails rather than hanging.
 type fakeServerEngine struct {
 	name       string
 	context    int
@@ -41,6 +41,10 @@ func (f *fakeServerEngine) VocabSize() int              { return f.vocab }
 func (f *fakeServerEngine) CacheBytesPerSession() int64 { return f.perSession }
 func (f *fakeServerEngine) NewSession(server.SessionSpec) (server.Session, error) {
 	return nil, errors.New("this fake engine generates nothing")
+}
+
+func (f *fakeServerEngine) CheckSchema([]byte) error {
+	return errors.New("this fake engine compiles nothing")
 }
 
 // fakeServable is the model `tgo serve` loads, without a device or a

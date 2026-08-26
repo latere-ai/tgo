@@ -43,19 +43,16 @@ type request struct {
 // Everything that can refuse does so here, before a session is allocated: a
 // request that will not run must not first take a KV reservation from one that
 // would.
-func adapt(d ir.Dialect, req *ir.Request, ex extras, raw map[string]bool, vocab int) (*request, *apiError) {
-	if req.Schema != nil {
-		f := schemaField(d)
-		return nil, refusal(f, "tgo: %s asks for a JSON schema, which needs constrained "+
-			"decoding (specs/015-structured-output.md). Remove %s and parse the model's text, "+
-			"or wait for structured output", f, f)
-	}
+func adapt(d ir.Dialect, req *ir.Request, ex extras, raw map[string]bool, eng Engine) (*request, *apiError) {
 	msgs, aerr := mapMessages(req)
 	if aerr != nil {
 		return nil, aerr
 	}
-	pol, aerr := mapPolicy(req, ex, vocab)
+	pol, aerr := mapPolicy(req, ex, eng.VocabSize())
 	if aerr != nil {
+		return nil, aerr
+	}
+	if aerr := mapSchema(d, req, eng, &pol); aerr != nil {
 		return nil, aerr
 	}
 	return &request{
@@ -72,8 +69,47 @@ func adapt(d ir.Dialect, req *ir.Request, ex extras, raw map[string]bool, vocab 
 	}, nil
 }
 
+// mapSchema carries a requested JSON schema onto the policy, refusing one the
+// grammar compiler will not compile.
+//
+// The compilation happens here, before a session exists, for the reason the
+// whole file is arranged this way: a request that will not run must not first
+// take a KV reservation from one that would. It is not wasted work either --
+// the model keeps what it compiled, so the request that follows finds it
+// (015-D1).
+//
+// The refusal carries the compiler's own words. 015-D4 makes the reason the
+// point: "a numeric bound is arithmetic on the value" tells a caller to move
+// the bound into their own validation, while "unsupported" sends them to guess
+// which of their keywords was the problem.
+func mapSchema(d ir.Dialect, req *ir.Request, eng Engine, pol *tgo.Policy) *apiError {
+	if req.Schema == nil {
+		return nil
+	}
+	f := schemaField(d)
+	if len(req.Schema.Schema) == 0 {
+		return refusal(f, "tgo: %s asks for a JSON schema and carries none", f)
+	}
+	// Refused here as well as in tgo.Policy, because this is the layer that can
+	// answer it: Policy.check runs inside Session.start, after this file has
+	// already allocated the session, and its error would arrive as a 500 with
+	// no field on it. A stop string cuts the completion where it matched, so it
+	// would end a constrained request on half a document (015-D9).
+	if len(pol.Stop) > 0 {
+		return refusal(f, "tgo: %s asks for a JSON schema and the request also carries a "+
+			"stop sequence %q; a stop string cuts the completion where it matched, so it "+
+			"would end the document early and it would not parse. Send one or the other",
+			f, pol.Stop)
+	}
+	if err := eng.CheckSchema(req.Schema.Schema); err != nil {
+		return refusal(f, "tgo: %s cannot be compiled to a token mask: %v", f, err)
+	}
+	pol.Schema = req.Schema.Schema
+	return nil
+}
+
 // schemaField is what one dialect calls the member that asked for a schema.
-// The refusal names what the caller sent rather than what the IR called it.
+// A refusal names what the caller sent rather than what the IR called it.
 func schemaField(d ir.Dialect) string {
 	switch d {
 	case ir.DialectAnthropicMessages:

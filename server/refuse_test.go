@@ -13,6 +13,14 @@ import (
 // and the refusal names it. A caller who has to bisect their own request to
 // find out which member was the problem has been told nothing.
 
+// refusedSchema is a schema the grammar compiler will not compile: a numeric
+// bound is arithmetic on the value, and the automaton counts characters.
+//
+// It is the shape a refusal test needs now that a schema is accepted. A
+// compilable one -- {"type":"object"} -- runs, which is the point of this wave
+// and would make the case below assert the opposite of what it says.
+const refusedSchema = `{"type":"integer","minimum":1}`
+
 func TestARefusalNamesItsField(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -26,19 +34,19 @@ func TestARefusalNamesItsField(t *testing.T) {
 			body: routes[0].body(`,"n":2`),
 		},
 		{
-			name: "json schema on chat", route: 0, field: "response_format",
+			name: "an uncompilable schema on chat", route: 0, field: "response_format",
 			body: routes[0].body(`,"response_format":{"type":"json_schema","json_schema":` +
-				`{"name":"out","schema":{"type":"object"}}}`),
+				`{"name":"out","schema":` + refusedSchema + `}}`),
 		},
 		{
-			name: "json schema on responses", route: 2, field: "text.format",
+			name: "an uncompilable schema on responses", route: 2, field: "text.format",
 			body: routes[2].body(`,"text":{"format":{"type":"json_schema","name":"out",` +
-				`"schema":{"type":"object"}}}`),
+				`"schema":` + refusedSchema + `}}`),
 		},
 		{
-			name: "json schema on messages", route: 1, field: "output_format",
+			name: "an uncompilable schema on messages", route: 1, field: "output_format",
 			body: routes[1].body(`,"output_format":{"type":"json_schema",` +
-				`"schema":{"type":"object"}}`),
+				`"schema":` + refusedSchema + `}`),
 		},
 		{
 			name: "an image", route: 1, field: "image",
@@ -101,7 +109,7 @@ func TestARefusalIsShapedByTheDialect(t *testing.T) {
 	s := newTestServer(t, &fakeEngine{})
 
 	anth := post(t, s, "/v1/messages",
-		routes[1].body(`,"output_format":{"type":"json_schema","schema":{"type":"object"}}`))
+		routes[1].body(`,"output_format":{"type":"json_schema","schema":`+refusedSchema+`}`))
 	wantStatus(t, anth, http.StatusBadRequest)
 	if !strings.Contains(anth.Body.String(), `"type":"error"`) ||
 		!strings.Contains(anth.Body.String(), `"type":"invalid_request_error"`) {

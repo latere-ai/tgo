@@ -75,7 +75,26 @@ var honourCases = []honourCase{
 		got: func(p tgo.Policy) any { return strings.Join(p.Stop, ",") }, want: "END"},
 	{field: "Stop", wire: "stop_sequences", route: 1, extra: `,"stop_sequences":["END"]`,
 		got: func(p tgo.Policy) any { return strings.Join(p.Stop, ",") }, want: "END"},
+	// One per dialect spelling of the same field. A schema sent under another
+	// surface's name enforces nothing, and this is the only field where three
+	// names compete for one Policy member.
+	{field: "Schema", wire: "response_format", route: 0,
+		extra: `,"response_format":{"type":"json_schema","json_schema":{"name":"out",` +
+			`"schema":` + wireSchema + `}}`,
+		got: func(p tgo.Policy) any { return string(p.Schema) }, want: wireSchema},
+	{field: "Schema", wire: "output_format", route: 1,
+		extra: `,"output_format":{"type":"json_schema","schema":` + wireSchema + `}`,
+		got:   func(p tgo.Policy) any { return string(p.Schema) }, want: wireSchema},
+	{field: "Schema", wire: "text", route: 2,
+		extra: `,"text":{"format":{"type":"json_schema","name":"out","schema":` +
+			wireSchema + `}}`,
+		got: func(p tgo.Policy) any { return string(p.Schema) }, want: wireSchema},
 }
+
+// wireSchema is the schema those cases send. An empty closed object, which
+// compiles to the one-document language {}, so the case says nothing about what
+// the grammar admits and everything about which member carried it.
+const wireSchema = `{"type":"object"}`
 
 // TestAnHonouredFieldIsAppliedAndNotReportedAsLost is §4.1 in both directions.
 //
