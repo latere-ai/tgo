@@ -295,6 +295,71 @@ clock is what made it look green locally.
 that turns "several conversations at once" into "several conversations in one
 step", and [§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
 
+### 2026-08-27 — Wave 8: the cache is addressed through a page table
+
+Two probes and two commits of code, in that order, because
+[010 §2](010-conformance.md) says a row's state is decided by a value and not by
+a commit message.
+
+**The probes first.** accel closed [#16](https://github.com/golang-design/accel/issues/16)
+with a ragged step and shipped `tensor.LinearAttention`. Both were checked by
+binding real buffers rather than by reading `tensor/attention.go`:
+
+| probe | what it asserts |
+| --- | --- |
+| [C16](010-conformance.md) | a mixed step — a 3-token chunk, a decode, and a sequence contributing nothing — matches a float64 reference that walks the page table itself, selects `AttentionRagged`, is **bit-identical** to the same tokens run as separate dispatches, and changes its output when the extents are re-split 2/1/1 |
+| C23 (018) | the gated delta scan matches a float64 reference, halving every $\alpha$ moves the output, and a state with `valueDim` and `keyDim` transposed is refused |
+
+Both closed. [008](008-scheduler.md) and [018](018-hybrid-models.md) are
+therefore unblocked upstream, and **no spec in this tree is blocked upstream any
+more.**
+
+**And the probe found what it was not looking for.** The ragged kernel reads an
+**f32** cache. [C5](010-conformance.md) closed on the argument that an f16 cache
+halves the largest allocation a serving process has, and the operator that makes
+batching possible gives that halving back — which by [008 §1](008-scheduler.md)
+halves both the batch size worth reaching and the throughput ceiling. Filed as
+[accel#23](https://github.com/golang-design/accel/issues/23) and recorded as
+[C22](010-conformance.md). A consumer that reports the capability it wanted and
+not the one it lost is reporting half.
+
+**Then the port.** [016 §9](016-prefix-cache.md)'s third constraint was tgo's
+own: the kernels honoured a page table and
+[004 §3](004-model-graph.md)'s port table had none, so nothing here could pass
+one. `GraphSpec.Block` declares `PortPages` and `NewPagedStep` maps a logical
+position through it. The value test is a prefill over a **permuted** table
+required to agree bit for bit with a contiguous run — an identity table would
+pass whether the kernels read it or not, which is how
+[accel#10](https://github.com/golang-design/accel/issues/10) stayed invisible —
+with a negative control that writes contiguously and reads through the
+permutation and requires the two to *disagree*.
+
+**Then the pool.** `WithPrefixCache(CacheProcess, positions)` is available and
+`internal/prefix` has an importer after two waves of having none. The key and
+value states moved from the session to the model, which is what makes sharing
+possible and also what bounds a server's memory: the cost is the pool, not
+sessions times context. Measured on the fixture, a second conversation reused
+**96 of 106** prompt tokens it never computed, and generated what a cold run
+generates.
+
+**One defect, found by the test written to find it.** `NewSession` sized the
+page table and then replaced the whole step struct below it, dropping the slice.
+`WriteBuffer` over an empty slice writes nothing and reports nothing, so the
+port held whatever the allocation held and every step attended to blocks nobody
+chose — fluent text, no error, and a pooled session generating different tokens
+from a contiguous one at *identical* addressing.
+
+Isolating it is the part worth keeping. A probe at the tensor layer proved
+accel's paged prefill is bit-identical to the contiguous one at these shapes; a
+second at the model layer proved the recorded graph is; which left the session,
+and a diff of its bound ports showed the page table was empty. **Three layers,
+each ruled out by a value.** The fix is one line in the constructor, so the
+check at the seam is what makes the class visible next time.
+
+**Remaining**: [008](008-scheduler.md) §2 and §3 — slots and admission — which
+are now pure policy over a graph that pages, and
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
+
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
 
 `internal/grammar` shipped with 97.8% coverage and **no caller**, which the

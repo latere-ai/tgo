@@ -363,15 +363,19 @@ was the absence of an error.**
 
 Three constraints remain, and the third is tgo's own.
 
-- **tgo's graph declares no page-table port.** This section audits accel's
-  kernels. It does not audit the graph that would have to call them:
-  [004 §3](004-model-graph.md)'s port table has no page table in it, and
-  `nn.Attention` binds no `tensor.AttentionOptions.Pages` or `Block`. So
-  nothing in tgo can pass a page table however capable C13 is, and the port is
-  what [§4](#4-the-structure-a-hash-map-not-a-trie)'s pool is waiting on rather
-  than anything upstream. **This is the same defect as the one this section
-  records below, one layer in**: the evidence was accel's behaviour, and the
-  question was about tgo's.
+- **tgo's graph declared no page-table port, and does now.** This section
+  audits accel's kernels; for a week it did not audit the graph that would have
+  to call them, and [004 §3](004-model-graph.md)'s port table had no page table
+  in it while `nn.Attention` bound no `tensor.AttentionOptions.Pages` or
+  `Block`. Nothing in tgo could pass a page table however capable C13 was.
+  **That was the same defect as the one this section records below, one layer
+  in**: the evidence was accel's behaviour and the question was about tgo's.
+
+  `PortPages` landed on 2026-08-26, verified by a prefill over a *permuted*
+  table required to agree bit for bit with a contiguous run, with a negative
+  control that writes the key/value state contiguously and reads it through the
+  permutation and requires the two to disagree. `CacheProcess` is available and
+  §4's pool has an importer.
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.

@@ -101,10 +101,11 @@ conversation. [011 §2](011-sequencing.md) is the order,
 [011 §2.1](011-sequencing.md) is what is gated upstream, and
 [011 §4](011-sequencing.md) is where outcomes are recorded as they land.
 
-What it is not yet is a server for many users: requests interleave rather than
-run in one step, so total throughput is what one conversation gets. That is
-[008](008-scheduler.md), and as of 2026-08-26 it waits on **tgo** — the graph
-declares no page-table port, and a batch cannot be formed without one.
+What it is not yet is a server that batches: requests interleave rather than run
+in one step, so total throughput is close to what one conversation gets. That is
+[008](008-scheduler.md), and as of 2026-08-27 the page-table port it named as
+its prerequisite is built — so what is left of it is §2 and §3, slots and
+admission, which are pure policy over a graph that pages.
 [008 §8](008-scheduler.md) is the order that work goes in.
 
 The one thing to know before reading further: **no spec in this tree is blocked
