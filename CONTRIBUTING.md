@@ -114,6 +114,22 @@ This has cost a red build once already — `go.mod` was left out of a commit tha
 staged its packages by name, so nine green packages built against a module file
 CI did not have.
 
+**A green local `-race` run does not mean a green CI one.** The root package
+runs a synthetic model's forward pass on the CPU and the race detector costs
+about an order of magnitude on that arithmetic, so the binding number is CPU
+time, not wall time: your machine divides it by its cores and a CI runner has
+fewer and slower ones. Measure it rather than trusting the wall clock:
+
+```sh
+/usr/bin/time -p go test -race -count=1 -timeout 30m ./
+```
+
+`user` above 1500s is a warning even when `real` looks fine. This has cost a red
+build once already: the suite passed locally at 362s wall and timed out on
+ubuntu and windows, on no single test — the package simply ran out of the ten
+minutes `go test` allows by default. The steps now pass `-timeout 30m`, so the
+next failure of this kind will be a slow suite rather than a confusing one.
+
 ## Dependencies
 
 tgo's core is stdlib, `golang.design/x/accel`, and

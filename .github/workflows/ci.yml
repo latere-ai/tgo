@@ -54,10 +54,25 @@ jobs:
     # The race detector needs cgo on most platforms, so this is the one step
     # that turns it on. The cgo-free guarantee is about what tgo compiles to,
     # not about what its test harness may use to find a race.
+    #
+    # The timeout is raised because go test's default 10 minutes is a guard
+    # against a hung test, not a budget for a slow one, and this suite is
+    # legitimately slower than that: the root package runs a synthetic model's
+    # forward pass on the CPU, and the race detector costs roughly an order of
+    # magnitude on exactly that arithmetic. It measured 362s wall on a
+    # many-core developer machine and 1297s of CPU, so a runner with four
+    # slower cores lands near the default and a two-core one goes past it --
+    # which is how it failed, on ubuntu and windows and on no single test.
+    #
+    # Trimming the token budgets was the alternative and it was rejected: the
+    # constrained-decoding tests assert that a document COMPLETES and stops,
+    # so a budget cut below the document's own length would turn the assertion
+    # into a measurement of the budget. Race coverage is worth more than the
+    # minutes.
     - name: Test under the race detector
       env:
         CGO_ENABLED: '1'
-      run: go test -race ./...
+      run: go test -race -timeout 30m ./...
 
   coverage:
     name: coverage gate
