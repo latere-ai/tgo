@@ -18,12 +18,12 @@ import (
 // case in more than the thing it names, and a reader could not tell which
 // difference produced the diagnostic.
 type parts struct {
-	r                       *rig
-	x                       *tensor.Tensor
-	w                       nn.AttentionWeights
-	k, v                    *tensor.State
+	r                              *rig
+	x                              *tensor.Tensor
+	w                              nn.AttentionWeights
+	k, v                           *tensor.State
 	posQ, posK, slots, lens, pages *tensor.Tensor
-	cfg                     nn.AttentionConfig
+	cfg                            nn.AttentionConfig
 }
 
 func newParts(t *testing.T) *parts {
