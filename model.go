@@ -106,6 +106,13 @@ type Model struct {
 	info    Info
 	context int
 
+	// cacheScope and cachePositions are [WithPrefixCache]'s, resolved once and
+	// read by every session. They are the Model's rather than the Session's
+	// because a scope is a deployment's decision (016-D7) and a caller who set
+	// it once should not have to repeat it per conversation.
+	cacheScope     CacheScope
+	cachePositions int
+
 	// mu is 007-D9's submission lock.
 	mu sync.Mutex
 
@@ -142,6 +149,9 @@ func Open(dir string, opts ...Option) (*Model, error) {
 		return nil, fmt.Errorf("tgo: WithContext is %d; a cache holds at least one position",
 			o.context)
 	}
+	if err := o.checkCache(); err != nil {
+		return nil, err
+	}
 
 	b, err := model.Open(dir)
 	if err != nil {
@@ -172,6 +182,9 @@ func Open(dir string, opts ...Option) (*Model, error) {
 		special: resolveSpecials(tok),
 		context: o.context,
 		gains:   map[string]*accel.Buffer{},
+
+		cacheScope:     o.cacheScope,
+		cachePositions: o.cachePositions,
 	}
 
 	// 005-D3: the number before the allocation, not after the failure. A

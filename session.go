@@ -189,11 +189,65 @@ func (m *Model) NewSession(opts ...SessionOption) (*Session, error) {
 // It is the explicit recovery §7 requires: a session that failed mid-generation
 // refuses further work until this is called, because the cache holds a partial
 // write whose extent is unknown and the only safe reading of it is none.
-func (s *Session) Reset() {
-	s.length = 0
-	s.history = s.history[:0]
+//
+// It also drops everything [WithPrefixCache] could have reused, so the next
+// request prefills its whole prompt. That is the cold baseline, and it is what
+// a caller who reset asked for.
+func (s *Session) Reset() { s.rewind(0) }
+
+// rewind keeps the first n positions of the conversation and drops the rest.
+//
+// The cache is not rewritten, because nothing reads past the length: a step
+// binds lengths[0] and the kernel masks with `pos < lengths[0]`, so a row above
+// n is unreachable until some later step scatters over it. Dropping the history
+// with the length is what keeps the two agreeing — s.history[i] is the token
+// whose key/value state sits at row i, and a reuse decision that trusted a
+// stale entry would attend to a token the cache no longer holds.
+func (s *Session) rewind(n int) {
+	s.length = n
+	s.history = s.history[:n]
 	s.failed = nil
 	s.live = nil
+}
+
+// reusable is how many leading positions of ids this session already holds the
+// key/value state for.
+//
+// # Why a token comparison and not a hash
+//
+// specs/016-prefix-cache.md keys a shared pool on chained block hashes because
+// a hit there means one sequence attending to another sequence's blocks, and
+// the blocks must be found before they can be compared. Nothing is shared here:
+// the run being matched is this session's own, its tokens are in s.history, and
+// comparing them is exact. So there is no hash to collide (016-D9 has nothing
+// to protect), no block alignment to round down to (016-D4's up-to-B-1 loss is
+// not paid), and no salt to mix (016 §7's oracle needs a second tenant).
+//
+// # The cap at one token short of the prompt
+//
+// The cache holds key/value state, not logits. Sampling needs the logits at the
+// last prompt position and those come from a forward pass over it, so reusing
+// the whole match would leave the request with a warm cache and nothing to
+// sample from (016-D10). It is capped here rather than in the caller because
+// the caller that would forget is the chat path, where a rendered prompt always
+// ends with a fresh assistant opener and the cap never binds.
+// # A failed session reuses nothing, structurally
+//
+// There is no check for it here because there is no path to it. A session whose
+// step failed holds a partial write of unknown extent, and [Session.usable]
+// refuses every request before one is built (007-D5). The only way back is
+// [Session.Reset], which rewinds to zero, so the first request after a failure
+// is cold whatever this would have said.
+func (s *Session) reusable(ids []int) int {
+	if s.m.cacheScope != CacheSession {
+		return 0
+	}
+	n := min(s.length, len(s.history), len(ids)-1, s.m.cachePositions)
+	m := 0
+	for m < n && s.history[m] == ids[m] {
+		m++
+	}
+	return m
 }
 
 // Close releases this session's device memory. It is safe to call more than
@@ -232,9 +286,13 @@ func (s *Session) Close() error {
 //
 // The conversation is what msgs holds: the session's cache is refilled from
 // this render, so a caller carries the history in the slice and a partial
-// render can never be appended to a cache that ends somewhere else. Reusing the
-// prefix two consecutive calls share is
-// specs/016-prefix-cache.md's and is not done here.
+// render can never be appended to a cache that ends somewhere else.
+//
+// Refilled, but not necessarily recomputed. Turn n's render begins with turn
+// n-1's, so under [WithPrefixCache] the leading positions the two share are
+// taken from the cache and only the new turn is prefilled — the 1-1/n win
+// specs/016-prefix-cache.md §1 is about. [Usage.CachedPromptTokens] reports how
+// many positions that was.
 func (s *Session) Chat(ctx context.Context, msgs []chat.Message, p Policy) (*Stream, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -328,12 +386,18 @@ func (s *Session) start(ctx context.Context, ids []int, p Policy) (*Stream, erro
 			len(ids)+p.MaxTokens, s.capacity)
 	}
 	// The previous stream, if the caller abandoned it, is over: its tokens are
-	// in the cache and the cache is about to be rewritten from position zero.
+	// in the cache and the cache is about to be rewritten from the first
+	// position this prompt does not already share with it.
 	if s.live != nil {
 		s.live.abandon()
 	}
-	s.Reset()
-	st := newStream(ctx, s, ids, p)
+	// Every refusal above this line, and nothing below it: a request that does
+	// not fit must leave the conversation exactly as it found it, and a rewind
+	// that ran before the check would have shortened a cache the caller can
+	// still generate from.
+	reuse := s.reusable(ids)
+	s.rewind(reuse)
+	st := newStream(ctx, s, ids, p, reuse)
 	s.live = st
 	return st, nil
 }

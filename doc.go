@@ -49,6 +49,27 @@ decoding one session would interleave writes into one cache, and serialising
 that internally would hide a caller's bug rather than report it. Use one session
 per conversation and as many sessions at once as you like.
 
+# Reusing a prompt's prefix
+
+The key/value state at position t is a function of tokens 0..t and the weights
+alone, so a prompt that begins with tokens a session already scored begins with
+state it already holds. [WithPrefixCache] turns that into a shorter prefill:
+turn n of a conversation prefills the new turn instead of the whole history,
+which is specs/016-prefix-cache.md §1's 1-1/n. [Usage.CachedPromptTokens]
+reports how many positions were reused, so a cache that stopped working reads as
+a number rather than as "the framework got slower".
+
+It is off by default, and turning it on is a decision rather than a default,
+because a reused prefix was computed under a different prefill shape and
+floating point is not associative: a warm answer equals a cold one in
+distribution and not bit for bit (016-D6). Reuse also stops one token short of
+the prompt, always -- the cache holds key/value state and not logits, and
+sampling needs a forward pass over the last prompt position (016-D10).
+
+Sharing across sessions ([CacheProcess]) is refused rather than approximated.
+It needs the cache addressed through a page table, and tgo's graph declares no
+page-table port.
+
 # Errors
 
 A device failure mid-generation ends the stream with the error and leaves the

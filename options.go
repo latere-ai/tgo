@@ -87,12 +87,18 @@ type options struct {
 	device    Device
 	precision Precision
 	context   int
+
+	// cacheScope and cachePositions are [WithPrefixCache]'s. The zero scope is
+	// [CacheOff], so a Model opened with no option prefills every prompt whole.
+	cacheScope     CacheScope
+	cachePositions int
 }
 
 // defaults is every option's zero meaning, spelled out so a field's default is
 // read here rather than inferred from a zero value three files away.
 func defaults() options {
-	return options{device: AutoDevice, precision: AutoPrecision, context: DefaultContext}
+	return options{device: AutoDevice, precision: AutoPrecision, context: DefaultContext,
+		cacheScope: CacheOff}
 }
 
 // WithDevice selects the accelerator. The default is [AutoDevice].
@@ -169,4 +175,104 @@ func WithThinking(v bool) SessionOption {
 // the system turn, which is where the Qwen3 template puts them.
 func WithTools(specs ...chat.ToolSpec) SessionOption {
 	return func(o *sessionOptions) { o.tools = specs }
+}
+
+// CacheScope bounds what a request may reuse another request's key/value state
+// for, and is specs/016-prefix-cache.md §7's table as a type.
+//
+// A cache hit is faster than a miss and that timing is observable, so
+// cross-request reuse is a membership oracle over other requests' prompts. The
+// scope is what makes the default safe for a deployment; it is a decision the
+// operator makes rather than one tgo makes for them (016-D7).
+type CacheScope int8
+
+// The scopes a caller can ask for.
+const (
+	// CacheOff is the zero value: nothing is looked up and nothing is kept.
+	// Every prompt is prefilled whole, which is the cold baseline §7 names and
+	// what a [Model] does when [WithPrefixCache] is not passed.
+	CacheOff CacheScope = iota
+
+	// CacheSession reuses within one conversation only. It is safe under
+	// multi-tenancy — no block ever crosses a [Session] — and it still
+	// captures the multi-turn win, which approaches 1-1/n by turn n and is
+	// most of the value.
+	CacheSession
+
+	// CacheProcess would share across every session in the process. It is
+	// refused: see [WithPrefixCache].
+	CacheProcess
+)
+
+// String names a CacheScope.
+func (s CacheScope) String() string {
+	switch s {
+	case CacheOff:
+		return "off"
+	case CacheSession:
+		return "session"
+	case CacheProcess:
+		return "process"
+	}
+	return fmt.Sprintf("CacheScope(%d)", int8(s))
+}
+
+// WithPrefixCache reuses the key/value state a conversation has already paid
+// for, instead of prefilling the whole prompt again.
+//
+// The key/value state at position t is a function of tokens 0..t and the
+// weights alone, so a prompt that begins with tokens this session already
+// scored begins with key/value state this session already holds. Reusing it is
+// not an approximation; it is declining to recompute a pure function
+// (specs/016-prefix-cache.md §1). positions caps how many leading positions may
+// be reused, and is clamped to the session's capacity.
+//
+// It is off by default. Turning it on changes what a request costs and,
+// measurably, what it produces: the reused prefix was computed under a
+// different prefill shape and floating point is not associative, so a warm
+// answer equals a cold one in distribution rather than bit for bit (016-D6).
+//
+// # Reuse stops one token short of the prompt, always
+//
+// The cache holds key/value state, not logits. Sampling the next token needs
+// the logits at the last prompt position, and those come from a forward pass
+// over it, so the reusable run is capped at len(ids)-1 and an identical prompt
+// resubmitted still prefills one token (016-D10). In chat this is invisible,
+// because a rendered prompt always ends with a fresh assistant opener.
+//
+// # [CacheProcess] is refused, and this is why
+//
+// Sharing across sessions means one session attending to key/value rows another
+// session wrote, which means addressing the cache through a page table.
+// specs/004-model-graph.md §3 declares no such port and nn.Attention binds no
+// tensor.AttentionOptions.Pages, so the kernels read the cache contiguously and
+// take a row's index as its position. Asking for it returns an error naming
+// what is missing rather than quietly giving [CacheSession], because a scope
+// that silently widens or narrows is a security decision made on the operator's
+// behalf.
+func WithPrefixCache(scope CacheScope, positions int) Option {
+	return func(o *options) { o.cacheScope, o.cachePositions = scope, positions }
+}
+
+// checkCache refuses a prefix-cache configuration that cannot be honoured.
+func (o options) checkCache() error {
+	switch o.cacheScope {
+	case CacheOff:
+		return nil
+	case CacheSession:
+		if o.cachePositions <= 0 {
+			return fmt.Errorf("tgo: WithPrefixCache asks to reuse %d positions; a cache "+
+				"holds at least one", o.cachePositions)
+		}
+		return nil
+	case CacheProcess:
+		return fmt.Errorf("tgo: WithPrefixCache(process) is not available: sharing key/"+
+			"value state across sessions addresses the cache through a page table, and "+
+			"tgo's graph declares no page-table port and binds no "+
+			"tensor.AttentionOptions.Pages, so a kernel reads row r as position r "+
+			"(specs/016-prefix-cache.md §9). Use %v, which shares nothing across "+
+			"sessions and needs no page table", CacheSession)
+	}
+	return fmt.Errorf("tgo: WithPrefixCache scope is %v; it is one of %v, %v or %v",
+		o.cacheScope, CacheOff, CacheSession, CacheProcess)
 }

@@ -150,4 +150,16 @@ type Usage struct {
 	// CompletionTokens is how many tokens the model produced, structural
 	// markers included and the stopping token excluded.
 	CompletionTokens int
+
+	// CachedPromptTokens is how many of PromptTokens were served from
+	// key/value state the session already held, and so were not prefilled
+	// again. It is zero unless [WithPrefixCache] is on, and it is always at
+	// least one short of PromptTokens: the cache holds key/value state and not
+	// logits, so the last prompt position is scored on every request
+	// (016-D10).
+	//
+	// It is reported rather than merely enjoyed because a cache that silently
+	// stops working reads as "the framework got slower", which is the one
+	// symptom nobody files (specs/016-prefix-cache.md §1).
+	CachedPromptTokens int
 }

@@ -92,6 +92,12 @@ type Stream struct {
 	prompt    []int
 	maxTokens int
 
+	// reused is how many leading prompt positions the session's cache already
+	// holds, and therefore the position the prefill starts at. Zero is a cold
+	// request: [WithPrefixCache] off, a fresh session, or a prompt that shares
+	// no first token with the conversation so far.
+	reused int
+
 	queue []Event
 	head  int
 	cur   Event
@@ -115,7 +121,7 @@ type Stream struct {
 
 // newStream prepares a request. Nothing is submitted until the first
 // [Stream.Next].
-func newStream(ctx context.Context, s *Session, ids []int, p Policy) *Stream {
+func newStream(ctx context.Context, s *Session, ids []int, p Policy, reused int) *Stream {
 	max := p.MaxTokens
 	if max <= 0 {
 		max = s.capacity - len(ids)
@@ -129,6 +135,7 @@ func newStream(ctx context.Context, s *Session, ids []int, p Policy) *Stream {
 		dec:       s.m.tok.NewDecoder(),
 		prompt:    ids,
 		maxTokens: max,
+		reused:    reused,
 		feed:      -1,
 		first:     time.Now(),
 	}
@@ -188,18 +195,31 @@ func (st *Stream) advance() {
 	)
 	if !st.started {
 		st.started = true
-		rows, ferr := s.buckets.For(len(st.prompt))
+		// Only the suffix, at the position the reused prefix ends at. The
+		// positions are what make this safe: stepData.fill writes each row's
+		// rotary position and its cache slot from first+i, and the causal mask
+		// is pos <= base+s, so a suffix prefilled at zero instead of at
+		// st.reused would rotate every query by the wrong angle and let its
+		// first token see nothing behind it — the silent coherence loss
+		// specs/004-model-graph.md §2.5.1 describes, reached from the other
+		// direction (016 §4).
+		suffix := st.prompt[st.reused:]
+		rows, ferr := s.buckets.For(len(suffix))
 		if ferr != nil {
 			st.finish(s.fail(ferr))
 			return
 		}
-		logits, t, err = s.run(rows, st.prompt, 0)
+		logits, t, err = s.run(rows, suffix, st.reused)
 		if err == nil {
+			// The session was rewound to st.reused before the stream was
+			// built, so the history is the reused run and this appends the
+			// rest of the prompt onto it.
 			s.length = len(st.prompt)
-			s.history = append(s.history, st.prompt...)
+			s.history = append(s.history, suffix...)
 			st.usage.PromptTokens = len(st.prompt)
+			st.usage.CachedPromptTokens = st.reused
 		}
-		phase, count = bench.Prefill, len(st.prompt)
+		phase, count = bench.Prefill, len(suffix)
 	} else {
 		logits, t, err = s.run(1, []int{st.feed}, s.length)
 		if err == nil {
