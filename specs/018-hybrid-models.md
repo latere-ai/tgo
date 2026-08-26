@@ -1,13 +1,11 @@
 ---
-title: "Hybrid attention: what Qwen3.8-27B is, and the operator it needs"
-status: blocked
+title: "Hybrid attention: what Qwen3.8-27B is, and the operator it now has"
+status: drafted
 layer: graph
 depends_on:
   - 000-decisions.md
   - 004-model-graph.md
   - 005-kv-cache.md
-blocked_on:
-  - "accel: no linear-attention operator, `gated delta` scan and per-sequence state (accel#17)"
 ---
 
 # Hybrid attention
@@ -54,7 +52,58 @@ Four things follow, in descending order of how much they cost tgo:
 4. `partial_rotary_factor: 0.25` and `attn_output_gate` — both **already
    expressible** (§4).
 
-## 2. The layer accel does not have
+## 2. The layer accel now has
+
+**Unblocked on 2026-08-26.** This spec carried `status: blocked` naming
+[accel#17](https://github.com/golang-design/accel/issues/17) from the day it was
+written. `tensor.LinearAttention` landed, and a value probe confirms it rather
+than a commit message doing so:
+
+```
+selection: LinearAttention -- the gated delta scan: 3 sequences of 2 heads,
+           each walking its own tokens with a [4, 3] state
+4 tokens over 3 sequences, matched against a float64 reference to within a
+budget derived from the scan length; halving every alpha moves the output
+```
+
+Three things about the shape accel settled on, each of which decides something
+below:
+
+- **The state is an ordinary `tensor.State`** of shape
+  `[slots, heads, valueDim, keyDim]`. Its leading axis is the *sequence slot*
+  rather than a position, which is what §2's second bullet said could not be
+  expressed. So a hybrid model holds two States of different shapes in one
+  graph and needs nothing else — §3's conclusion stands and its premise moved.
+- **The tokens arrive as the same segmented extent
+  [008](008-scheduler.md) batches with**, `QueryExtents`. A sequence
+  contributing one token is a decode, one contributing $T$ is a prefill, and a
+  step with both is mixed — so the linear layers batch the same way the softmax
+  ones do, and one scheduler drives both.
+- **The kernel is the sequential scan and not the chunked form.** accel records
+  the chunked parallel version as deliberately unbuilt, because it reassociates
+  the recurrence and therefore needs its own numeric bound derived against this
+  one. §2's "expressing it as $T$ dependent graph nodes would be unusably slow"
+  is answered — it is one node — but the *arithmetic* is still three passes over
+  `keyDim*valueDim` per token, so a 262K prefill is a scan of 262K steps. This
+  is a performance row for [010](010-conformance.md) to measure and report, not
+  an expressibility gap.
+
+**One thing to verify against the reference implementation before trusting a
+generated token**, and it is the kind of thing a spec should name rather than
+discover: where $\alpha_t$ sits. accel's kernel computes
+
+$$u = S k, \qquad S \leftarrow \alpha S + \beta\,k\,(v-u)^\top$$
+
+which is the expansion of the equation below. Qwen3.5's published form places
+$\alpha$ outside the whole bracket, $S_{t-1}\alpha_t(I - \beta_t k k^\top)$,
+and the two differ in whether the correction term is decayed. Both are "the
+gated delta rule" in the literature. tgo's oracle was written from accel's
+equation and agreed with accel's kernel — which proves the kernel implements the
+equation it documents and proves nothing about which equation Qwen3.8 uses.
+[010 §5](010-conformance.md)'s rule applies: the checkpoint decides, and the
+check belongs in the tier-3 run against real weights.
+
+## 2.1 Why it is a kernel and not a composition
 
 A gated delta layer carries a **matrix-valued recurrent state** per head,
 `[key_head_dim, value_head_dim]` = 128×128 here, and updates it per token:
@@ -65,8 +114,6 @@ $$S_t = S_{t-1}\big(\alpha_t I - \beta_t k_t k_t^\top\big) + \beta_t v_t k_t^\to
 with $\alpha_t$ a forget gate and $\beta_t$ a write strength, both produced from
 the input. There is also a short depthwise causal convolution over the input
 (`linear_conv_kernel_dim: 4`) before the recurrence.
-
-**Why it is a kernel and not a composition of what exists:**
 
 - **The recurrence is sequential in $t$.** A prefill of $T$ tokens is a scan, not
   $T$ independent rows. The efficient form is chunked — matmuls within a block,

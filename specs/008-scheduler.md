@@ -1,5 +1,5 @@
 ---
-title: "Continuous batching: slots, admission, and the upstream change it now waits on"
+title: "Continuous batching: slots, admission, and the ragged step that makes a mixed dispatch possible"
 status: drafted
 layer: engine
 depends_on:
@@ -10,30 +10,55 @@ depends_on:
 
 # Continuous batching
 
-**Unblocked on 2026-08-24.** This spec carried `status: blocked` from the day it
-was written. accel closed the last gap — `Attention` takes a batch axis — and a
-value test confirms it: two sequences of lengths 96 and 32 batched together match
-two single-sequence runs to `0.00e+00`, on *the batched paged decode kernel*.
+**Fully unblocked upstream on 2026-08-26.** This spec carried `status: blocked`
+from the day it was written. Two gaps closed in sequence: `Attention` took a
+batch axis ([C1](010-conformance.md)), and then a *ragged* one
+([C16](010-conformance.md)).
 
-Nothing in this spec is implemented. What changed is that it can be.
+Nothing in this spec is implemented. What changed is that all of it can be.
 
-**The shape accel settled on**, which §2's slots must match:
+**Two shapes accel offers, and this spec builds on the second.**
 
 ```go
-q       [batch, qSeq, qHeads, headDim]   // qSeq is 1 for a decode
-Lengths [batch]                          // per sequence
-Pages   [batch, maxPages]                // one row of block ids per sequence
+// rectangular: every sequence contributes the same number of tokens
+q       [batch, qSeq, qHeads, headDim]
+Lengths [batch]
+Pages   [batch, maxPages]
+
+// ragged: each sequence contributes its own number, and they are end to end
+q            [sum(QueryExtents), qHeads, headDim]
+QueryExtents [batch]                       // tokens contributed this step
+Lengths      [batch]                       // cached positions after this step
+Pages        [batch, maxPages]
 ```
 
-A batch **requires** `Pages`: members have different lengths, so a contiguous
-cache cannot address them. That is not a restriction to work around — it is the
-reason paging exists, and it means [016](016-prefix-cache.md)'s block pool is a
-prerequisite for this spec rather than a neighbour of it.
+The ragged form is the one a scheduler wants, because the rectangular form
+makes every member of a batch contribute the same count and **a scheduler's
+whole job is that they do not**. With `QueryExtents = [512, 1, 1, 1]` a
+512-token prefill chunk and three decode steps are one dispatch. A sequence
+contributing zero is an ordinary member, which is what makes admitting into an
+idle slot free.
 
-**One shape is still per-dispatch:** `qSeq`. A batched step takes one token per
-sequence, so a *batched prefill* is not expressible and a prefill cannot share a
-dispatch with a decode. That is [C16](010-conformance.md), and §5 is where it
-costs something.
+A token's position follows from the two per-sequence numbers rather than from a
+base: with $L$ cached positions after the step and $n$ contributed, this step's
+tokens occupy the last $n$, so token $i$ sits at $L - n + i$. `BaseName` is
+therefore refused on a ragged step — there is no single base for a step whose
+sequences start in different places.
+
+Both forms **require** `Pages`: members have different lengths, so a contiguous
+cache would pad every sequence to the longest. That is not a restriction to
+work around — it is the reason paging exists, and it means
+[016](016-prefix-cache.md)'s block pool is a **prerequisite** for this spec
+rather than a neighbour of it. §9 is that dependency stated as work.
+
+**One cost the ragged step carries**, and it is [C22](010-conformance.md): the
+ragged kernel reads an **f32** cache. [C5](010-conformance.md) closed on the
+argument that an f16 cache halves the largest allocation a serving process has,
+and §1's arithmetic makes both the batch size worth reaching and the throughput
+ceiling proportional to $1/A$ — so batching a prefill currently costs half the
+batch it was reaching for. Filed as
+[accel#23](https://github.com/golang-design/accel/issues/23). It narrows the
+win; it blocks nothing.
 
 ## 1. Why it is the thing worth having
 
@@ -129,23 +154,42 @@ the cache. vLLM supports both and recommends recompute for exactly this reason.
 **Victim choice is last-arrived-first-evicted**, which bounds the worst-case
 latency of the sequences already in flight rather than spreading the damage.
 
-## 5. Chunked prefill
+## 5. Chunked prefill, and what the ragged step changed about it
 
-A prefill and a decode step cannot share a dispatch — different shapes, different
-kernels. So a long prompt either runs alone, stalling every decoding sequence
-for the length of its forward pass, or is split.
+An earlier draft of this section said a prefill and a decode cannot share a
+dispatch, so a long prompt either runs alone — stalling every decoding sequence
+for a whole forward pass — or is split into chunks that bound the stall. It
+concluded that chunking **bounds latency and recovers no throughput**.
 
-Splitting a 8192-token prompt into chunks of $c$ means the decode steps beside
-it wait at most one chunk's forward pass. The chunk size trades prefill
-efficiency (larger $c$ is a better GEMM) against decode latency (smaller $c$ is
-a shorter stall), and the useful range is 512–2048.
+**The second half is now wrong**, and the reason is worth keeping. The claim was
+true of the rectangular batch, where one `qSeq` applies to every member: a
+512-token chunk and a 1-token decode are different counts, so they were
+different dispatches whatever the scheduler wanted. The ragged step removes the
+premise — `QueryExtents = [c, 1, 1, 1]` is one dispatch — so a chunk does not
+stall the decodes beside it at all. **It rides with them.**
 
-Chunked prefill needs a prefill whose first query token is not position 0, so
-its causal mask hides the right thing. accel's `BaseName` scalar does that
-today; 043 turns it into `AttentionOptions.Positions`. Either way the mechanism
-exists — chunked prefill is the one part of this spec that is **not** blocked,
-and it is still not built, because a scheduler with one sequence has nothing to
-stall.
+$$t_{\text{mixed}} \approx \frac{W + (c + B_d)\,A'}{\beta}$$
+
+with $B_d$ decoding sequences and $A'$ the per-token activation and cache
+traffic. The weights $W$ are read once for the chunk *and* the decodes
+together, where two dispatches read them twice. So chunking now recovers exactly
+what batching recovers, and the chunk size trades a different pair against each
+other:
+
+| $c$ | prefill efficiency | decode latency | weight traffic |
+| --- | --- | --- | --- |
+| small | worse GEMM | shorter step | more steps, so $W$ is read more often |
+| large | better GEMM | longer step | fewer steps |
+
+The useful range is still 512–2048, and the reason has moved from "how long may
+a decode wait" to "how much of the step is the chunk". A chunk far larger than
+$B_d$ makes the step a prefill with passengers, which is fine; a chunk far
+smaller wastes the weight read.
+
+**A chunk's first query token is not at position 0**, so its causal mask must
+hide the right thing. A ragged step derives that per token from `Lengths` and
+`QueryExtents` rather than from `BaseName`, so the mechanism is not a scalar
+that has to be right — it is the same two numbers admission already maintains.
 
 ## 6. Prefix reuse is no longer downstream of this spec
 
@@ -185,11 +229,30 @@ The first two were free because accel 043 moved per-row values onto tensors
 before tgo wrote any code. The third and fourth are decisions tgo made for
 reasons that stand on their own, and which happen to survive batching.
 
-## 8. What tgo does now
+## 8. What this spec is waiting on, and it is tgo
+
+Nothing upstream. The order of work is:
+
+1. **The page-table port.** [004 §3](004-model-graph.md)'s port table has no
+   page table and `nn.Attention` binds no `Pages` or `Block`, so nothing in tgo
+   can pass one however capable the kernels are. `internal/prefix` is the
+   bookkeeping and has no importers. Until a `Session`'s cache is addressed
+   through a table, a slot cannot be swapped and a batch cannot be formed.
+   [016 §9](016-prefix-cache.md) is the same statement from the other side.
+2. **Then slots and admission**, which are §2 and §3 and are pure policy over
+   the port above.
+3. **Then the ragged step**, which is a shape change on a graph that already
+   pages.
+
+Each is a wave. None of them is blocked.
+
+## 9. What tgo does now
 
 Holds one named, skipping test per [010](010-conformance.md) register row, each
-naming the accel spec that owns it. When [C1](010-conformance.md) closes, those
-tests stop skipping and this spec moves from `blocked` to `drafted`.
+naming the accel spec that owns it. [C1](010-conformance.md) and
+[C16](010-conformance.md) are both closed, so this spec's own rows have stopped
+skipping and what remains open beside it is [C22](010-conformance.md), the f32
+cache the ragged kernel reads.
 
 ## Decision record
 
@@ -200,4 +263,7 @@ tests stop skipping and this spec moves from `blocked` to `drafted`.
 | 008-D3 | admission reserves answer space | admit on a free slot alone | a full pool cannot deadlock; rejections are reported |
 | 008-D4 | keep §7's four hooks live in v0 | build them when 043 lands | v0 pays nothing; the retrofit stays a binding change |
 | 008-D5 | last-arrived-first-evicted | round-robin or longest-running | bounds the latency of sequences already in flight rather than spreading the damage |
-| 008-D6 | blocked on 043's *implementation*, not its design | build against the designed signatures now | accel 043 is drafted and partly in flight; building against unlanded signatures is building against nothing |
+| 008-D6 | blocked on 043's *implementation*, not its design | build against the designed signatures now | accel 043 is drafted and partly in flight; building against unlanded signatures is building against nothing. **Discharged 2026-08-26**: 043, 046 and the ragged kernel all landed, and [C16](010-conformance.md) closed on a value probe rather than on a commit |
+| 008-D7 | the **ragged** form, not the rectangular one | batch decodes rectangularly and run prefills alone | a rectangular batch gives every member the same token count, which is the one thing a scheduler exists to avoid. It also makes §5's chunk a separate dispatch, so the weights are read twice |
+| 008-D8 | the page-table port is a wave of its own, before slots | build slots and the port together | a slot swap is free only because the blocks never move, so the addressing has to be right before a swap means anything. Building both at once means a batching bug and an addressing bug are indistinguishable |
+| 008-D9 | admission is a queue in front of the slots, and [019](019-session-affinity.md)'s `Pool` becomes it | keep `Pool` beside the scheduler as a second owner of sessions | two owners of "which conversation is where" is two answers to it. `Pool.route` already picks the session holding the longest matching prefix, which is what admission wants; a scheduler that ignored it would prefill what the pool had already computed |

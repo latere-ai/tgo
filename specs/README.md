@@ -88,7 +88,7 @@ teaches nobody why the obvious thing was not done.
 | [015](015-structured-output.md) | implemented | schema-constrained decoding |
 | [016](016-prefix-cache.md) | drafted | reusing the KV of a prompt somebody already paid for |
 | [017](017-benchmarks.md) | drafted | measuring where a token's time goes, and comparing honestly |
-| [018](018-hybrid-models.md) | **blocked** | Qwen3.8-27B's linear-attention layers, and the operator they need |
+| [018](018-hybrid-models.md) | drafted | Qwen3.8-27B's linear-attention layers, and the operator they now have |
 | [019](019-session-affinity.md) | implemented | cross-request prefix reuse with no page table: pool the sessions |
 
 
@@ -103,21 +103,29 @@ conversation. [011 §2](011-sequencing.md) is the order,
 
 What it is not yet is a server for many users: requests interleave rather than
 run in one step, so total throughput is what one conversation gets. That is
-[008](008-scheduler.md), and it waits on a batched prefill.
+[008](008-scheduler.md), and as of 2026-08-26 it waits on **tgo** — the graph
+declares no page-table port, and a batch cannot be formed without one.
+[008 §8](008-scheduler.md) is the order that work goes in.
 
-The one thing to know before reading further: **nothing is blocked upstream any
-more.** accel closed thirteen of the sixteen gaps tgo filed, including the two
-that decided the shape of this tree — a KV cache capped at 128 positions, and a
-missing batch axis that left [008](008-scheduler.md) blocked from the day it was
-written.
+The one thing to know before reading further: **no spec in this tree is blocked
+upstream.** accel closed fifteen of the eighteen gaps tgo filed, including the
+three that decided the shape of this tree — a KV cache capped at 128 positions,
+a missing batch axis, and the ragged step that lets a prefill chunk share a
+dispatch with decodes. [018](018-hybrid-models.md) was the last one blocked and
+`tensor.LinearAttention` unblocked it.
 
-What is still open is narrower: a batched *prefill* ([C16](010-conformance.md)),
-a bf16 GEMM ([C7](010-conformance.md), narrowed to the GEMM alone), a decode
-step whose submit cost is amortised ([C20](010-conformance.md)), GGUF's K-quants
-([C17](010-conformance.md), not planned upstream), and **4-bit weights**
-([C21](010-conformance.md)). The last one does block a target: at int8 a 27B
-model is 25.1 GiB and does not fit a 24 GiB device, which is a second blocker on
-Qwen3.8-27B independent of its linear attention.
+What is still open is narrower: an f16 cache on the *ragged* path
+([C22](010-conformance.md)), a bf16 GEMM ([C7](010-conformance.md), narrowed to
+the GEMM alone), a decode step whose submit cost is amortised
+([C20](010-conformance.md)), GGUF's K-quants ([C17](010-conformance.md), not
+planned upstream), and **4-bit weights** ([C21](010-conformance.md)).
+
+Two of those cost something specific rather than being gaps in the abstract.
+C21 blocks a target: at int8 a 27B model is 25.1 GiB and does not fit a 24 GiB
+device, which is a second blocker on Qwen3.8-27B independent of its linear
+attention. C22 narrows a win: the operator that makes batching possible reads an
+f32 cache, so a build that batches gives back the halving
+[C5](010-conformance.md) closed for.
 [010 §2](010-conformance.md) is the register and
 [010 §2.2](010-conformance.md) is the audit behind those states.
 

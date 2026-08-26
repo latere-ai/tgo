@@ -375,9 +375,16 @@ Three constraints remain, and the third is tgo's own.
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
-- **f16 is fully available** ([C5](010-conformance.md) closed), so the pool is
-  f16: half the memory, which is twice the blocks and twice the prefixes worth
-  keeping.
+- **f16 is available on every path except the ragged one.**
+  [C5](010-conformance.md) closed, so a paged prefill and a paged decode both
+  read an f16 cache: half the memory, twice the blocks, twice the prefixes worth
+  keeping. [C22](010-conformance.md) is the exception, and it decides the pool's
+  dtype rather than being a detail of it — the ragged kernel
+  [008](008-scheduler.md) batches with reads **f32**, and one pool cannot be
+  both. So a build that batches runs an f32 pool and holds half the prefixes,
+  and a build that does not keeps f16. Filed as
+  [accel#23](https://github.com/golang-design/accel/issues/23); until it closes
+  this is a configuration rather than a default.
 
 ## 10. Against vLLM and sglang
 
