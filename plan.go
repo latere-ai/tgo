@@ -57,10 +57,11 @@ func bucketsFor(capacity int) (tensor.Buckets, error) {
 // makes "N decode steps compile exactly one plan" a measurement rather than a
 // tautology: a plan held in a variable cannot miss, whatever §6's Weight and
 // Input ports are declared as.
-func (m *Model) plan(tokens, capacity int) (*tensor.Plan, error) {
+func (m *Model) plan(tokens, capacity, block int) (*tensor.Plan, error) {
 	spec := model.GraphSpec{
 		Tokens:   tokens,
 		Capacity: capacity,
+		Block:    block,
 		Cache:    accel.F32,
 		Stored:   m.stored,
 	}
@@ -96,7 +97,53 @@ type stepData struct {
 	posk    []uint32
 	slots   []uint32
 	lengths []uint32
+	pages   []uint32
 	base    uint32
+}
+
+// cacheLayout says where a session's positions live inside the key and value
+// states it binds.
+//
+// The two numbers were one number until a pool existed. A session's own cache
+// is exactly as long as its context, so "does this step fit" and "which index
+// does ScatterRows drop" had the same answer. Sharing splits them: the state
+// holds every session's blocks, and a session may occupy a small part of it.
+// Keeping one number would make a pad row's sentinel land on a real row inside
+// another conversation's block -- a write nothing reports, read back later as a
+// fluent answer to somebody else's prompt.
+type cacheLayout struct {
+	// rows is how many positions the bound states hold, whoever owns them. It
+	// is the sentinel a dropped write uses (007-D3).
+	rows int
+
+	// limit is how many positions this session may occupy.
+	limit int
+
+	// pages is this sequence's page table and block is how many positions one
+	// entry holds. A nil table is a contiguous cache, which is the same thing
+	// with an identity table and a block of one -- and which does not pay the
+	// indirection.
+	pages []int
+	block int
+}
+
+// row is the physical state row logical position p lives at.
+func (l cacheLayout) row(p int) int {
+	if l.pages == nil {
+		return p
+	}
+	return l.pages[p/l.block]*l.block + p%l.block
+}
+
+// reaches reports whether the layout can address position p at all.
+func (l cacheLayout) reaches(p int) bool {
+	if p < 0 || p >= l.limit {
+		return false
+	}
+	if l.pages == nil {
+		return p < l.rows
+	}
+	return p/l.block < len(l.pages)
 }
 
 // fill writes one step of tokens at positions first..first+len(tokens)-1 into
@@ -132,14 +179,21 @@ type stepData struct {
 // before. Row B-1 therefore computes what row T-1 computes, and the slice reads
 // the answer it was written to read. The KV write is still dropped by the slot,
 // so nothing reaches the cache twice.
-func (d *stepData) fill(c *model.Config, rows int, tokens []int, first, capacity int) error {
+func (d *stepData) fill(c *model.Config, rows int, tokens []int, first int,
+	lay cacheLayout) error {
+
 	t := len(tokens)
 	if t == 0 || t > rows {
 		return fmt.Errorf("tgo: a %d-row plan cannot score %d tokens", rows, t)
 	}
-	if first < 0 || first+t > capacity {
+	if first < 0 || first+t > lay.limit {
 		return fmt.Errorf("tgo: %d tokens at position %d do not fit a %d-position cache",
-			t, first, capacity)
+			t, first, lay.limit)
+	}
+	if t > 0 && !lay.reaches(first+t-1) {
+		return fmt.Errorf("tgo: %d tokens at position %d reach position %d, which this "+
+			"sequence holds no block for; the write would land in a block another "+
+			"sequence owns", t, first, first+t-1)
 	}
 	d.ids = d.ids[:rows]
 	d.posq = d.posq[:rows*c.NumHeads]
@@ -155,7 +209,7 @@ func (d *stepData) fill(c *model.Config, rows int, tokens []int, first, capacity
 		}
 		p := uint32(first + i)
 		d.ids[i] = uint32(id)
-		d.slots[i] = p
+		d.slots[i] = uint32(lay.row(first + i))
 		for h := 0; h < c.NumHeads; h++ {
 			d.posq[i*c.NumHeads+h] = p
 		}
@@ -170,7 +224,7 @@ func (d *stepData) fill(c *model.Config, rows int, tokens []int, first, capacity
 	lastPos := uint32(first + t - 1)
 	for i := t; i < rows; i++ {
 		d.ids[i] = last
-		d.slots[i] = uint32(capacity)
+		d.slots[i] = uint32(lay.rows)
 		for h := 0; h < c.NumHeads; h++ {
 			d.posq[i*c.NumHeads+h] = lastPos
 		}

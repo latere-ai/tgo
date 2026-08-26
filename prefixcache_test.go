@@ -655,8 +655,8 @@ func TestPrefixCacheRefusals(t *testing.T) {
 		opt  Option
 		want string
 	}{
-		{"process is refused by name", WithPrefixCache(CacheProcess, 512),
-			"page table"},
+		{"a process pool below one block", WithPrefixCache(CacheProcess, CacheBlock-1),
+			"at least one block"},
 		{"an empty session budget", WithPrefixCache(CacheSession, 0),
 			"holds at least one"},
 		{"a negative session budget", WithPrefixCache(CacheSession, -1),

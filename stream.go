@@ -232,13 +232,25 @@ func (st *Stream) advance() {
 			s.history = append(s.history, suffix...)
 			st.usage.PromptTokens = len(st.prompt)
 			st.usage.CachedPromptTokens = st.reused
+			// After the step and never before: offering a block whose
+			// key/value state is not yet written hands another sequence a
+			// block holding whatever was there. The lease already covers the
+			// prompt, so there is nothing to reserve here.
+			s.publish()
 		}
 		phase, count = bench.Prefill, len(suffix)
 	} else {
-		logits, t, err = s.run(1, []int{st.feed}, s.length)
+		// The block first, then the step, then the publish. A generated token
+		// needs a row before the step that computes its key and value, and the
+		// block that row is in may not be allocated yet -- but it may only be
+		// offered to other sequences once that step has run.
+		if err = s.reserve(st.feed); err == nil {
+			logits, t, err = s.run(1, []int{st.feed}, s.length)
+		}
 		if err == nil {
 			s.history = append(s.history, st.feed)
 			s.length++
+			s.publish()
 		}
 		phase, count = bench.Decode, 1
 	}

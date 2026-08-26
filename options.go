@@ -126,6 +126,7 @@ type sessionOptions struct {
 	thinking bool
 	tools    []chat.ToolSpec
 	recorder *bench.Recorder
+	salt     string
 }
 
 // WithRecorder instruments this session's loop, one [bench.Step] per prefill
@@ -167,6 +168,22 @@ func WithSessionContext(n int) SessionOption {
 //
 // It is a session option rather than a field of [Policy] because [Policy] is
 // specs/007-engine.md §1's and adding to it would change a published struct.
+// WithCacheSalt bounds what a conversation may match in a shared block pool.
+//
+// Under [CacheProcess] a block is reachable from any session, and a hit is
+// faster than a miss, so timing makes the cache a membership oracle over other
+// conversations' prompts (016 §7). The salt is mixed into every block hash, so
+// two conversations share only when the layer in front says they may.
+//
+// The empty string is a key of its own and shares with nobody rather than with
+// everybody: a caller who supplies nothing gets the safe answer, not the fast
+// one. tgo has no notion of a tenant (009 §7), so what belongs here is whatever
+// the layer in front uses to tell them apart — the server puts a request's
+// cache_salt in it.
+func WithCacheSalt(v string) SessionOption {
+	return func(o *sessionOptions) { o.salt = v }
+}
+
 func WithThinking(v bool) SessionOption {
 	return func(o *sessionOptions) { o.thinking = v }
 }
@@ -199,8 +216,14 @@ const (
 	// most of the value.
 	CacheSession
 
-	// CacheProcess would share across every session in the process. It is
-	// refused: see [WithPrefixCache].
+	// CacheProcess shares across every session in the process, which is the
+	// scope an agent runtime or a single-tenant server wants: two conversations
+	// that begin with the same system prompt prefill it once between them.
+	//
+	// It costs a page table in the innermost loop of every decode, and it makes
+	// a hit observable across conversations — so it is a deployment's decision
+	// and never a default (016-D7). [WithPrefixCache]'s salt is what narrows it
+	// back where the deployment is not single-tenant.
 	CacheProcess
 )
 
@@ -240,16 +263,26 @@ func (s CacheScope) String() string {
 // resubmitted still prefills one token (016-D10). In chat this is invisible,
 // because a rendered prompt always ends with a fresh assistant opener.
 //
-// # [CacheProcess] is refused, and this is why
+// # What positions means, and it is not the same number in both scopes
+//
+// Under [CacheSession] it caps how many leading positions one conversation may
+// reuse of its own cache, which each session holds privately.
+//
+// Under [CacheProcess] it is **the shared pool's size**, in positions, rounded
+// down to whole blocks of [CacheBlock]. That is the memory the process spends
+// on key/value state in total — one allocation for every session rather than
+// one each — so a server's cache footprint stops scaling with concurrency and
+// starts being a number the operator chose. A prefix longer than the pool
+// cannot be held whatever the cap said, so the pool is also the cap.
+//
+// # [CacheProcess] used to be refused, and what changed
 //
 // Sharing across sessions means one session attending to key/value rows another
-// session wrote, which means addressing the cache through a page table.
-// specs/004-model-graph.md §3 declares no such port and nn.Attention binds no
-// tensor.AttentionOptions.Pages, so the kernels read the cache contiguously and
-// take a row's index as its position. Asking for it returns an error naming
-// what is missing rather than quietly giving [CacheSession], because a scope
-// that silently widens or narrows is a security decision made on the operator's
-// behalf.
+// session wrote, which means addressing the cache through a page table. For as
+// long as specs/004-model-graph.md §3 declared no such port, nn.Attention could
+// bind no tensor.AttentionOptions.Pages and the kernels read the cache
+// contiguously, taking a row's index as its position. The port exists now, and
+// the scope with it.
 func WithPrefixCache(scope CacheScope, positions int) Option {
 	return func(o *options) { o.cacheScope, o.cachePositions = scope, positions }
 }
@@ -266,12 +299,15 @@ func (o options) checkCache() error {
 		}
 		return nil
 	case CacheProcess:
-		return fmt.Errorf("tgo: WithPrefixCache(process) is not available: sharing key/"+
-			"value state across sessions addresses the cache through a page table, and "+
-			"tgo's graph declares no page-table port and binds no "+
-			"tensor.AttentionOptions.Pages, so a kernel reads row r as position r "+
-			"(specs/016-prefix-cache.md §9). Use %v, which shares nothing across "+
-			"sessions and needs no page table", CacheSession)
+		// The pool is measured in blocks, so a size below one block is a
+		// configuration that would allocate nothing and share nothing.
+		if o.cachePositions < CacheBlock {
+			return fmt.Errorf("tgo: WithPrefixCache(process) asks for a pool of %d "+
+				"positions and a block holds %d; the pool is the memory every "+
+				"session shares, so it is at least one block "+
+				"(specs/016-prefix-cache.md §3)", o.cachePositions, CacheBlock)
+		}
+		return nil
 	}
 	return fmt.Errorf("tgo: WithPrefixCache scope is %v; it is one of %v, %v or %v",
 		o.cacheScope, CacheOff, CacheSession, CacheProcess)

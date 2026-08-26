@@ -17,6 +17,7 @@ import (
 
 	"github.com/latere-ai/tgo/chat"
 	"github.com/latere-ai/tgo/internal/grammar"
+	"github.com/latere-ai/tgo/internal/prefix"
 	"github.com/latere-ai/tgo/model"
 	"github.com/latere-ai/tgo/safetensors"
 	"github.com/latere-ai/tgo/tokenizer"
@@ -113,6 +114,11 @@ type Model struct {
 	// it once should not have to repeat it per conversation.
 	cacheScope     CacheScope
 	cachePositions int
+
+	// blocks is the shared block pool, non-nil exactly when cacheScope is
+	// CacheProcess. Every session then binds its states rather than its own,
+	// and addresses them through a page table.
+	blocks *blockPool
 
 	// mu is 007-D9's submission lock.
 	mu sync.Mutex
@@ -225,6 +231,15 @@ func Open(dir string, opts ...Option) (*Model, error) {
 	m.rt = rt
 	m.cache = tensor.NewPlanCache(rt)
 
+	if o.cacheScope == CacheProcess {
+		bp, err := newBlockPool(dev, cfg, prefix.ScopeProcess, o.cachePositions)
+		if err != nil {
+			_ = m.Close()
+			return nil, err
+		}
+		m.blocks = bp
+	}
+
 	rep := m.set.Report()
 	m.info = Info{
 		Architecture:         cfg.Architecture,
@@ -259,6 +274,9 @@ func (m *Model) Close() error {
 		var errs []error
 		if m.dev != nil {
 			errs = append(errs, m.dev.Queue().Flush().Wait())
+		}
+		if m.blocks != nil {
+			errs = append(errs, m.blocks.close())
 		}
 		if m.cache != nil {
 			errs = append(errs, m.cache.Close())

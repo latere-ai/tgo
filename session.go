@@ -16,6 +16,7 @@ import (
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
 	"github.com/latere-ai/tgo/internal/grammar"
+	"github.com/latere-ai/tgo/internal/prefix"
 	"github.com/latere-ai/tgo/model"
 )
 
@@ -51,11 +52,16 @@ type Session struct {
 	buckets  tensor.Buckets
 
 	keys, values *accel.Buffer
-	ids          *accel.Buffer
-	posq, posk   *accel.Buffer
-	slots        *accel.Buffer
-	lengths      *accel.Buffer
-	logits       *accel.Buffer
+	// shared reports that keys and values belong to the model's block pool, so
+	// this session neither cleared them nor closes them.
+	shared  bool
+	pageBuf *accel.Buffer
+
+	ids        *accel.Buffer
+	posq, posk *accel.Buffer
+	slots      *accel.Buffer
+	lengths    *accel.Buffer
+	logits     *accel.Buffer
 
 	step    stepData
 	hLogits []float32
@@ -70,12 +76,31 @@ type Session struct {
 	length  int
 	history []int
 
+	// lease is this request's blocks in the model's shared pool, and pages is
+	// the page-table row it hands out. Both are nil unless the model was
+	// opened with WithPrefixCache(CacheProcess, ...).
+	//
+	// A lease lives for one request rather than for the conversation. Nothing
+	// is lost by that: a complete block is published before the lease goes, so
+	// the next turn finds it by hash, and holding a lease between requests
+	// would pin an idle conversation's blocks against every live one
+	// (016 §5).
+	lease *prefix.Lease
+	pages []int
+
 	failed error
 	closed bool
 	live   *Stream
 
 	thinking bool
 	tools    []chat.ToolSpec
+
+	// salt bounds what this conversation may match in a shared block pool.
+	//
+	// The empty string is a key of its own and shares with nobody, which is
+	// 019-D3's rule applied to blocks rather than to sessions: the same string
+	// bounds both, because they are the same question asked of two mechanisms.
+	salt string
 
 	// rec instruments the loop (specs/007-engine.md §5.1, 017-D1), one Step
 	// per prefill and per decode step. Nil unless [WithRecorder] set it, and a
@@ -114,6 +139,7 @@ func (m *Model) NewSession(opts ...SessionOption) (*Session, error) {
 		buckets:  buckets,
 		thinking: o.thinking,
 		tools:    o.tools,
+		salt:     o.salt,
 		rec:      o.recorder,
 	}
 	s.submit = func(p *tensor.Plan, b tensor.Bindings) error {
@@ -136,42 +162,76 @@ func (m *Model) NewSession(opts ...SessionOption) (*Session, error) {
 		return nil
 	}
 	cache := c.NumLayers * o.context * c.NumKVHeads * c.HeadDim
-	for _, a := range []struct {
+	ports := []struct {
 		dst   **accel.Buffer
 		dt    accel.DType
 		n     int
 		label string
 	}{
-		{&s.keys, accel.F32, cache, model.PortKeys},
-		{&s.values, accel.F32, cache, model.PortValues},
 		{&s.ids, accel.U32, rows, model.PortIDs},
 		{&s.posq, accel.U32, rows * c.NumHeads, model.PortPosQ},
 		{&s.posk, accel.U32, rows * c.NumKVHeads, model.PortPosK},
 		{&s.slots, accel.U32, rows, model.PortSlots},
 		{&s.lengths, accel.U32, 1, model.PortLengths},
 		{&s.logits, accel.F32, c.VocabSize, model.PortLogits},
-	} {
+	}
+	// The key and value states are the model's when the process shares a block
+	// pool, and this session's otherwise. Which one is what decides whether a
+	// server's cache footprint scales with concurrency: one pool for every
+	// session, or one cache each.
+	//
+	// Shared states are not allocated here and not closed by Session.Close.
+	// They outlive every session, which is the point of them.
+	if m.blocks == nil {
+		ports = append(ports,
+			struct {
+				dst   **accel.Buffer
+				dt    accel.DType
+				n     int
+				label string
+			}{&s.keys, accel.F32, cache, model.PortKeys},
+			struct {
+				dst   **accel.Buffer
+				dt    accel.DType
+				n     int
+				label string
+			}{&s.values, accel.F32, cache, model.PortValues})
+	}
+	for _, a := range ports {
 		if err := alloc(a.dst, a.dt, a.n, a.label); err != nil {
 			_ = s.Close()
 			return nil, err
 		}
 	}
-	// The cache starts zeroed rather than merely allocated: a length of zero
-	// means no row is read, but a NaN left in device memory by a previous
-	// tenant would reach attention through the padded rows of a prefill.
-	zero := make([]float32, cache)
-	for _, b := range []*accel.Buffer{s.keys, s.values} {
-		if err := m.dev.Queue().WriteBuffer(b, 0, zero); err != nil {
+	if m.blocks != nil {
+		s.keys, s.values = m.blocks.keys, m.blocks.values
+		s.shared = true
+		// One entry per block the pool holds: a sequence may in principle hold
+		// every one of them, and the port's width is a graph parameter rather
+		// than a request's.
+		if err := alloc(&s.pageBuf, accel.U32, m.blocks.maxPages(), model.PortPages); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+	} else {
+		// The cache starts zeroed rather than merely allocated: a length of
+		// zero means no row is read, but a NaN left in device memory by a
+		// previous tenant would reach attention through the padded rows of a
+		// prefill. The shared pool is cleared once, where it is allocated.
+		zero := make([]float32, cache)
+		for _, b := range []*accel.Buffer{s.keys, s.values} {
+			if err := m.dev.Queue().WriteBuffer(b, 0, zero); err != nil {
+				_ = s.Close()
+				return nil, fmt.Errorf("tgo: clearing the cache: %w", err)
+			}
+		}
+		// A queue write is batched, and a buffer closed with one outstanding is
+		// refused by accel rather than quietly dropped. The clear is part of
+		// handing the session over, so it completes here.
+		if err := m.dev.Queue().Flush().Wait(); err != nil {
 			_ = s.Close()
 			return nil, fmt.Errorf("tgo: clearing the cache: %w", err)
 		}
-	}
-	// A queue write is batched, and a buffer closed with one outstanding is
-	// refused by accel rather than quietly dropped. The clear is part of
-	// handing the session over, so it completes here.
-	if err := m.dev.Queue().Flush().Wait(); err != nil {
-		_ = s.Close()
-		return nil, fmt.Errorf("tgo: clearing the cache: %w", err)
 	}
 
 	s.step = stepData{
@@ -180,6 +240,9 @@ func (m *Model) NewSession(opts ...SessionOption) (*Session, error) {
 		posk:    make([]uint32, rows*c.NumKVHeads),
 		slots:   make([]uint32, rows),
 		lengths: make([]uint32, 1),
+	}
+	if s.shared {
+		s.step.pages = make([]uint32, m.blocks.maxPages())
 	}
 	s.hLogits = make([]float32, c.VocabSize)
 	return s, nil
@@ -194,7 +257,10 @@ func (m *Model) NewSession(opts ...SessionOption) (*Session, error) {
 // It also drops everything [WithPrefixCache] could have reused, so the next
 // request prefills its whole prompt. That is the cold baseline, and it is what
 // a caller who reset asked for.
-func (s *Session) Reset() { s.rewind(0) }
+func (s *Session) Reset() {
+	s.release()
+	s.rewind(0)
+}
 
 // rewind keeps the first n positions of the conversation and drops the rest.
 //
@@ -207,6 +273,24 @@ func (s *Session) Reset() { s.rewind(0) }
 func (s *Session) rewind(n int) {
 	s.length = n
 	s.history = s.history[:n]
+	s.failed = nil
+	s.live = nil
+}
+
+// adopt records that the first n positions of this request are already
+// computed, whoever computed them.
+//
+// It is not [Session.rewind] with an argument, and the difference is what a
+// shared pool introduced. s.history[i] is the token whose key/value state sits
+// at logical position i, and without a pool that run is always a prefix of what
+// this session itself scored -- so truncating the history to n was the whole
+// operation. With a pool the reused run may have been computed by another
+// conversation entirely, and this session's history can be empty while n is a
+// hundred. The tokens are the same tokens either way, because that is what the
+// pool matched on, so they are taken from the prompt.
+func (s *Session) adopt(ids []int, n int) {
+	s.length = n
+	s.history = append(s.history[:0], ids[:n]...)
 	s.failed = nil
 	s.live = nil
 }
@@ -265,6 +349,11 @@ func (s *Session) Close() error {
 	}
 	s.closed = true
 	s.live = nil
+	// The blocks go back before the buffers do. A session closed while holding
+	// a lease would leak them out of a pool every other conversation draws
+	// from, so the next request gets ErrExhausted rather than this session
+	// leaking memory it alone owned.
+	s.release()
 	var errs []error
 	// A step whose submission failed leaves its input writes batched, and
 	// accel refuses to close a buffer with one outstanding. Flushing first
@@ -273,9 +362,13 @@ func (s *Session) Close() error {
 	if s.m != nil && s.m.dev != nil {
 		errs = append(errs, s.m.dev.Queue().Flush().Wait())
 	}
-	for _, b := range []*accel.Buffer{
-		s.keys, s.values, s.ids, s.posq, s.posk, s.slots, s.lengths, s.logits,
-	} {
+	own := []*accel.Buffer{s.ids, s.posq, s.posk, s.slots, s.lengths, s.logits, s.pageBuf}
+	if !s.shared {
+		// The shared states are the model's and outlive every session, so a
+		// session that borrowed them closes neither.
+		own = append(own, s.keys, s.values)
+	}
+	for _, b := range own {
 		if b != nil {
 			errs = append(errs, b.Close())
 		}
@@ -413,11 +506,84 @@ func (s *Session) start(ctx context.Context, ids []int, p Policy) (*Stream, erro
 	// not fit must leave the conversation exactly as it found it, and a rewind
 	// that ran before the check would have shortened a cache the caller can
 	// still generate from.
-	reuse := s.reusable(ids)
-	s.rewind(reuse)
+	reuse, err := s.acquire(ids, s.salt)
+	if err != nil {
+		return nil, err
+	}
+	s.adopt(ids, reuse)
 	st := newStream(ctx, s, ids, p, reuse, gram)
 	s.live = st
 	return st, nil
+}
+
+// acquire decides how many leading positions of ids are already computed, and
+// where this request's positions will live.
+//
+// Two answers by two mechanisms, and the split is 016 §4 versus this session's
+// own history. Without a shared pool the run being matched is this session's,
+// its tokens are in s.history, and comparing them is exact. With one, a match
+// is another sequence's blocks and has to be found by hash before it can be
+// used at all.
+func (s *Session) acquire(ids []int, salt string) (int, error) {
+	if !s.shared {
+		return s.reusable(ids), nil
+	}
+	// The previous request's lease goes first. Its complete blocks are already
+	// published, so this Acquire finds them by hash -- including the ones this
+	// same conversation just generated. Releasing before acquiring rather than
+	// after is what makes a conversation's own tail available to its next turn
+	// without holding it across the gap.
+	s.release()
+	l, err := s.m.blocks.pool.Acquire(prefix.Request{
+		IDs: ids, Session: s.salt, Salt: salt,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("tgo: leasing blocks for a %d-token prompt: %w", len(ids), err)
+	}
+	s.lease, s.pages = l, l.Blocks()
+	return l.Reused(), nil
+}
+
+// reserve records generated tokens against the lease, allocating blocks as the
+// positions need them, and takes the page table those blocks give.
+//
+// It runs *before* the step that computes their key and value state, because a
+// token needs a row to be written to. It does not publish, and that separation
+// is the invariant 016 §5 turns on: a published block is immutable and another
+// sequence may attend to it before the call returns, so a block offered before
+// its KV was written would be read as somebody's context and hold whatever was
+// there.
+func (s *Session) reserve(toks ...int) error {
+	if !s.shared || s.lease == nil {
+		return nil
+	}
+	if err := s.lease.Append(toks...); err != nil {
+		return fmt.Errorf("tgo: extending a sequence by %d token(s): %w", len(toks), err)
+	}
+	s.pages = s.lease.Blocks()
+	return nil
+}
+
+// publish offers every block whose key/value state the last step computed, and
+// adopts the page table that comes back.
+//
+// The table is returned rather than unchanged because two sequences can miss on
+// one prefix concurrently, compute it twice and both publish: the pool keeps one
+// block and the loser drops its own and takes the winner's, so the two end up
+// sharing a block rather than leaking one.
+func (s *Session) publish() {
+	if !s.shared || s.lease == nil {
+		return
+	}
+	s.pages = s.lease.Publish()
+}
+
+// release gives this request's blocks back. Idempotent.
+func (s *Session) release() {
+	if s.lease != nil {
+		s.lease.Release()
+		s.lease, s.pages = nil, nil
+	}
 }
 
 // timings is what one submission cost, in specs/017-benchmarks.md §1's terms
@@ -447,11 +613,11 @@ type timings struct {
 // concurrency, being allowed to hand it over is what the wait is.
 func (s *Session) run(rows int, toks []int, first int) ([]float32, timings, error) {
 	var t timings
-	if err := s.step.fill(s.m.cfg, rows, toks, first, s.capacity); err != nil {
+	if err := s.step.fill(s.m.cfg, rows, toks, first, s.layout()); err != nil {
 		return nil, t, err
 	}
 	start := time.Now()
-	plan, err := s.m.plan(rows, s.capacity)
+	plan, err := s.m.plan(rows, s.stateRows(), s.block())
 	if err != nil {
 		return nil, t, err
 	}
@@ -476,6 +642,34 @@ func (s *Session) run(rows int, toks []int, first int) ([]float32, timings, erro
 	} {
 		if err := q.WriteBuffer(w.buf, 0, w.data); err != nil {
 			return nil, t, fmt.Errorf("tgo: binding a step's inputs: %w", err)
+		}
+	}
+	if s.shared {
+		// The table has to have been sized, and this checks it rather than
+		// trusting it because an unsized one is invisible: WriteBuffer over an
+		// empty slice writes nothing, leaves the port holding whatever the
+		// allocation held, and the step attends to blocks nobody chose --
+		// fluent output from a page table that was never bound. That is the
+		// bug this line exists for, found by a run that compared a pooled
+		// session against a contiguous one and not by any refusal.
+		if len(s.step.pages) != s.m.blocks.maxPages() {
+			return nil, t, fmt.Errorf("tgo: the page table binding holds %d entries "+
+				"and the port declares %d; a step that wrote a short table would "+
+				"leave the rest of the port holding whatever was there",
+				len(s.step.pages), s.m.blocks.maxPages())
+		}
+		// The page table is written every step because a decode that crossed
+		// into a new block changed it, and because Publish may have swapped an
+		// entry for the block that won a race to name the same prefix.
+		for i := range s.step.pages {
+			if i < len(s.pages) {
+				s.step.pages[i] = uint32(s.pages[i])
+				continue
+			}
+			s.step.pages[i] = 0
+		}
+		if err := q.WriteBuffer(s.pageBuf, 0, s.step.pages); err != nil {
+			return nil, t, fmt.Errorf("tgo: binding the page table: %w", err)
 		}
 	}
 	t.submit = time.Since(start)
@@ -523,8 +717,8 @@ func (s *Session) bindings(rows int) (tensor.Bindings, error) {
 		{model.PortPosK, s.posk, rows * c.NumKVHeads},
 		{model.PortSlots, s.slots, rows},
 		{model.PortLengths, s.lengths, 1},
-		{model.PortKeys, s.keys, c.NumLayers * s.capacity * c.NumKVHeads * c.HeadDim},
-		{model.PortValues, s.values, c.NumLayers * s.capacity * c.NumKVHeads * c.HeadDim},
+		{model.PortKeys, s.keys, c.NumLayers * s.stateRows() * c.NumKVHeads * c.HeadDim},
+		{model.PortValues, s.values, c.NumLayers * s.stateRows() * c.NumKVHeads * c.HeadDim},
 		{model.PortLogits, s.logits, c.VocabSize},
 	} {
 		v, err := e.buf.View(0, e.count)
@@ -532,6 +726,13 @@ func (s *Session) bindings(rows int) (tensor.Bindings, error) {
 			return tensor.Bindings{}, fmt.Errorf("tgo: binding %q: %w", e.name, err)
 		}
 		bufs[e.name] = v
+	}
+	if s.shared {
+		v, err := s.pageBuf.View(0, s.m.blocks.maxPages())
+		if err != nil {
+			return tensor.Bindings{}, fmt.Errorf("tgo: binding %q: %w", model.PortPages, err)
+		}
+		bufs[model.PortPages] = v
 	}
 	// The scalars a decode declares are a strict subset of a prefill's:
 	// model.Declare records ScalarBase only above one token, and accel refuses
@@ -550,6 +751,36 @@ func (s *Session) bindings(rows int) (tensor.Bindings, error) {
 	}
 	s.prefillBind, s.prefillRows = b, rows
 	return b, nil
+}
+
+// layout is where this session's positions live in the states it binds.
+func (s *Session) layout() cacheLayout {
+	if !s.shared {
+		return cacheLayout{rows: s.capacity, limit: s.capacity}
+	}
+	return cacheLayout{
+		rows:  s.m.blocks.positions,
+		limit: s.capacity,
+		pages: s.pages,
+		block: CacheBlock,
+	}
+}
+
+// stateRows is the row count of the key and value states this session binds,
+// which is the graph's Capacity.
+func (s *Session) stateRows() int {
+	if s.shared {
+		return s.m.blocks.positions
+	}
+	return s.capacity
+}
+
+// block is the graph's block size, and zero when the cache is contiguous.
+func (s *Session) block() int {
+	if s.shared {
+		return CacheBlock
+	}
+	return 0
 }
 
 // fail poisons the session with the error that ended a step.
