@@ -5,8 +5,10 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -126,9 +128,17 @@ func TestAQueuedRequestEndsWhenItsClientDoes(t *testing.T) {
 		}
 		errc <- err
 	}()
-	// Give the request time to reach the queue, then hang up. Nothing here
-	// asserts a duration; the assertion is the counter below.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the request is ACTUALLY in the queue, then hang up.
+	//
+	// This was a 50ms sleep, and it failed under -race on a loaded macOS runner:
+	// a request cancelled before it reaches the queue is cancelled at the
+	// transport instead, never enqueues, and never counts as client_gone — so
+	// the test reported "did not end with its client" about a request that
+	// never got there. tgo_queue_depth is the state the cancellation needs, so
+	// the test waits for that state rather than guessing how long it takes.
+	if !awaitQueueDepth(t, s, 1) {
+		t.Fatal("the request never reached the queue, so there was nothing to cancel")
+	}
 	cancel()
 	select {
 	case <-errc:
@@ -239,4 +249,20 @@ func TestRetryAfterRoundsUpAndNeverReachesZero(t *testing.T) {
 			t.Errorf("retryAfter(%s) = %q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+// awaitQueueDepth waits for the queue to hold n requests, and reports whether it
+// got there. It polls a gauge rather than sleeping a guess: see the call site.
+func awaitQueueDepth(t *testing.T, s *Server, n int) bool {
+	t.Helper()
+	want := fmt.Sprintf("tgo_queue_depth %d\n", n)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(get(t, s, "/metrics").Body.String(), want) {
+			return true
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }

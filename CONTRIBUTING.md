@@ -61,6 +61,12 @@ not exist.
   reports the timeout as a behaviour failure. This failed only under `-race`,
   where the timing is slow enough to lose a race the test did not know it had.
   Yield in such a loop, too — a hot spin starves the goroutine under test.
+- **Do not `Sleep` to reach a state.** "Give it time to get to the queue" is a
+  guess that holds on a fast machine and fails under `-race` on a loaded CI
+  runner — and it fails as a *behaviour* failure, blaming the code for a state
+  the test never reached. Wait for the state itself: poll the gauge, the
+  counter, the channel. Every timing bug this project has hit has been one of
+  these.
 - **Do not assert that a duration is positive.** Windows' timer granularity is
   about 15ms, so a real interval of a few hundred microseconds measures as
   exactly zero, and every rate derived from it is zero. Five tests passed on
