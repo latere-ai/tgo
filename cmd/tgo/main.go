@@ -5,7 +5,7 @@
 //
 //	tgo run   [--prompt P] [--max-tokens N] [--temp T] [--seed S] [--precision f16|int8|auto] <model-dir>
 //	tgo bench [--tokens N] [--prompt-tokens N] [--batch N] [--json out.json] <model-dir>
-//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--device D] <model-dir>
+//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--sessions N] [--prefix-cache] [--device D] <model-dir>
 //	tgo info  <model-dir>
 //	tgo pull  [--revision R] [--token T] <repo-id>
 //
@@ -126,6 +126,15 @@ serve flags:
                       authentication, so it is a flag rather than a default
   --precision P       f16, int8 or auto (default auto)
   --context C         KV cache capacity per session, in positions (default 4096)
+  --sessions N        pooled sessions: how many requests generate at once and
+                      how many conversations keep their cache between turns.
+                      Every one is reserved at startup and held until the
+                      process exits (default 0, which takes 4, or fewer if the
+                      device holds fewer)
+  --prefix-cache      reuse the key/value state a conversation already paid
+                      for, so a turn prefills only what is new. A warm answer
+                      matches a cold one in distribution rather than bit for
+                      bit (default off)
   --device D          auto, cpu or metal (default auto)
 
 info flags:

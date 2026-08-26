@@ -111,6 +111,17 @@ type engineOptions struct {
 	// prints and the device the weights land on are one device.
 	Device tgo.Device
 
+	// PrefixCache turns on reuse of the key/value state a conversation has
+	// already paid for (specs/016-prefix-cache.md), scoped to one session.
+	//
+	// Off unless asked for, because turning it on changes what an answer costs
+	// and, in the last decimal places, what it says: the reused prefix was
+	// computed under a different prefill shape and floating point is not
+	// associative, so a warm answer equals a cold one in distribution rather
+	// than bit for bit (016-D6). Only `tgo serve` reads it, because only a
+	// pooled session sees a second turn (019 §1).
+	PrefixCache bool
+
 	// Recorder instruments the engine's decode loop, which is where the
 	// host/submit/device/readback breakdown comes from.
 	//

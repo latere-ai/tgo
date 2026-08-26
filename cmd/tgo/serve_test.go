@@ -33,13 +33,18 @@ type fakeServerEngine struct {
 	context    int
 	vocab      int
 	perSession int64
+
+	// sessions is the pool size startServe asked for, which is what
+	// [TestServePoolSizeIsTheAdmissionLimit] reads to check that the admission
+	// arithmetic and the pool are one number rather than two that agree today.
+	sessions int
 }
 
 func (f *fakeServerEngine) Name() string                { return f.name }
 func (f *fakeServerEngine) Context() int                { return f.context }
 func (f *fakeServerEngine) VocabSize() int              { return f.vocab }
 func (f *fakeServerEngine) CacheBytesPerSession() int64 { return f.perSession }
-func (f *fakeServerEngine) NewSession(server.SessionSpec) (server.Session, error) {
+func (f *fakeServerEngine) NewSession(context.Context, server.SessionSpec) (server.Session, error) {
 	return nil, errors.New("this fake engine generates nothing")
 }
 
@@ -68,9 +73,11 @@ func useFakeServable(t *testing.T, info engineInfo) *[]string {
 	openServable = func(dir, name string, o engineOptions) (servable, error) {
 		names = append(names, name)
 		return servable{
-			Engine: &fakeServerEngine{
-				name: name, context: o.Context, vocab: fakeVocabSize,
-				perSession: info.CacheBytesPerSession,
+			Pool: func(sessions int) (server.Engine, error) {
+				return &fakeServerEngine{
+					name: name, context: o.Context, vocab: fakeVocabSize,
+					perSession: info.CacheBytesPerSession, sessions: sessions,
+				}, nil
 			},
 			Info:  info,
 			Close: func() error { return nil },
@@ -192,11 +199,11 @@ func TestModelIDIsTheDirectorysName(t *testing.T) {
 func TestKVAdmission(t *testing.T) {
 	// 1000 - 280 = 720 over 150 is 4 sessions with 120 left over, which the
 	// floor drops. Four distinct numbers, none a multiple of another.
-	a, err := kvAdmission(1000, 280, 150)
+	a, err := kvAdmission(1000, 280, 150, 0)
 	if err != nil {
 		t.Fatalf("kvAdmission: %v", err)
 	}
-	if a.Budget != 720 || a.Sessions != 4 {
+	if a.Budget != 720 || a.Fits != 4 || a.Sessions != 4 {
 		t.Errorf("kvAdmission = %+v, want a budget of 720 and 4 sessions", a)
 	}
 	if a.Pool != 1000 || a.Weights != 280 || a.PerSession != 150 {
@@ -208,12 +215,39 @@ func TestKVAdmission(t *testing.T) {
 	// machine which can only just run the model, which is the one an operator
 	// is most likely to be on, and a `<` written as `<=` turns it away at
 	// startup with a message telling it to shrink a context that already fits.
-	a, err = kvAdmission(1000, 850, 150)
+	a, err = kvAdmission(1000, 850, 150, 0)
 	if err != nil {
 		t.Fatalf("a budget of exactly one session was refused: %v", err)
 	}
-	if a.Budget != 150 || a.Sessions != 1 {
+	if a.Budget != 150 || a.Fits != 1 || a.Sessions != 1 {
 		t.Errorf("kvAdmission(1000, 850, 150) = %+v, want a budget of 150 and 1 session", a)
+	}
+
+	// 019-D2 reserves every pooled session's cache at startup, so the device's
+	// capacity is a ceiling and not a target: an operator who asks for nothing
+	// gets the default rather than every session the budget would hold.
+	a, err = kvAdmission(100000, 280, 150, 0)
+	if err != nil {
+		t.Fatalf("kvAdmission on a large device: %v", err)
+	}
+	if a.Fits <= defaultSessions || a.Sessions != defaultSessions {
+		t.Errorf("a device holding %d sessions reserved %d, want the default of %d",
+			a.Fits, a.Sessions, defaultSessions)
+	}
+
+	// And an explicit ask is honoured up to what fits, and refused above it
+	// rather than at the allocation that would fail part way through.
+	if a, err := kvAdmission(1000, 280, 150, 3); err != nil || a.Sessions != 3 {
+		t.Errorf("kvAdmission(..., 3) = %+v, %v; three of four sessions fit", a, err)
+	}
+	_, err = kvAdmission(1000, 280, 150, 5)
+	if err == nil {
+		t.Fatal("a pool of five was accepted where four fit")
+	}
+	for _, want := range []string{"--sessions 5", "4 session"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not say %q", err, want)
+		}
 	}
 
 	for _, tc := range []struct {
@@ -226,7 +260,7 @@ func TestKVAdmission(t *testing.T) {
 		{"a budget under one session", 1000, 900, 150, "lower --context"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := kvAdmission(tc.pool, tc.weights, tc.perSession)
+			_, err := kvAdmission(tc.pool, tc.weights, tc.perSession, 0)
 			if err == nil {
 				t.Fatalf("kvAdmission(%d, %d, %d) was accepted", tc.pool, tc.weights, tc.perSession)
 			}
@@ -276,7 +310,7 @@ func TestServeReportsWhatAnOperatorGot(t *testing.T) {
 	}
 	// The budget, with the two terms it came from (§6), and the limit the
 	// server actually admits against.
-	adm, err := kvAdmission(2147483647, fakeWeightBytes, fakeCacheBytes)
+	adm, err := kvAdmission(2147483647, fakeWeightBytes, fakeCacheBytes, 0)
 	if err != nil {
 		t.Fatalf("kvAdmission: %v", err)
 	}
@@ -284,9 +318,12 @@ func TestServeReportsWhatAnOperatorGot(t *testing.T) {
 		t.Errorf("the server admits %d sessions and the report's arithmetic says %d", got, adm.Sessions)
 	}
 	for _, want := range []string{
-		fmt.Sprintf("%d concurrent session", sv.srv.Concurrency()),
+		fmt.Sprintf("%d pooled", sv.srv.Concurrency()),
+		"held until this process exits",
 		humanBytes(fakeWeightBytes) + " weights",
 		humanBytes(fakeCacheBytes) + " at 1024 positions",
+		// The default is off, and the line says what turning it on buys.
+		"--prefix-cache",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report does not carry %q:\n%s", want, out)
@@ -450,9 +487,11 @@ func useCountedServable(t *testing.T, info engineInfo) *int {
 	prev := openServable
 	openServable = func(dir, name string, o engineOptions) (servable, error) {
 		return servable{
-			Engine: &fakeServerEngine{
-				name: name, context: o.Context, vocab: fakeVocabSize,
-				perSession: info.CacheBytesPerSession,
+			Pool: func(sessions int) (server.Engine, error) {
+				return &fakeServerEngine{
+					name: name, context: o.Context, vocab: fakeVocabSize,
+					perSession: info.CacheBytesPerSession, sessions: sessions,
+				}, nil
 			},
 			Info:  info,
 			Close: func() error { *n++; return nil },
@@ -825,5 +864,191 @@ func TestServeARealCheckpoint(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("the report does not carry %q", want)
 		}
+	}
+}
+
+// TestServeReportsThePoolAndWhatItReuses is specs/019-session-affinity.md §4
+// where an operator reads it.
+//
+// Two costs and two lines. The pool is memory reserved at startup and held
+// until the process exits, so the report carries what N sessions come to beside
+// what the device would hold; the prefix cache changes what an answer says, so
+// the report says which way it is set rather than leaving the operator to
+// remember the flag they did not pass.
+func TestServeReportsThePoolAndWhatItReuses(t *testing.T) {
+	useCPUDevice(t)
+	dir := syntheticDir(t)
+	useFakeServable(t, fakeInfo(1024))
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"the default pool", nil, []string{
+			fmt.Sprintf("%d pooled", defaultSessions),
+			"held until this process exits",
+			// The flag an operator would have to pass to get any reuse, in the
+			// line that says they are getting none.
+			"--prefix-cache reuses what a",
+		}},
+		{"reuse turned on", []string{"--prefix-cache"}, []string{
+			"on, scoped to one pooled session",
+			"in distribution rather than bit for bit",
+		}},
+		{"a pool of one", []string{"--sessions", "1"}, []string{
+			"1 pooled",
+			"1 x " + humanBytes(fakeCacheBytes),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			args := append([]string{"--addr", "127.0.0.1:0", "--context", "1024",
+				"--device", "cpu"}, tc.args...)
+			sv, err := startServe(append(args, dir), &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("startServe: %v", err)
+			}
+			defer func() {
+				sv.ln.Close()
+				sv.release()
+			}()
+			out := stdout.String()
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("the report does not carry %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestServeRefusesAPoolLargerThanTheDeviceHolds is 019-D2 at the command line:
+// every pooled session's cache is reserved at startup, so a pool that does not
+// fit is refused before the bind rather than part way through the allocation.
+func TestServeRefusesAPoolLargerThanTheDeviceHolds(t *testing.T) {
+	useCPUDevice(t)
+	dir := syntheticDir(t)
+	useFakeServable(t, fakeInfo(1024))
+
+	var stdout, stderr strings.Builder
+	_, err := startServe([]string{"--addr", "127.0.0.1:0", "--context", "1024",
+		"--device", "cpu", "--sessions", "100000", dir}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("a pool of a hundred thousand sessions was accepted")
+	}
+	for _, want := range []string{"--sessions 100000", "lower --sessions"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not say %q", err, want)
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("a server that refused its pool still printed a report: %q", stdout.String())
+	}
+}
+
+// TestServeRefusesANegativeSessionCount: zero is "as many as fit", and a
+// negative is a pool that holds no conversation.
+func TestServeRefusesANegativeSessionCount(t *testing.T) {
+	_, err := parseServe([]string{"--sessions", "-1", "models/x"})
+	if err == nil || !errors.Is(err, errUsage) {
+		t.Fatalf("parseServe = %v, want a usage error", err)
+	}
+	if !strings.Contains(err.Error(), "at least one") {
+		t.Errorf("the refusal %q does not say what a pool holds", err)
+	}
+}
+
+// TestServePassesThePrefixCacheFlagToTheLoader: the flag reaches the option
+// that turns reuse on, rather than being parsed and dropped.
+func TestServePassesThePrefixCacheFlagToTheLoader(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"--prefix-cache"}, true},
+	} {
+		o, err := parseServe(append(append([]string(nil), tc.args...), "models/x"))
+		if err != nil {
+			t.Fatalf("parseServe(%v): %v", tc.args, err)
+		}
+		if o.Engine.PrefixCache != tc.want {
+			t.Errorf("parseServe(%v).Engine.PrefixCache = %v, want %v",
+				tc.args, o.Engine.PrefixCache, tc.want)
+		}
+	}
+}
+
+// TestServePoolSizeIsTheAdmissionLimit is
+// specs/019-session-affinity.md §4's "two numbers that must agree", asserted
+// rather than only commented.
+//
+// The pool reserves N sessions' key/value cache at startup and the admitter
+// lets N requests generate at once, and [startServe] arrives at both from one
+// call to [kvAdmission]. A pool built one larger than the admission limit is
+// memory an operator was never told about -- the report prints what the limit
+// costs -- and one built smaller puts requests inside the engine waiting for a
+// session, where the queue neither counts them nor times them out (§8.6).
+// Neither shows in the report, so it is read from the size the pool was
+// actually built with.
+func TestServePoolSizeIsTheAdmissionLimit(t *testing.T) {
+	useCPUDevice(t)
+	dir := syntheticDir(t)
+	info := fakeInfo(1024)
+
+	var built *fakeServerEngine
+	prev := openServable
+	openServable = func(_, name string, o engineOptions) (servable, error) {
+		return servable{
+			Pool: func(sessions int) (server.Engine, error) {
+				built = &fakeServerEngine{
+					name: name, context: o.Context, vocab: fakeVocabSize,
+					perSession: info.CacheBytesPerSession, sessions: sessions,
+				}
+				return built, nil
+			},
+			Info:  info,
+			Close: func() error { return nil },
+		}, nil
+	}
+	t.Cleanup(func() { openServable = prev })
+
+	// Three sizes: the default, and two an operator asked for, neither of them
+	// the default, so a pool wired to the constant rather than to the
+	// arithmetic reads wrong on two of the three rows.
+	for _, tc := range []struct {
+		args []string
+		want int
+	}{
+		{nil, defaultSessions},
+		{[]string{"--sessions", "1"}, 1},
+		{[]string{"--sessions", "3"}, 3},
+	} {
+		func() {
+			built = nil
+			var stdout, stderr strings.Builder
+			args := append([]string{"--addr", "127.0.0.1:0", "--context", "1024",
+				"--device", "cpu"}, tc.args...)
+			sv, err := startServe(append(args, dir), &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("startServe(%v): %v", tc.args, err)
+			}
+			defer func() {
+				sv.ln.Close()
+				sv.release()
+			}()
+			if built == nil {
+				t.Fatalf("startServe(%v) built no pool", tc.args)
+			}
+			if built.sessions != tc.want {
+				t.Errorf("startServe(%v) reserved a pool of %d, want %d",
+					tc.args, built.sessions, tc.want)
+			}
+			if got := sv.srv.Concurrency(); got != built.sessions {
+				t.Errorf("startServe(%v) admits %d requests at once over a pool of %d; "+
+					"the two are one number", tc.args, got, built.sessions)
+			}
+		}()
 	}
 }

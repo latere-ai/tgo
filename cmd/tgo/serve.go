@@ -49,13 +49,29 @@ var serveRoutes = []struct{ Method, Path, What string }{
 	{"GET", "/metrics", "Prometheus text exposition"},
 }
 
+// defaultSessions is the pool `tgo serve` builds when nothing says otherwise.
+//
+// It is two numbers at once (specs/019-session-affinity.md §4): how many
+// requests may generate at the same time, and how many conversations keep their
+// key/value cache between turns. The second is what decides a hit -- a turn
+// reuses its own prefix when fewer than N other conversations were served since
+// its last one (§3.1) -- so a pool of one serves one conversation well and
+// alternating conversations not at all.
+//
+// Four rather than the device's whole capacity, because every one of them is
+// allocated at startup and held for the process's life. An operator who wants
+// more asks for it with --sessions and reads what it costs in the report; one
+// whose device cannot hold four gets what it can hold, and never less than one.
+const defaultSessions = 4
+
 // serveOptions is `tgo serve`'s command line, parsed.
 type serveOptions struct {
-	Dir    string
-	Addr   string
-	Name   string
-	Public bool
-	Engine engineOptions
+	Dir      string
+	Addr     string
+	Name     string
+	Public   bool
+	Sessions int
+	Engine   engineOptions
 }
 
 // serveFlagSet declares what `tgo serve` accepts. See [runFlagSet] for why
@@ -68,14 +84,19 @@ func serveFlagSet() (*flag.FlagSet, *serveFlags) {
 		precision: fs.String("precision", "auto", "f16, int8 or auto"),
 		context:   fs.Int("context", defaultContext, "KV cache capacity per session, in positions"),
 		device:    fs.String("device", "auto", "auto, cpu or metal"),
+		sessions: fs.Int("sessions", 0,
+			"pooled sessions, which is the concurrency and the reuse depth "+
+				"(0 takes 4, or fewer if the device holds fewer)"),
+		prefixCache: fs.Bool("prefix-cache", false,
+			"reuse the key/value state a conversation already paid for, which changes what an answer costs and, slightly, what it says"),
 	}
 }
 
 // serveFlags holds `tgo serve`'s flag values.
 type serveFlags struct {
 	addr, precision, device *string
-	public                  *bool
-	context                 *int
+	public, prefixCache     *bool
+	context, sessions       *int
 }
 
 // parseServe parses and checks `tgo serve`'s arguments.
@@ -96,6 +117,13 @@ func parseServe(args []string) (serveOptions, error) {
 	if err := positive("context", *f.context); err != nil {
 		return serveOptions{}, err
 	}
+	// Zero is "as many as the device holds, up to the default", which is what
+	// the admission arithmetic answers once the weights are on the device. A
+	// negative one is a pool that holds no conversation.
+	if *f.sessions < 0 {
+		return serveOptions{}, fmt.Errorf("%w: --sessions is %d; a pool holds at least one "+
+			"conversation", errUsage, *f.sessions)
+	}
 	addr := strings.TrimSpace(*f.addr)
 	if addr == "" {
 		addr = server.DefaultAddr
@@ -108,8 +136,9 @@ func parseServe(args []string) (serveOptions, error) {
 		return serveOptions{}, publicBindRefusal(addr)
 	}
 	return serveOptions{
-		Dir: dir, Addr: addr, Name: modelID(dir), Public: *f.public,
-		Engine: engineOptions{Precision: policy, Context: *f.context, Device: dev},
+		Dir: dir, Addr: addr, Name: modelID(dir), Public: *f.public, Sessions: *f.sessions,
+		Engine: engineOptions{Precision: policy, Context: *f.context, Device: dev,
+			PrefixCache: *f.prefixCache},
 	}, nil
 }
 
@@ -166,12 +195,24 @@ func modelID(dir string) string {
 	return "model"
 }
 
-// servable is a loaded model as `tgo serve` needs it: the interface the server
-// takes, what the loader resolved, and the release.
+// servable is a loaded model as `tgo serve` needs it: a way to build the
+// engine once its size is known, what the loader resolved, and the release.
+//
+// The engine is not built here because it cannot be. specs/019-session-affinity.md
+// 019-D2 reserves N sessions' key/value cache at startup, and N comes from the
+// admission arithmetic, which needs what the loader resolved -- auto precision
+// can land on int8, and a budget computed from a footprint this process
+// predicted would subtract weights that are not on the device.
 type servable struct {
-	Engine server.Engine
-	Info   engineInfo
-	Close  func() error
+	// Pool builds the server's engine over a pool of the given size.
+	Pool func(sessions int) (server.Engine, error)
+
+	Info engineInfo
+
+	// Close releases the pool and the model, in that order, which is the order
+	// accel requires: it closes in order rather than recursively, so a buffer
+	// outliving its device is a leak the runtime reports.
+	Close func() error
 }
 
 // openServable loads a model and adapts it to the server's interface.
@@ -181,21 +222,45 @@ type servable struct {
 // and the graceful stop -- is then reachable from a test with no device, no
 // weights and no checkpoint.
 var openServable = func(dir, name string, o engineOptions) (servable, error) {
-	m, err := tgo.Open(dir,
+	opts := []tgo.Option{
 		tgo.WithPrecision(livePrecision(o.Precision)),
 		tgo.WithContext(o.Context),
-		tgo.WithDevice(o.Device))
+		tgo.WithDevice(o.Device),
+	}
+	if o.PrefixCache {
+		// Scoped to the session, which is the only scope tgo can honour: the
+		// process scope needs a page table specs/004-model-graph.md §3 declares
+		// no port for. The budget is the whole context, because a pooled
+		// session's history is its own and there is nothing else to spend it
+		// on.
+		opts = append(opts, tgo.WithPrefixCache(tgo.CacheSession, o.Context))
+	}
+	m, err := tgo.Open(dir, opts...)
 	if err != nil {
 		return servable{}, err
 	}
 	i := m.Info()
+	var pool *server.PoolEngine
 	return servable{
-		Engine: server.Wrap(m, name),
+		Pool: func(sessions int) (server.Engine, error) {
+			p, err := server.WrapPool(m, name, sessions)
+			if err != nil {
+				return nil, err
+			}
+			pool = p
+			return p, nil
+		},
 		Info: engineInfo{
 			Precision: i.Precision.String(), WeightBytes: i.WeightBytes,
 			CacheBytesPerSession: i.CacheBytesPerSession, Context: i.Context,
 		},
-		Close: m.Close,
+		Close: func() error {
+			var errs []error
+			if pool != nil {
+				errs = append(errs, pool.Close())
+			}
+			return errors.Join(append(errs, m.Close())...)
+		},
 	}, nil
 }
 
@@ -211,7 +276,15 @@ type admission struct {
 	Weights    int64
 	Budget     int64
 	PerSession int64
-	Sessions   int
+
+	// Fits is how many sessions' cache the budget holds, which is §6's N_max.
+	Fits int
+
+	// Sessions is how many the pool actually reserves, which is at most Fits.
+	// The two differ because 019-D2 allocates every one of them at startup and
+	// holds it for the process's life, so the device's capacity is a ceiling
+	// rather than a target.
+	Sessions int
 }
 
 // kvAdmission is §6's arithmetic:
@@ -224,7 +297,12 @@ type admission struct {
 // overstates what is free on a machine running anything else, which is why the
 // derivation is printed rather than the answer alone. See this package's
 // reported discrepancies.
-func kvAdmission(pool, weightBytes, perSession int64) (admission, error) {
+// want is how many sessions the operator asked for, and zero is "as many as
+// fit, up to [defaultSessions]". A pool larger than the device holds is refused
+// here rather than at the allocation that would fail part way through it: every
+// session's cache is reserved at startup (019-D2), so the ceiling is a number
+// this arithmetic already has.
+func kvAdmission(pool, weightBytes, perSession int64, want int) (admission, error) {
 	a := admission{Pool: pool, Weights: weightBytes, Budget: pool - weightBytes, PerSession: perSession}
 	switch {
 	case perSession <= 0:
@@ -239,7 +317,18 @@ func kvAdmission(pool, weightBytes, perSession int64) (admission, error) {
 			"at the requested context; lower --context, which is what a session reserves",
 			humanBytes(a.Budget), humanBytes(perSession))
 	}
-	a.Sessions = int(a.Budget / perSession)
+	a.Fits = int(a.Budget / perSession)
+	switch {
+	case want == 0:
+		a.Sessions = min(defaultSessions, a.Fits)
+	case want > a.Fits:
+		return admission{}, fmt.Errorf("--sessions %d reserves %s of key/value cache and %s "+
+			"is left after the weights, which holds %d session(s) at %s each; lower "+
+			"--sessions or --context", want, humanBytes(int64(want)*perSession),
+			humanBytes(a.Budget), a.Fits, humanBytes(perSession))
+	default:
+		a.Sessions = want
+	}
 	return a, nil
 }
 
@@ -308,16 +397,24 @@ func startServe(args []string, stdout, stderr io.Writer) (*serving, error) {
 	// budget computed from the f16 footprint this process predicted would
 	// subtract weights that are not on the device (specs/001-weights.md §5).
 	rep = resolvedInto(rep, sv.Info)
-	adm, err := kvAdmission(rep.Hardware.MaxPoolBytes, rep.Memory.WeightBytes, rep.Memory.KVBytes)
+	adm, err := kvAdmission(rep.Hardware.MaxPoolBytes, rep.Memory.WeightBytes, rep.Memory.KVBytes,
+		o.Sessions)
 	if err != nil {
 		return nil, err
 	}
 
-	opts := []server.Option{server.WithKVBudget(adm.Budget), server.WithNotice(stderr)}
+	// The pool is built before the server, and the server's concurrency is the
+	// pool's size rather than the same division done twice: two numbers that
+	// have to agree is the shape this bug takes (019 §4).
+	eng, err := sv.Pool(adm.Sessions)
+	if err != nil {
+		return nil, err
+	}
+	opts := []server.Option{server.WithConcurrency(adm.Sessions), server.WithNotice(stderr)}
 	if o.Public {
 		opts = append(opts, server.WithPublicBind())
 	}
-	srv, err := server.New(sv.Engine, opts...)
+	srv, err := server.New(eng, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -400,14 +497,37 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 		fmt.Fprintf(w, "  %-4s %-22s %s\n", r.Method, r.Path, r.What)
 	}
 
-	fmt.Fprintf(w, "\nadmission  %d concurrent session(s)\n", srv.Concurrency())
-	fmt.Fprintf(w, "  kv budget         %s = %s device pool - %s weights\n",
-		humanBytes(adm.Budget), humanBytes(adm.Pool), humanBytes(adm.Weights))
-	fmt.Fprintf(w, "  per session       %s at %d positions of context\n",
+	fmt.Fprintf(w, "\nsessions   %d pooled, reserved now and held until this process exits\n",
+		srv.Concurrency())
+	fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
+		humanBytes(int64(adm.Sessions)*adm.PerSession), adm.Sessions,
 		humanBytes(adm.PerSession), rep.Memory.Context)
-	fmt.Fprintf(w, "  queue             %d waiting, refused with 429 after %s\n",
-		server.DefaultQueue, humanDuration(server.DefaultQueueWait))
-	fmt.Fprintf(w, "  note              the pool is a cap on one allocation, not free memory; without\n"+
-		"                    batching, concurrent requests interleave rather than go faster\n")
+	fmt.Fprintf(w, "  kv budget         %s = %s device pool - %s weights, which holds %d\n",
+		humanBytes(adm.Budget), humanBytes(adm.Pool), humanBytes(adm.Weights), adm.Fits)
+	fmt.Fprintf(w, "  admission         %d generating at once, %d waiting, refused with 429 after %s\n",
+		srv.Concurrency(), server.DefaultQueue, humanDuration(server.DefaultQueueWait))
+	fmt.Fprintf(w, "  prefix cache      %s\n", prefixCacheLine(o.Engine.PrefixCache))
+	fmt.Fprintf(w, "  note              the device pool is a cap on one allocation, not free memory;\n"+
+		"                    without batching, concurrent requests interleave rather than\n"+
+		"                    go faster, and a session's cache is not returned between requests\n")
 	fmt.Fprintf(w, "\nCtrl-C stops it, letting in-flight requests finish.\n")
+}
+
+// prefixCacheLine says what --prefix-cache did, in the terms an operator
+// decides on.
+//
+// Both halves are stated because both are real. On, a conversation's next turn
+// pays for its new tokens alone, and the answer it gets is the one a cold
+// request gets in distribution rather than bit for bit (016-D6). Off, every
+// request prefills its whole prompt and two identical requests give identical
+// answers.
+func prefixCacheLine(on bool) string {
+	if on {
+		return "on, scoped to one pooled session; a turn prefills only what is new, and a " +
+			"warm\n                    answer matches a cold one in distribution rather than " +
+			"bit for bit"
+	}
+	return "off; every request prefills its whole prompt. --prefix-cache reuses what a\n" +
+		"                    conversation already paid for, which is the reason to pool " +
+		"sessions"
 }
