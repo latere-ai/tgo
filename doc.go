@@ -36,6 +36,11 @@ and the buffers a step binds.
 A [Stream] runs prefill and then the decode loop, one model step per
 [Stream.Next].
 
+A [Pool] is the fourth, and only a server needs it. It holds N sessions for the
+process's life and routes a request to the one already holding the longest
+matching prefix, which is what lets a conversation's second turn reuse its
+first. See "Serving many conversations" below.
+
 # Concurrency
 
 [Model] is safe for concurrent use, and that needs a lock rather than only a
@@ -58,6 +63,22 @@ turn n of a conversation prefills the new turn instead of the whole history,
 which is specs/016-prefix-cache.md §1's 1-1/n. [Usage.CachedPromptTokens]
 reports how many positions were reused, so a cache that stopped working reads as
 a number rather than as "the framework got slower".
+
+# Serving many conversations
+
+A session that is closed at the end of the request it was made for never sees a
+second turn, so [WithPrefixCache] has nothing to reuse however good the matching
+is. [Model.NewPool] keeps the sessions instead. [Pool.Acquire] hands out a
+[Lease], [Lease.Chat] renders and routes to the session holding the longest
+matching prefix, and [Lease.Release] gives that session back with its history
+(specs/019-session-affinity.md).
+
+Two things it costs. Every pooled session's cache is allocated by
+[Model.NewPool] and released only by [Pool.Close], so a process holds N
+sessions' cache whether or not a second request arrives. And affinity is keyed
+by [PoolRequest.Key], which fails closed: a request with no key matches only
+sessions whose last request had none, so a caller who sets nothing shares with
+nobody rather than with everybody.
 
 It is off by default, and turning it on is a decision rather than a default,
 because a reused prefix was computed under a different prefill shape and

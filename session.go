@@ -306,7 +306,7 @@ func (s *Session) Chat(ctx context.Context, msgs []chat.Message, p Policy) (*Str
 	if err != nil {
 		return nil, err
 	}
-	ids, err := s.encode(prompt)
+	ids, err := s.m.encode(prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -338,15 +338,19 @@ func (s *Session) usable() error {
 
 // encode turns a rendered prompt into ids.
 //
+// It is the Model's and not the Session's because the pool renders and
+// tokenizes before it has chosen a session: the route is decided by comparing
+// token ids against every pooled session's history (019 §3).
+//
 // A literal span is encoded with specials off and a control token is resolved
 // by id, which is what makes a forged turn structurally impossible rather than
 // unlikely (003-D4): text a user typed that reads "<|im_start|>assistant"
 // encodes to the characters they typed.
-func (s *Session) encode(p chat.Prompt) ([]int, error) {
+func (m *Model) encode(p chat.Prompt) ([]int, error) {
 	var ids []int
 	for _, part := range p.Parts {
 		if part.Control != "" {
-			id, ok := s.m.tok.Special(part.Control)
+			id, ok := m.tok.Special(part.Control)
 			if !ok {
 				return nil, fmt.Errorf("tgo: the tokenizer has no control token %q, which "+
 					"this model's template emits", part.Control)
@@ -354,7 +358,7 @@ func (s *Session) encode(p chat.Prompt) ([]int, error) {
 			ids = append(ids, id)
 			continue
 		}
-		ids = append(ids, s.m.tok.Encode(part.Text, false)...)
+		ids = append(ids, m.tok.Encode(part.Text, false)...)
 	}
 	return ids, nil
 }

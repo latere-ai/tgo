@@ -637,7 +637,7 @@ func TestEncodeRefusesAControlTokenTheTokenizerDoesNotHold(t *testing.T) {
 	t.Parallel()
 	m := openSynthetic(t)
 	s := session(t, m, WithSessionContext(64))
-	_, err := s.encode(chat.Prompt{Parts: []chat.Part{
+	_, err := s.m.encode(chat.Prompt{Parts: []chat.Part{
 		{Text: "fine"},
 		{Control: "<|not_in_this_vocabulary|>"},
 	}})

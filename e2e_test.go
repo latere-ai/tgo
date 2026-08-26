@@ -114,7 +114,7 @@ func TestRealCheckpointEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	rendered, err := probe.encode(prompt)
+	rendered, err := probe.m.encode(prompt)
 	if err != nil {
 		t.Fatalf("encoding the rendered prompt: %v", err)
 	}
