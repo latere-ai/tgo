@@ -144,6 +144,18 @@ the top twelve are 155s between them — so the growth is a suite that does more
 each wave, and the lever is fixtures sized to their assertions rather than to
 what was convenient.
 
+What 2547s of CPU came to on CI, measured on the run that set the budget
+(`d0e27c6`, whole `test` job including build, vet and the plain test pass):
+
+| runner | job |
+| --- | --- |
+| ubuntu-latest | 18m 33s |
+| macos-latest | 10m 53s |
+| windows-latest | **27m** |
+
+Windows is the one to watch, and it is the reason the ceiling is 45m rather than
+35m.
+
 This has cost a red build once: the suite passed locally at 362s wall and timed
 out on ubuntu and windows on no single test, because `go test` reports whichever
 test was running when the clock ran out. The package had simply run out of the
