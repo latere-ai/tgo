@@ -89,14 +89,19 @@ well-tested package carry an untested one. Exemptions live in
 
 ## Running the gates locally
 
+Cheapest first, which is the order CI runs them in and the reason it is worth
+copying. A list that puts a one-second check behind a nine-minute one is a list
+whose tail gets run and whose head gets skipped, and `gofmt` sat fifth here
+until it failed a build that every other gate had passed.
+
 ```sh
+gofmt -l .
 go build ./...
 go vet ./...
-go test ./...
-CGO_ENABLED=1 go test -race ./...
-gofmt -l .
 go test ./internal/speclint/
+go test ./...
 go test -coverprofile=cover.out -coverpkg=./... ./... && go run ./internal/covercheck -profile=cover.out
+CGO_ENABLED=1 go test -race -count=1 -timeout 45m ./...
 ```
 
 CI runs all of these plus a cgo-free grep and a cross-compile across ten
