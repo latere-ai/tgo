@@ -254,7 +254,7 @@ possible rather than deciding it:
 | scope | when |
 | --- | --- |
 | `process` (default) | single-tenant: a CLI, one team's server, an agent runtime |
-| `session` | share within a conversation only; safe under multi-tenancy. **From the server this row is empty — see [§7.2](#72-what-shipped-and-why-the-server-gets-none-of-it).** |
+| `session` | share within a conversation only; safe under multi-tenancy. Reachable from the server since [019](019-session-affinity.md) pooled the sessions; `tgo serve --prefix-cache` |
 | `off` | measurement, and comparison against a cold baseline |
 
 **`session` is the important row.** It is the scope that keeps the largest share
@@ -283,6 +283,12 @@ generations, which today means an embedded caller and not the server.
 
 So: **no scope reuses anything from `tgo serve`.** The feature is real and
 tested at the library surface, and the product does not reach it.
+
+**Closed by [019](019-session-affinity.md), 2026-08-26.** `tgo serve` keeps a
+pool of sessions and routes a request to the one already holding the longest
+matching prefix, so a session sees a second turn and `session` reuses what it
+holds. `--prefix-cache` turns it on; `--sessions N` is the pool. 019 §8.1 has
+the measurement.
 
 **And the refusal `CacheProcess` returns names the wrong obstruction.** It names
 the missing page-table port, which is the blocker for *block-level* sharing —

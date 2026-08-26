@@ -135,32 +135,68 @@ top of the weights:
 A larger model has proportionally more layers and heads, so scale it by the
 model's size.
 
-tgo pages this memory rather than reserving a fixed block per conversation, so a
-short conversation on a server configured for long ones only costs what it
-actually uses.
+Each conversation reserves a whole block of it, sized by the context you asked
+for, not by the context it uses. `tgo serve` reserves that block for several
+conversations at once, at startup, and holds it until the process exits: see
+[Session pooling](#session-pooling-and-what-it-costs) below for the number and
+what decides it.
 
 ## Prompt caching
 
 Most of what you send is usually the same as last time: a system prompt, tool
-definitions, the earlier turns of a conversation. tgo remembers the work it
-already did for that shared beginning and skips it — both within a conversation
-and across separate requests that share a system prompt.
+definitions, the earlier turns of a conversation. tgo can remember the work it
+already did for that shared beginning and skip it, so a follow-up question pays
+for its own new tokens and not for the transcript in front of them.
 
-You do not ask for this and you do not annotate anything. It happens when the
-beginning of your prompt matches one tgo has seen, and the saving is
-proportional to how much matches — for a long system prompt and a short
-question, most of the wait.
+The saving is proportional to how much matches. For a long conversation and a
+short question, that is most of the wait before the first token.
 
-Two things worth knowing:
+Three things to know before you turn it on:
 
+- **It is off unless you ask for it**, with `--prefix-cache` on `tgo serve` or
+  `tgo.WithPrefixCache` in the library. Reusing the work changes the arithmetic
+  slightly: floating point addition is not associative, so an answer computed
+  partly from a cache is the same answer in distribution rather than the same
+  bytes. That is a trade you should make deliberately.
 - **It is not a response cache.** The model still generates. Only the reading of
   your prompt is skipped, so the same question can still get a different answer.
-- **Sharing has a scope, and you choose it.** By default a tgo process shares
-  this work across every request it serves, which is what you want when the
-  process is yours. If you put many people's conversations through one tgo, set
-  the scope to `session` — a request can then only reuse work from its own
-  conversation. Otherwise a fast reply tells someone that another person
-  recently sent a similar prompt.
+- **Sharing stops at the conversation.** A request can reuse only work done for
+  a conversation it continues. Two people who send the same system prompt pay
+  for it twice, which is slower and is also why one of them cannot measure that
+  the other is there.
+
+If something in front of tgo multiplexes several people through one process, put
+a `cache_salt` on each request — any opaque string that identifies the caller.
+A request carrying a salt can reuse only work done for requests carrying the
+same one, and a request carrying none can reuse only work done for requests
+carrying none. It fails closed: a caller who sets nothing shares with nobody
+rather than with everybody.
+
+## Session pooling, and what it costs
+
+Reuse needs somewhere to keep the work. `tgo serve` keeps a fixed pool of
+conversations, and routes each request to the one already holding the longest
+matching beginning.
+
+`--sessions N` sets the size. It is two numbers at once:
+
+- **how many requests generate at the same time.** Over that, requests queue,
+  and past the queue they are refused with 429 and a `Retry-After`.
+- **how many conversations keep their cache between turns.** A conversation's
+  next turn reuses its own work if fewer than N *other* conversations were
+  served since its last turn. Below that, it starts again from nothing.
+
+The cost is memory, and it is not conditional. All N conversations' caches are
+reserved when the process starts and held until it exits, whether or not a
+second request ever arrives. So `--sessions 8` at a 32k context on a 32B model
+is eight times the table above, resident for the life of the process, and the
+server can no longer run one large request that would not fit beside seven idle
+peers.
+
+`tgo serve` prints the whole calculation at startup: what one session reserves,
+what N of them come to, what is left after the weights, and how many the device
+would hold. If you ask for more than fits, it says so then rather than failing
+under load.
 
 ## Which models
 

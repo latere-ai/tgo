@@ -89,7 +89,7 @@ teaches nobody why the obvious thing was not done.
 | [016](016-prefix-cache.md) | drafted | reusing the KV of a prompt somebody already paid for |
 | [017](017-benchmarks.md) | drafted | measuring where a token's time goes, and comparing honestly |
 | [018](018-hybrid-models.md) | **blocked** | Qwen3.8-27B's linear-attention layers, and the operator they need |
-| [019](019-session-affinity.md) | drafted | cross-request prefix reuse with no page table: pool the sessions |
+| [019](019-session-affinity.md) | implemented | cross-request prefix reuse with no page table: pool the sessions |
 
 
 ## Where the work stands
