@@ -226,11 +226,15 @@ func Register() []Row {
 	}, {
 		ID:     "C16",
 		Cannot: "a **batched prefill**, or prefill and decode in one dispatch",
-		Specs:  []string{"040"},
+		Specs:  []string{"040", "046"},
 		Issue:  16,
-		State:  Open,
-		Cost: "prefills run alone. Chunked prefill bounds latency and recovers " +
-			"no throughput ([008 §5](008-scheduler.md))",
+		State:  Closed,
+		Cost: "none needed. `AttentionOptions.QueryExtents` makes `q` flat — " +
+			"`[sum(extents), qHeads, headDim]` — so a step is a segmented " +
+			"extent rather than a rectangle and a 512-token chunk shares a " +
+			"dispatch with three decodes. Verified: a mixed step is " +
+			"bit-identical to the steps it batches, and re-splitting the same " +
+			"tokens moves the output",
 	}, {
 		ID:        "C17",
 		Cannot:    "GGUF's K-quant super-blocks",
@@ -270,6 +274,17 @@ func Register() []Row {
 			"not fit a 24 GiB device. A second blocker on the 27B target, " +
 			"independent of the linear attention in #17 " +
 			"([011 §2.3](011-sequencing.md))",
+	}, {
+		ID:     "C22",
+		Cannot: "a **ragged step over an f16 cache**",
+		Specs:  []string{"046", "010"},
+		Issue:  23,
+		State:  Open,
+		Cost: "an f32 cache on the batched path, so [C5](#2-the-register)'s " +
+			"halving is given back by the operator that makes batching " +
+			"possible. Per-sequence traffic $A$ doubles, and " +
+			"[008 §1](008-scheduler.md) makes the batch size worth reaching " +
+			"and the throughput ceiling both proportional to $1/A$",
 	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",

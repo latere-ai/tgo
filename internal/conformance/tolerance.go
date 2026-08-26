@@ -164,6 +164,35 @@ func Magnitude(scale float64) Terms {
 		"relative terms apply to a magnitude of %.3g", scale)}}
 }
 
+// SoftmaxWeight is the relative error a softmax weight carries because the
+// score it exponentiates was accumulated in f32.
+//
+// The dot product over k terms has a relative error of [AccumF32], so a score
+// of magnitude s carries an absolute error of s*AccumF32(k). The exponential
+// turns an absolute error in its argument into a *relative* error in its
+// result:
+//
+//	exp(s + d) = exp(s)*exp(d) ~ exp(s)*(1 + d)   for small d
+//
+// and the normalization by the sum leaves that relative error in place, since a
+// factor common to every weight cancels and only the spread survives. So the
+// weight's relative error is s*AccumF32(k), where s is the largest score in the
+// row, and it applies to the magnitude of the values those weights combine.
+//
+// It exists because attention is the one place in this project where a relative
+// term has to be scaled by an intermediate rather than by the answer, and
+// composing that by hand at each call site is how a budget becomes a number
+// somebody tuned. maxScore comes from the reference, which computed it.
+func SoftmaxWeight(maxScore float64, k int) Terms {
+	if maxScore < 0 || k < 0 {
+		panic("conformance: SoftmaxWeight with a negative score or width")
+	}
+	e := maxScore * AccumF32(k).Relative()
+	return Terms{rel: e, why: []string{fmt.Sprintf(
+		"the softmax weight, whose score of magnitude %.3g accumulated over K=%d: "+
+			"s*sqrt(K)*eps32 = %.3g", maxScore, k, e)}}
+}
+
 // And composes two stages of one computation.
 //
 // Relative errors add and absolute ones add. The magnitude is the larger of the
