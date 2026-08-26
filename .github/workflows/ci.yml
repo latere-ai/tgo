@@ -69,10 +69,16 @@ jobs:
     # so a budget cut below the document's own length would turn the assertion
     # into a measurement of the budget. Race coverage is worth more than the
     # minutes.
+    #
+    # Raised again to 45m on 2026-08-27, at 2547s of CPU: a shared block pool
+    # is exercised by real forward passes in two packages. CONTRIBUTING turns
+    # that into a tracked budget of 3500s rather than a line to move again --
+    # past it the answer is a cheaper suite, because no single test here is
+    # large and the growth is the suite doing more each wave.
     - name: Test under the race detector
       env:
         CGO_ENABLED: '1'
-      run: go test -race -timeout 30m ./...
+      run: go test -race -timeout 45m ./...
 
   coverage:
     name: coverage gate

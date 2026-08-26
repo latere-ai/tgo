@@ -121,14 +121,28 @@ time, not wall time: your machine divides it by its cores and a CI runner has
 fewer and slower ones. Measure it rather than trusting the wall clock:
 
 ```sh
-/usr/bin/time -p go test -race -count=1 -timeout 30m ./
+/usr/bin/time -p go test -race -count=1 -timeout 45m ./...
 ```
 
-`user` above 1500s is a warning even when `real` looks fine. This has cost a red
-build once already: the suite passed locally at 362s wall and timed out on
-ubuntu and windows, on no single test — the package simply ran out of the ten
-minutes `go test` allows by default. The steps now pass `-timeout 30m`, so the
-next failure of this kind will be a slow suite rather than a confusing one.
+`user` is the number, and it is a **budget rather than a warning line**, because
+a ceiling that rises whenever a wave needs it stops being a gate. What it has
+actually been:
+
+| | `user` | ceiling | why it moved |
+| --- | --- | --- | --- |
+| Wave 7 | 1297s | 10m, then 30m | the ten-minute default was never raised from `go test`'s |
+| Wave 8 | 2547s | 45m | one shared block pool exercised by real forward passes in two packages |
+
+**The budget is 3500s.** Past it, the answer is to make the suite cheaper and
+not the ceiling higher: no single test above is large — the heaviest is 22s and
+the top twelve are 155s between them — so the growth is a suite that does more
+each wave, and the lever is fixtures sized to their assertions rather than to
+what was convenient.
+
+This has cost a red build once: the suite passed locally at 362s wall and timed
+out on ubuntu and windows on no single test, because `go test` reports whichever
+test was running when the clock ran out. The package had simply run out of the
+ten minutes `go test` allows by default.
 
 ## Dependencies
 

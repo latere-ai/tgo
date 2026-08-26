@@ -356,9 +356,26 @@ and a diff of its bound ports showed the page table was empty. **Three layers,
 each ruled out by a value.** The fix is one line in the constructor, so the
 check at the seam is what makes the class visible next time.
 
+**And one decision the shared pool forced that no per-session cache ever had
+to make: how long a lease lives.** It was released at the next request, so an
+idle conversation held a reference to blocks no live one could have — over $B$
+blocks and $N$ sessions, [008 §3](008-scheduler.md)'s deadlock. The third
+request of a four-request server test failed with six of eight blocks
+referenced, which is the value of an end-to-end test over one that stubs the
+engine: the flag-layer test could not have found it because it never serves a
+request. [016-D12](016-prefix-cache.md) is the rule and the tail is its cost.
+
+Over the wire, two different conversations sharing an opening turn: the second
+reuses what the first paid for, and a third under a `cache_salt` reuses nothing.
+No session-scoped cache produces that at any pool size.
+
 **Remaining**: [008](008-scheduler.md) §2 and §3 — slots and admission — which
 are now pure policy over a graph that pages, and
-[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps. One smaller
+debt is named rather than hidden: `Pool.route` still asks `Session.reusable`,
+which returns zero outside the session scope, so under a process pool a request
+goes to the coldest session and the blocks do the sharing. Nothing is lost, and
+[008-D9](008-scheduler.md) is where routing learns to ask the pool.
 
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
 
