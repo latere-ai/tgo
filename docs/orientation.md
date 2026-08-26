@@ -58,6 +58,16 @@ unchanged. Start it with `tgo serve <model-dir>`:
 They are translated through one neutral request shape rather than handled
 separately, so a feature works the same way whichever you use.
 
+**Ask for a JSON schema and you get one.** `response_format` on Chat
+Completions, `output_format` on Messages and `text.format` on Responses all
+reach the same machinery: at every step the tokens that could not continue a
+document matching your schema are given probability zero, so the answer parses
+and matches without a retry loop. A schema tgo cannot turn into that constraint
+is refused with the keyword that stopped it and why -- a `minimum`, for
+instance, is arithmetic on a value, and the machine counts characters -- so you
+learn it when you send the schema rather than from output that quietly ignored
+half of it.
+
 **A setting tgo cannot honour is never dropped quietly.** One that would change
 the answer — asking for four completions at once, say — is refused by name, with
 the reason. One that cannot change the answer runs anyway and comes back listed

@@ -195,7 +195,7 @@ silently. tgo adopts it, with a rule for which side a field falls on:
 
 | category | rule | examples |
 | --- | --- | --- |
-| **changes the answer** | **refuse**, naming the field | `n > 1` (needs batching, [008](008-scheduler.md)), `response_format: json_schema` ([015](015-structured-output.md)), a `logit_bias` id outside the vocabulary |
+| **changes the answer** | **refuse**, naming the field | `n > 1` (needs batching, [008](008-scheduler.md)), a schema the grammar compiler cannot compile ([015](015-structured-output.md)), a `logit_bias` id outside the vocabulary |
 | **advisory** | accept, run, and **record the loss** | `cache_control`, `service_tier`, `user`, `metadata`, `citations` |
 
 Losses are surfaced two ways, both from the same list: an `X-Tgo-Loss` response
@@ -252,6 +252,15 @@ produce the same tokens.
 | `logprobs`, `top_logprobs` | from `Sampler.Probs`, which does not move the stream |
 | `thinking` / `reasoning` | maps to the template's thinking flag, [003 §3](003-chat-template.md). The **budget is advisory**: tgo does not stop the model mid-thought |
 | `tools`, `tool_choice` | rendered into the prompt via the model's template; the model's text comes back as blocks. **No forced grammar** until [015](015-structured-output.md), so a malformed call is possible and is reported as text rather than as a parsed call |
+
+**Amended 2026-08-26:** `response_format: json_schema` was in that row when
+[015](015-structured-output.md) had no implementation, and a schema that changes
+the answer had to be refused whole. It is now honoured: `response_format`,
+`output_format` and `text.format` each map onto `Policy.Schema`, and the
+refusal narrowed to a schema the compiler will not compile, answered with the
+keyword and the obstruction it named (015-D4). The reasoning is unchanged --
+enforcing part of a schema is the silent failure the rule exists to prevent --
+and only what tgo can enforce moved.
 
 `tools` is the row to read carefully. Returning what the model emitted, rather
 than a parsed `tool_calls` array, is a deliberate under-promise: without

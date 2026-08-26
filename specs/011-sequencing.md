@@ -242,6 +242,65 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-26 — Wave 6: structured output is reachable from a request
+
+`internal/grammar` shipped with 97.8% coverage and **no caller**, which the
+per-package gate cannot see: a package nothing imports reads green. This wave is
+the wiring, and [015 §5](015-structured-output.md) is the shape of it.
+
+`Policy.Schema` carries a schema, `Model.CheckSchema` compiles one on its own,
+`Stream.advance` masks before the draw and advances after it, and `adapt.go`
+accepts `response_format`, `output_format` and `text.format` instead of refusing
+them. A schema the compiler will not compile is a 400 carrying the keyword and
+the obstruction, answered before a session is allocated.
+
+**Three joins the grammar package could not test, because it never sees a real
+tokenizer**, and each one fails silently:
+
+- **The bytes.** `Vocab.Bytes` is `Tokenizer.TextBytes`, new here: the decoded
+  bytes, not the vocabulary file's spelling. A byte-level BPE stores `" the"` as
+  `"Ġthe"`, and a mask built from the surface form constrains a different
+  language and reports nothing.
+- **The width.** The mask is applied to a logits row, so the vocabulary is the
+  checkpoint's `vocab_size` and not the tokenizer's id space. The fixture pads
+  640 over 582, which is what makes the confusion visible in a test.
+- **The stop set.** `Options.Stop` is exactly what `Stream.isStop` ends on. Empty,
+  `Mask` returns `ErrNoToken` the moment the document is complete -- so every
+  constrained generation would fail on its last step with the right answer in
+  hand. The test that catches it is a generation that runs to a complete
+  document and *stops*, asserted as `finish_reason: stop` rather than as text.
+
+**A fixture hazard worth writing down.** JSON admits whitespace before every
+token, so the grammar does too, and a synthetic checkpoint's weights draw a
+space as readily as a brace: an object schema ran a 600-token budget out on
+indentation. Both end-to-end tests therefore use a schema whose language is
+finite and ban whitespace through `logit_bias`, so the budget is a bound rather
+than a hope. An `"integer"` property is not finite -- a magnitude bound is
+`"maximum"`, which the compiler refuses as arithmetic on the value -- and that
+narrowing is the package's, documented, not the mask failing.
+
+**The other half of this wave was [016](016-prefix-cache.md), and it landed
+short of the product.** `WithPrefixCache(CacheSession, n)` reuses a session's
+own prefix and is tested at the library surface. It reuses nothing from `tgo
+serve`, because the server opens one session per request and closes it on the
+way out, so a session never sees a second turn. `CacheProcess` is refused: it
+needs a page table, and [004 §3](004-model-graph.md) declares no port for one.
+[016 §7.2](016-prefix-cache.md) carries the correction and the three options;
+the decision taken was **session affinity** — pool the sessions and route a
+request to the one already holding the longest matching prefix, which needs no
+page table at all.
+
+**Two packages have no importer, and the coverage gate cannot say so.**
+`internal/prefix` is 100% covered and called by nothing: it is the block pool
+for the sharing the missing port blocks, so it waits. `internal/grammar` was in
+the same state until this wave, which is what the wave was. A per-package floor
+measures the packages that exist, not the ones that are reached, so "15
+packages at or above 90%" is true of code no request can run.
+
+**Remaining**: session affinity for [016](016-prefix-cache.md),
+[008](008-scheduler.md) continuous batching, and
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
+
 ### 2026-08-26 — Wave 5 shipped: tgo serves
 
 `server`, `internal/prefix`, `internal/hub`, and `serve`/`pull` in `cmd/tgo`.

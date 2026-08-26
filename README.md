@@ -59,8 +59,8 @@ on Apple silicon.
 | **Precision** | f16 or int8, chosen by what fits your machine, and always overridable |
 | **Devices** | Metal on Apple silicon, and CPU everywhere. Use a GPU if you have one: the CPU path works and is currently far slower |
 | **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
-| **Serving** | streaming, logprobs, seeded reproducible output, and prompt caching that reuses work across turns and requests |
-| **As a library** | open a model, hold a conversation, stream tokens |
+| **Serving** | streaming, logprobs, seeded reproducible output, and JSON-schema output that parses every time |
+| **As a library** | open a model, hold a conversation, stream tokens, and reuse the prompt a conversation has already paid for |
 
 Continuous batching — running many conversations in one step, which is where a
 server gets most of its throughput — is designed and now expressible in the
