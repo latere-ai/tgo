@@ -18,6 +18,14 @@ import (
 	"latere.ai/x/pkg/llmdialect/openairesp"
 )
 
+// pooledEngine is the part of [PoolEngine] that [New] needs and [Engine] does
+// not declare: how many sessions the engine can hand out at once.
+//
+// An optional interface rather than a method on [Engine], because an engine
+// that allocates per request ([Wrap]) has no such number -- what bounds it is
+// device memory, which [WithKVBudget] divides.
+type pooledEngine interface{ Sessions() int }
+
 // Server serves one [Engine] over the four request routes and the three
 // informational ones. It is an [http.Handler]; nothing here starts a listener
 // except [Server.Listen], which exists to refuse a public bind.
@@ -57,6 +65,21 @@ func New(eng Engine, opts ...Option) (*Server, error) {
 		}
 		o.concurrency = n
 	}
+	// A pooled engine has a semaphore of its own: Pool.Acquire waits when
+	// every pooled session is leased. Admitting more requests than the pool
+	// holds is bounded -- the surplus is concurrency minus the pool, and the
+	// requests behind them still queue and still get their 429 -- but it is a
+	// wait the admitter does not describe. Those requests hold a slot and
+	// block inside NewSession, where they are not in the queue, so
+	// [WithQueueWait] does not time them out and the queue depth does not
+	// count them; what their caller gets is a wait past the Retry-After budget
+	// instead of the refusal that budget promises. Both numbers are known
+	// here, so the disagreement is refused here.
+	if p, ok := eng.(pooledEngine); ok && o.concurrency > p.Sessions() {
+		return nil, fmt.Errorf("server: admission allows %d requests to generate at once and "+
+			"the engine pools %d session(s); lower the concurrency or pool more sessions",
+			o.concurrency, p.Sessions())
+	}
 
 	s := &Server{eng: eng, opt: o, mux: http.NewServeMux(), metrics: newMetrics()}
 	s.admit = newAdmitter(o.concurrency, o.queue, o.queueWait, s.metrics)
@@ -75,8 +98,9 @@ func New(eng Engine, opts ...Option) (*Server, error) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
 
 // Concurrency is how many sessions may generate at once, after
-// [WithKVBudget] has been divided out. A deployment prints it, and a test
-// reads it.
+// [WithKVBudget] has been divided out. Over a pooled engine it is the pool's
+// size, which [New] refuses to let it exceed. A deployment prints it, and a
+// test reads it.
 func (s *Server) Concurrency() int { return s.opt.concurrency }
 
 // dialect is the pipeline every request route shares.

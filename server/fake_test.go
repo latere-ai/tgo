@@ -123,9 +123,15 @@ func (e *fakeEngine) checked() [][]byte {
 	return append([][]byte(nil), e.schemas...)
 }
 
-func (e *fakeEngine) NewSession(spec SessionSpec) (Session, error) {
+func (e *fakeEngine) NewSession(ctx context.Context, spec SessionSpec) (Session, error) {
 	if e.sessionErr != nil {
 		return nil, e.sessionErr
+	}
+	// The context is read the way a pooled engine reads it: a request whose
+	// caller has already gone gets no session. Without this the fake would let
+	// a cancellation test pass against an engine that ignores the context.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	s := &fakeSession{eng: e, spec: spec}
 	e.mu.Lock()

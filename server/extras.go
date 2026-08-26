@@ -26,6 +26,15 @@ type extras struct {
 	penaltyWindow     *int
 	topK              *int
 
+	// cacheSalt is 016 §7.1's caller-supplied salt, which
+	// specs/019-session-affinity.md 019-D3 uses as the affinity key: a request
+	// carrying one may be routed only to a pooled session whose last request
+	// carried the same one, and a request carrying none only to a session that
+	// had none. It is not a sampling knob and reaches no
+	// [github.com/latere-ai/tgo.Policy] field, which is why it is subtracted
+	// from the loss report by [honouredSession] rather than by [honoured].
+	cacheSalt string
+
 	// thinkingOff is the one signal that does not survive into ir.Request:
 	// Anthropic's thinking:{"type":"disabled"} and OpenAI's
 	// reasoning_effort:"none" both decode to no ir.Reasoning at all, which is
@@ -86,8 +95,28 @@ func parseExtras(top map[string]json.RawMessage) (extras, error) {
 	if ex.logitBias, err = parseLogitBias(top); err != nil {
 		return ex, err
 	}
+	if ex.cacheSalt, err = jsonString(top, "cache_salt"); err != nil {
+		return ex, err
+	}
 	ex.thinkingOff = thinkingOff(top)
 	return ex, nil
+}
+
+// jsonString reads an optional string member.
+//
+// A member of the wrong type is an error naming the field rather than a silent
+// empty string: a cache_salt that did not parse is a request whose caller
+// believes their cache is isolated from everybody else's and is not.
+func jsonString(top map[string]json.RawMessage, name string) (string, error) {
+	raw, ok := top[name]
+	if !ok || isNull(raw) {
+		return "", nil
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", fmt.Errorf("%s must be a string: %w", name, err)
+	}
+	return v, nil
 }
 
 // parseLogitBias reads the {token id: bias} map.

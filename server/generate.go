@@ -37,14 +37,32 @@ const recorderCapacity = 1024
 
 // generate runs one request and writes the answer, streaming or not.
 //
-// The session is this request's alone and is closed on the way out, which is
-// what gives the KV reservation back (§6).
+// The session is this request's alone for the length of the request, and is
+// given back on the way out. What that means depends on the engine: [Wrap]
+// closes it, which returns the KV reservation (§6); [WrapPool] returns it to
+// the pool with its history intact, so the next turn of the same conversation
+// can be routed to it (specs/019-session-affinity.md §2).
+//
+// The request's context is handed to the engine, not only to the generation: a
+// pooled engine waits for a free session, and a client who hangs up while
+// waiting must stop waiting rather than take a session it will not read from.
 func (s *Server) generate(w http.ResponseWriter, r *http.Request, front llmdialect.Frontend, req *request) {
 	rec := bench.NewRecorder(recorderCapacity)
 	req.spec.Recorder = rec
+	ctx := r.Context()
 
-	sess, err := s.eng.NewSession(req.spec)
+	sess, err := s.eng.NewSession(ctx, req.spec)
 	if err != nil {
+		if ctx.Err() != nil {
+			// The client hung up while a pooled engine was waiting for a free
+			// session. Nothing has been written, and writeError has no body
+			// for a client that is gone, so the status is written here: a bare
+			// return would let the runtime synthesize 200 with an empty body,
+			// which a proxy reads as a completion that produced nothing.
+			s.metrics.reject("client_gone")
+			w.WriteHeader(errClientGone.status())
+			return
+		}
 		s.fail(w, req.dialect, sessionError(err))
 		return
 	}
@@ -55,7 +73,6 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, front llmdiale
 		s.report(rec)
 	}()
 
-	ctx := r.Context()
 	var st Stream
 	if req.prompt != "" {
 		st, err = sess.Complete(ctx, req.prompt, req.policy)

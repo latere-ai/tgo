@@ -65,7 +65,10 @@ type Option func(*options) error
 // WithConcurrency sets how many sessions may exist at once.
 //
 // [WithKVBudget] is the same number arrived at from memory, which is the
-// quantity that actually bounds it.
+// quantity that actually bounds it for an engine that allocates per request.
+// For a pooled engine ([WrapPool]) the bound is already a count -- the pool's
+// size -- so pass that here, and [New] refuses a larger one
+// (specs/019-session-affinity.md §4).
 func WithConcurrency(n int) Option {
 	return func(o *options) error {
 		if n < 1 {
@@ -85,6 +88,11 @@ func WithConcurrency(n int) Option {
 //
 // and a budget that does not hold one session is an error at startup rather
 // than an out-of-memory error under load.
+//
+// It is for an engine that allocates a session per request ([Wrap]). A pooled
+// engine reserved its sessions already, so what bounds it is how many it
+// reserved and not what the device has left; use [WithConcurrency] with the
+// pool's size.
 func WithKVBudget(bytes int64) Option {
 	return func(o *options) error {
 		if bytes <= 0 {

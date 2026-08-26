@@ -22,6 +22,15 @@ import (
 // converts a load problem into an out-of-memory one (009-D3). A full queue
 // answers 429 with Retry-After rather than growing.
 //
+// A pooled engine ([WrapPool]) arrives at the same number from the other end.
+// Its N sessions are reserved at startup rather than admitted against, so N is
+// the concurrency, and [WithConcurrency] states it instead of dividing memory
+// twice (specs/019-session-affinity.md §4). It must not be larger than the
+// pool. A larger one still bounds the waiters and still answers 429 behind
+// them, but the surplus waits inside the engine for a free session, where this
+// queue neither counts it nor times it out -- so the Retry-After stops
+// describing what that request waits. [New] refuses it.
+//
 // Without batching this buys no throughput and does not pretend to: concurrent
 // requests interleave at submission granularity and the total is what one
 // sequence gets. What it buys is that the twenty-first caller is told to come

@@ -61,6 +61,7 @@ func adapt(d ir.Dialect, req *ir.Request, ex extras, raw map[string]bool, eng En
 		spec: SessionSpec{
 			Tools:    mapTools(req.Tools),
 			Thinking: !ex.thinkingOff,
+			Key:      ex.cacheSalt,
 			Recorder: nil, // set by the handler, which owns the metrics
 		},
 		policy: pol,

@@ -53,6 +53,19 @@ var honoured = map[string][]string{
 	"Schema":            {"response_format", "output_format", "text"},
 }
 
+// honouredSession are the wire names that configure the *session* rather than
+// the sampler, so they are honoured without being
+// [github.com/latere-ai/tgo.Policy] fields and cannot go in [honoured], whose
+// invariant is that its keys are exactly Policy's.
+//
+// One entry. cache_salt bounds which pooled session a request may be routed to
+// (specs/019-session-affinity.md 019-D3) and reaches no Policy field at all, so
+// a caller who sends it and is told it was dropped would think their cache is
+// shared with everybody when it is isolated. It is honoured on every route,
+// because [parseExtras] reads it from the raw body and does not know which
+// dialect sent it.
+var honouredSession = map[string]bool{"cache_salt": true}
+
 // honouredWire is honoured flattened: every wire name some dialect applies.
 var honouredWire = func() map[string]bool {
 	m := map[string]bool{}
@@ -143,7 +156,7 @@ func lossReport(d ir.Dialect, req *ir.Request, raw map[string]bool) []string {
 	honours := honouredOn[d]
 	var out ir.Loss
 	for _, f := range req.Loss.Fields() {
-		if honours[string(f)] {
+		if honours[string(f)] || honouredSession[string(f)] {
 			continue
 		}
 		out.Add(f)
