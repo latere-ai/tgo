@@ -964,10 +964,15 @@ func TestServeRefusesANegativeSessionCount(t *testing.T) {
 func TestServePassesThePrefixCacheFlagToTheLoader(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
-		want bool
+		want tgo.CacheScope
 	}{
-		{nil, false},
-		{[]string{"--prefix-cache"}, true},
+		{nil, tgo.CacheOff},
+		// Bare, which has to keep meaning the session scope and has to not
+		// swallow the model directory after it.
+		{[]string{"--prefix-cache"}, tgo.CacheSession},
+		{[]string{"--prefix-cache=off"}, tgo.CacheOff},
+		{[]string{"--prefix-cache=session"}, tgo.CacheSession},
+		{[]string{"--prefix-cache=process"}, tgo.CacheProcess},
 	} {
 		o, err := parseServe(append(append([]string(nil), tc.args...), "models/x"))
 		if err != nil {
@@ -977,6 +982,15 @@ func TestServePassesThePrefixCacheFlagToTheLoader(t *testing.T) {
 			t.Errorf("parseServe(%v).Engine.PrefixCache = %v, want %v",
 				tc.args, o.Engine.PrefixCache, tc.want)
 		}
+		if tc.args != nil && o.Dir != "models/x" {
+			t.Errorf("parseServe(%v).Dir = %q; the bare flag swallowed the model "+
+				"directory", tc.args, o.Dir)
+		}
+	}
+	if _, err := parseServe([]string{"--prefix-cache=everything", "models/x"}); err == nil {
+		t.Error("an unknown scope was accepted")
+	} else if !strings.Contains(err.Error(), "off, session or process") {
+		t.Errorf("the refusal does not name the scopes: %v", err)
 	}
 }
 

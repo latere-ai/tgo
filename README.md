@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/go-1.27+-00ADD8.svg" alt="Go 1.27+">
   <img src="https://img.shields.io/badge/cgo-free-success.svg" alt="cgo-free">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
-  <img src="https://img.shields.io/badge/status-design-orange.svg" alt="Status: design">
+  <img src="https://img.shields.io/badge/status-early-orange.svg" alt="Status: early">
 </p>
 
 ---
@@ -23,11 +23,11 @@ program.
 > on Apple silicon today — about 18 tokens a second on a 0.6B model, with a
 > 170ms wait for the first one.
 >
-> Two caveats worth knowing before you plan around it. Without a GPU it is very
-> slow, because the compute layer below runs work one piece at a time. And
-> concurrent requests interleave rather than run together, so the total
-> throughput is what one conversation gets: it is not a server for many users
-> yet. [`docs/orientation.md`](docs/orientation.md) explains what runs where.
+> One caveat worth knowing before you plan around it. Concurrent requests
+> interleave rather than run in one step, so the total throughput is close to
+> what one conversation gets: it holds many conversations at once and does not
+> yet batch them into a single forward pass.
+> [`docs/orientation.md`](docs/orientation.md) explains what runs where.
 
 ## Why you might want it
 
@@ -61,7 +61,7 @@ on Apple silicon.
 | **Devices** | Metal on Apple silicon, and CPU everywhere. Use a GPU if you have one: the CPU path works and is currently far slower |
 | **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
 | **Serving** | streaming, logprobs, seeded reproducible output, and JSON-schema output that parses every time |
-| **Reuse** | a conversation's next turn prefills only what is new, on the server as well as in the library, with a `cache_salt` to bound who shares with whom |
+| **Reuse** | a conversation's next turn prefills only what is new, and with `--prefix-cache process` two conversations sharing a system prompt prefill it once between them; `cache_salt` bounds who shares with whom |
 | **As a library** | open a model, hold a conversation, stream tokens, and reuse the prompt a conversation has already paid for |
 
 Continuous batching — running many conversations in one step, which is where a
@@ -102,10 +102,13 @@ tgo serve ./Qwen3-0.6B       # then serve it
 It answers OpenAI Chat Completions, Anthropic Messages and OpenAI Responses on
 the same model, streaming, so most clients work unchanged.
 
-`--sessions N` sets how many conversations it holds at once, and `--prefix-cache`
-lets a conversation's next turn skip the transcript it already paid for. Both
-cost memory that is reserved at startup and held for the life of the process;
-`tgo serve` prints the arithmetic before it listens.
+`--sessions N` sets how many conversations it holds at once, and
+`--prefix-cache` lets a conversation's next turn skip the transcript it already
+paid for. `--prefix-cache process` goes further and shares that state *between*
+conversations, so a fleet of agents on one system prompt pays for it once — for
+the same memory, because the pool replaces the per-session caches rather than
+adding to them. Both cost memory that is reserved at startup and held for the
+life of the process; `tgo serve` prints the arithmetic before it listens.
 [Session pooling](docs/orientation.md#session-pooling-and-what-it-costs) has the
 numbers.
 

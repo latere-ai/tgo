@@ -307,6 +307,12 @@ func (l *Lease) generate(ctx context.Context, ids []int, p Policy) (*Stream, err
 	// the next reader, and [Session.Chat] on a pooled session would use them.
 	s.thinking, s.tools = l.req.Thinking, l.req.Tools
 	s.rec = l.req.Recorder
+	// The same key bounds both mechanisms. It decides which session this
+	// request may be routed to (019-D3) and, under a process-scoped block
+	// pool, which blocks it may match -- and they have to be the same string
+	// or a request excluded from a session's history would reach the same
+	// tokens through the pool a layer down.
+	s.salt = l.req.Key
 	if err := s.usable(); err != nil {
 		return nil, err
 	}

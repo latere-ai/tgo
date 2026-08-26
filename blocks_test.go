@@ -247,3 +247,45 @@ func TestAnUnsizedPageTableIsRefused(t *testing.T) {
 		t.Fatalf("the refusal does not name the binding: %v", err)
 	}
 }
+
+// TestAPooledRequestCarriesItsKeyIntoTheBlockPool: 019's affinity key and 016's
+// block salt are the same string, and this is why they have to be.
+//
+// The pool routes a request only to a session whose last request carried the
+// same key, and a request that matched nothing gets a session emptied of its
+// history. That bounds what one request can see of another *through a session*.
+// A process-scoped block pool is a second way to see it, one layer down, so a
+// key that stopped at the session boundary would exclude a request from a
+// conversation's history and hand it the same tokens through the blocks.
+func TestAPooledRequestCarriesItsKeyIntoTheBlockPool(t *testing.T) {
+	t.Parallel()
+	m := sharedModel(t)
+	p, err := m.NewPool(2)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := p.Close(); err != nil {
+			t.Errorf("Pool.Close: %v", err)
+		}
+	})
+
+	l, err := p.Acquire(context.Background(), PoolRequest{Key: "tenant-a"})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	st, err := l.generate(context.Background(), promptIDs(1, 40), greedy(2))
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	got := l.e.s.salt
+	for st.Next() {
+	}
+	l.Release()
+
+	if got != "tenant-a" {
+		t.Fatalf("the session's block salt is %q and the request's key is %q; the two "+
+			"bound the same thing and a request excluded from a session's history "+
+			"would reach the same tokens through the pool", got, "tenant-a")
+	}
+}

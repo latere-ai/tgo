@@ -87,15 +87,25 @@ func serveFlagSet() (*flag.FlagSet, *serveFlags) {
 		sessions: fs.Int("sessions", 0,
 			"pooled sessions, which is the concurrency and the reuse depth "+
 				"(0 takes 4, or fewer if the device holds fewer)"),
-		prefixCache: fs.Bool("prefix-cache", false,
-			"reuse the key/value state a conversation already paid for, which changes what an answer costs and, slightly, what it says"),
+		prefixCache: registerScope(fs),
 	}
+}
+
+// registerScope declares --prefix-cache on fs and returns the value it writes.
+func registerScope(fs *flag.FlagSet) *scopeFlag {
+	v := &scopeFlag{}
+	fs.Var(v, "prefix-cache",
+		"off, session or process: reuse the key/value state a conversation already "+
+			"paid for, which changes what an answer costs and, slightly, what it says "+
+			"(bare --prefix-cache is session)")
+	return v
 }
 
 // serveFlags holds `tgo serve`'s flag values.
 type serveFlags struct {
 	addr, precision, device *string
-	public, prefixCache     *bool
+	public                  *bool
+	prefixCache             *scopeFlag
 	context, sessions       *int
 }
 
@@ -138,7 +148,7 @@ func parseServe(args []string) (serveOptions, error) {
 	return serveOptions{
 		Dir: dir, Addr: addr, Name: modelID(dir), Public: *f.public, Sessions: *f.sessions,
 		Engine: engineOptions{Precision: policy, Context: *f.context, Device: dev,
-			PrefixCache: *f.prefixCache},
+			PrefixCache: f.prefixCache.scope, Sessions: *f.sessions},
 	}, nil
 }
 
@@ -227,13 +237,27 @@ var openServable = func(dir, name string, o engineOptions) (servable, error) {
 		tgo.WithContext(o.Context),
 		tgo.WithDevice(o.Device),
 	}
-	if o.PrefixCache {
-		// Scoped to the session, which is the only scope tgo can honour: the
-		// process scope needs a page table specs/004-model-graph.md §3 declares
-		// no port for. The budget is the whole context, because a pooled
-		// session's history is its own and there is nothing else to spend it
-		// on.
+	switch o.PrefixCache {
+	case tgo.CacheSession:
+		// The budget is the whole context, because a pooled session's history
+		// is its own and there is nothing else to spend it on.
 		opts = append(opts, tgo.WithPrefixCache(tgo.CacheSession, o.Context))
+	case tgo.CacheProcess:
+		// One pool of exactly what the per-session caches would have cost, so
+		// the sharing is free in memory and the admission arithmetic below is
+		// unchanged: sessions x context positions, held once instead of once
+		// each.
+		//
+		// The session count is the operator's, or the default, and is resolved
+		// here rather than from the admission below because the pool is
+		// allocated while the model loads and the admission needs the loaded
+		// weights. Where the two disagree the admission is the one that
+		// reports it, in --sessions and --context terms.
+		sessions := o.Sessions
+		if sessions == 0 {
+			sessions = defaultSessions
+		}
+		opts = append(opts, tgo.WithPrefixCache(tgo.CacheProcess, sessions*o.Context))
 	}
 	m, err := tgo.Open(dir, opts...)
 	if err != nil {
@@ -521,11 +545,16 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 // request gets in distribution rather than bit for bit (016-D6). Off, every
 // request prefills its whole prompt and two identical requests give identical
 // answers.
-func prefixCacheLine(on bool) string {
-	if on {
+func prefixCacheLine(scope tgo.CacheScope) string {
+	switch scope {
+	case tgo.CacheSession:
 		return "on, scoped to one pooled session; a turn prefills only what is new, and a " +
 			"warm\n                    answer matches a cold one in distribution rather than " +
 			"bit for bit"
+	case tgo.CacheProcess:
+		return "on, shared across every session; two conversations with the same system\n" +
+			"                    prompt prefill it once between them, and a request's " +
+			"cache_salt is what\n                    keeps tenants apart"
 	}
 	return "off; every request prefills its whole prompt. --prefix-cache reuses what a\n" +
 		"                    conversation already paid for, which is the reason to pool " +

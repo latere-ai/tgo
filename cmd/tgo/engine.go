@@ -120,7 +120,13 @@ type engineOptions struct {
 	// associative, so a warm answer equals a cold one in distribution rather
 	// than bit for bit (016-D6). Only `tgo serve` reads it, because only a
 	// pooled session sees a second turn (019 §1).
-	PrefixCache bool
+	PrefixCache tgo.CacheScope
+
+	// Sessions is how many pooled sessions the server will hold, or zero for
+	// the default. It is here rather than only on serveOptions because the
+	// process-scoped block pool is sized from it and is allocated while the
+	// model loads.
+	Sessions int
 
 	// Recorder instruments the engine's decode loop, which is where the
 	// host/submit/device/readback breakdown comes from.
