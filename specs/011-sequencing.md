@@ -242,6 +242,59 @@ different lengths matching two single runs exactly. What remains open is
 narrower — no sampling operator at the tensor layer, no batched *prefill*, and
 GGUF — and none of it blocks a milestone.
 
+### 2026-08-26 — Wave 7: the server reuses a conversation's prefix
+
+[019](019-session-affinity.md), and it closes what Wave 6 opened: the prefix
+cache worked and `tgo serve` could not reach it, because `generate.go` opened
+one session per request and closed it on the way out.
+
+`Model.NewPool(n)` holds N sessions' key/value cache for the process's life and
+routes a request to the session already holding the longest matching prefix.
+**It needs nothing from accel.** The refusal `CacheProcess` returns names a
+missing page table, and that is the blocker for block-level sharing, not for
+cross-request reuse: a session's cache is contiguous and single-owner, so a
+row's index is its position. What 016 §4's pool would add over this is dedup
+across *different* conversations, which affinity cannot do at any size.
+
+**Measured, through the recorder rather than a clock.** Two turns of one
+conversation, pool of two, 80-position context, greedy:
+
+| | prompt | prefilled | prefill steps |
+| --- | --- | --- | --- |
+| turn 1 | 18 | 18 | 1 |
+| turn 2 | 32 | **9** | 1 |
+| turn 2, on a pool that never saw turn 1 | 32 | 32 | 1 |
+
+The cold row is what makes 9 a number rather than a small integer. The 23
+positions skipped are turn 1's 18-token prompt and the 5 tokens it generated.
+
+**Three mutants survived the first suite**, all of them missing tests rather
+than defects, and two are worth recording:
+
+- **The unkeyed direction of the fail-closed rule.** Letting an unkeyed request
+  match a *keyed* session passed everything. The table test established the
+  unkeyed conversation first, so its later request always had its own session to
+  hit and read the same reuse count either way. This is the security direction:
+  a probe with no `cache_salt` could measure whether a salted caller's prompt
+  exists.
+- **The history truncation**, which no request can observe. `reusable` takes
+  `min(s.length, len(s.history), ...)`, so a history longer than the length is
+  invisible to routing; it reaches the sampler's repetition penalties instead.
+  It needed a postcondition test that desynchronises the two the one way a
+  caller cannot.
+
+**A rule paid for twice.** The race step timed out on ubuntu and windows and
+named a test that was not at fault -- `go test` reports whichever test was
+running when the clock ran out. The root package runs a forward pass on the CPU
+and the race detector costs about an order of magnitude on that arithmetic: 362s
+wall but 1297s of CPU, so a runner with fewer, slower cores goes past the
+ten-minute default. CONTRIBUTING now says to measure CPU time, because the wall
+clock is what made it look green locally.
+
+**Remaining**: [008](008-scheduler.md) continuous batching, which is the one
+that turns "several conversations at once" into "several conversations in one
+step", and [§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
+
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
 
 `internal/grammar` shipped with 97.8% coverage and **no caller**, which the

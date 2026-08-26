@@ -94,10 +94,16 @@ teaches nobody why the obvious thing was not done.
 
 ## Where the work stands
 
-**M0 is done: the tree, the gates, and CI green on both workflows.** No product
-code exists yet. [011 §2](011-sequencing.md) is the order, [011 §2.1](011-sequencing.md)
-is what is gated upstream, and [011 §4](011-sequencing.md) is where outcomes are
-recorded as they land.
+**tgo serves.** Seventeen packages, a CLI, and three wire dialects over one
+model: a checkpoint is fetched, loaded, rendered, tokenized, run, sampled and
+streamed, with schema-constrained output and prefix reuse across the turns of a
+conversation. [011 §2](011-sequencing.md) is the order,
+[011 §2.1](011-sequencing.md) is what is gated upstream, and
+[011 §4](011-sequencing.md) is where outcomes are recorded as they land.
+
+What it is not yet is a server for many users: requests interleave rather than
+run in one step, so total throughput is what one conversation gets. That is
+[008](008-scheduler.md), and it waits on a batched prefill.
 
 The one thing to know before reading further: **nothing is blocked upstream any
 more.** accel closed thirteen of the sixteen gaps tgo filed, including the two
@@ -105,9 +111,14 @@ that decided the shape of this tree — a KV cache capped at 128 positions, and 
 missing batch axis that left [008](008-scheduler.md) blocked from the day it was
 written.
 
-What is still open is narrower: no sampling operator at the tensor layer, no
-batched *prefill*, a bf16 GEMM, and GGUF's K-quants. None of it blocks a
-milestone. [010 §2](010-conformance.md) is the register and
+What is still open is narrower: a batched *prefill* ([C16](010-conformance.md)),
+a bf16 GEMM ([C7](010-conformance.md), narrowed to the GEMM alone), a decode
+step whose submit cost is amortised ([C20](010-conformance.md)), GGUF's K-quants
+([C17](010-conformance.md), not planned upstream), and **4-bit weights**
+([C21](010-conformance.md)). The last one does block a target: at int8 a 27B
+model is 25.1 GiB and does not fit a 24 GiB device, which is a second blocker on
+Qwen3.8-27B independent of its linear attention.
+[010 §2](010-conformance.md) is the register and
 [010 §2.2](010-conformance.md) is the audit behind those states.
 
 ## The one thing to understand before contributing
