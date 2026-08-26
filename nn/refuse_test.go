@@ -22,7 +22,7 @@ type parts struct {
 	x                       *tensor.Tensor
 	w                       nn.AttentionWeights
 	k, v                    *tensor.State
-	posQ, posK, slots, lens *tensor.Tensor
+	posQ, posK, slots, lens, pages *tensor.Tensor
 	cfg                     nn.AttentionConfig
 }
 
@@ -62,7 +62,7 @@ func newParts(t *testing.T) *parts {
 }
 
 func (p *parts) record() *tensor.Tensor {
-	return nn.Attention(p.r.g, p.x, p.w, p.k, p.v, p.posQ, p.posK, p.slots, p.lens, p.cfg)
+	return nn.Attention(p.r.g, p.x, p.w, p.k, p.v, p.posQ, p.posK, p.slots, p.lens, p.pages, p.cfg)
 }
 
 // One position per row, not per token. A positions tensor built per token has
@@ -152,4 +152,25 @@ func countDiagnostics(t *testing.T, err, needle string) int {
 		}
 	}
 	return n
+}
+
+// A page table and a block size are one binding in two values, so half of it is
+// a refusal in both directions.
+//
+// accel refuses a table with no block, because a table addresses blocks and how
+// big one is is not derivable from its shape. The other direction is the one
+// accel cannot see: a block size with no table is a perfectly valid contiguous
+// read, so it compiles, runs, and quietly ignores the paging the caller thought
+// it had configured.
+func TestAPageTableAndABlockSizeAreOneBinding(t *testing.T) {
+	t.Run("a table with no block size", func(t *testing.T) {
+		p := newParts(t)
+		p.pages = p.r.input("pages", accel.U32, tensor.Shape{1, attCap / 4})
+		p.r.refuses(p.record(), "set together or neither is")
+	})
+	t.Run("a block size with no table", func(t *testing.T) {
+		p := newParts(t)
+		p.cfg.Block = 4
+		p.r.refuses(p.record(), "set together or neither is")
+	})
 }

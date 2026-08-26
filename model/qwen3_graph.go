@@ -63,6 +63,7 @@ func (m *qwen3) Forward(g *nn.Graph, in Inputs) *tensor.Tensor {
 	cfg := nn.AttentionConfig{
 		QHeads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim,
 		RoPEBase: ScalarRoPEBase, ScaleName: ScalarScale, BaseName: in.Base,
+		Block: in.Block,
 		// Qwen3's one departure from Llama: Q and K are normalized per head,
 		// over head_dim, before RoPE (§2.4).
 		QKNorm: true,
@@ -85,7 +86,7 @@ func (m *qwen3) Forward(g *nn.Graph, in Inputs) *tensor.Tensor {
 				KNorm: g.Gain("knorm", c.HeadDim),
 			},
 			tensor.LayerState(b, in.Keys, l), tensor.LayerState(b, in.Values, l),
-			in.PosQ, in.PosK, in.Slots, in.Lengths, cfg)
+			in.PosQ, in.PosK, in.Slots, in.Lengths, in.Pages, cfg)
 
 		// Row 19, then rows 20 to 24, then row 25.
 		h = tensor.Add(b, h, a)

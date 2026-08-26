@@ -286,7 +286,7 @@ func attentionRig(t *testing.T, first, tokens int, positions []int, cacheK, cach
 	r.f32("k", k0)
 	r.f32("v", v0)
 
-	out := nn.Attention(r.g, in, w, kc, vc, pq, pk, sl, ln, nn.AttentionConfig{
+	out := nn.Attention(r.g, in, w, kc, vc, pq, pk, sl, ln, nil, nn.AttentionConfig{
 		QHeads: attQHeads, KVHeads: attKVHeads, HeadDim: attHeadDim,
 		RoPEBase: "rope_base", ScaleName: "scale", BaseName: "base", QKNorm: true,
 	})

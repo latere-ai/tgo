@@ -34,6 +34,14 @@ type AttentionConfig struct {
 	// the cache. It decides what the causal mask hides. Required when more
 	// than one token is scored; unread at T=1, which is a decode.
 	BaseName string
+
+	// Block is how many positions one physical block holds, and zero means the
+	// cache is contiguous.
+	//
+	// It travels with the page table and never without it: accel refuses a
+	// table with no block size, because a table addresses blocks and how big
+	// one is is not derivable from the table's shape.
+	Block int
 }
 
 // Attention is grouped-query attention with Qwen3's QK-norm and RoPE.
@@ -72,8 +80,20 @@ type AttentionConfig struct {
 // and this block does not record: a [tensor.State] does not report its dtype,
 // so nn cannot tell which case it is in.
 func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
-	k, v *tensor.State, posQ, posK, slots, lengths *tensor.Tensor,
+	k, v *tensor.State, posQ, posK, slots, lengths, pages *tensor.Tensor,
 	cfg AttentionConfig) *tensor.Tensor {
+
+	// The page table and the block size are one binding in two values, so a
+	// caller that supplied one of them supplied half a cache addressing and
+	// the other half is whatever the zero value happens to be. accel refuses
+	// a table with no block; this refuses the other direction too, because a
+	// block size with no table is silently a contiguous read.
+	if (pages == nil) != (cfg.Block == 0) {
+		return g.fail("Attention", "the page table is %v and Block is %d; a table "+
+			"addresses blocks and a block size without one addresses nothing, so "+
+			"they are set together or neither is (specs/005-kv-cache.md §2.2)",
+			pages != nil, cfg.Block)
+	}
 
 	t, _, ok := rows(x)
 	if !ok {
@@ -152,6 +172,8 @@ func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
 	shaped := tensor.Reshape(g.B, qh, tensor.Shape{t, cfg.QHeads, cfg.HeadDim})
 	opts := tensor.AttentionOptions{
 		Lengths:   lengths,
+		Pages:     pages,
+		Block:     cfg.Block,
 		ScaleName: cfg.ScaleName,
 		BaseName:  cfg.BaseName,
 	}

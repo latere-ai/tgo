@@ -94,7 +94,7 @@ func TestOneBlockAtACheckpointsShapes(t *testing.T) {
 	r.f32("k", make([]float32, capacity*cfg.KVHeads*cfg.HeadDim))
 	r.f32("v", make([]float32, capacity*cfg.KVHeads*cfg.HeadDim))
 
-	h := nn.Attention(r.g, x, w, kc, vc, posQ, posK, slots, lengths, nn.AttentionConfig{
+	h := nn.Attention(r.g, x, w, kc, vc, posQ, posK, slots, lengths, nil, nn.AttentionConfig{
 		QHeads: cfg.Heads, KVHeads: cfg.KVHeads, HeadDim: cfg.HeadDim,
 		// BaseName is named and no scalar is declared for it: this is one
 		// token, so the block drops it. A prefill here would need the

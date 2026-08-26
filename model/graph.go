@@ -38,6 +38,16 @@ const (
 	// PortLengths is how much of the cache holds real tokens, [1] u32.
 	PortLengths = "lengths"
 
+	// PortPages is the page table, [1, MaxPages] u32: entry [0][i] is the
+	// physical block holding this sequence's i-th logical block.
+	//
+	// Declared only when [GraphSpec.Block] is set. A contiguous cache is the
+	// same thing with an identity table and a block of one, and accel says so
+	// -- but the indirection is a real cost in the innermost loop of decode,
+	// so a session that shares nothing does not pay it and does not declare
+	// this port.
+	PortPages = "pages"
+
 	// PortKeys and PortValues are the two cache states, [L, C, H_kv, d_h]
 	// each: one allocation per role for the whole model, sliced per layer
 	// (specs/005-kv-cache.md §2.1).
@@ -99,6 +109,16 @@ type GraphSpec struct {
 	// (specs/005-kv-cache.md §3).
 	Cache accel.DType
 
+	// Block is how many positions one physical block holds, and zero means
+	// the cache is contiguous.
+	//
+	// It is a graph parameter and not a step one because accel folds it into
+	// the plan's attributes: two block sizes are two plans, the same way two
+	// token counts are. Capacity must be a whole number of blocks, so that a
+	// page table addresses exactly the cache that exists rather than a prefix
+	// of it.
+	Block int
+
 	// Stored reports how the loader stored the weight of a given full port
 	// name, [accel.F16] or [accel.I8]. A nil func means every weight is f16.
 	Stored func(name string) accel.DType
@@ -116,6 +136,14 @@ type Inputs struct {
 	// Keys and Values are the two cache states, whole: [L, C, H_kv, d_h].
 	// [Builder.Forward] takes each layer's window with [tensor.LayerState].
 	Keys, Values *tensor.State
+
+	// Pages is the page table port, or nil when the cache is contiguous.
+	Pages *tensor.Tensor
+
+	// Block mirrors [GraphSpec.Block] so that [Builder.Forward] has both
+	// halves of the paged binding from one value. A table with no block size
+	// addresses nothing, and accel refuses the pair split apart.
+	Block int
 
 	// Base is the name of the prefill's first-position scalar, and is empty on
 	// a decode step. It is carried rather than assumed so that a hand-built
@@ -147,6 +175,15 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 		Slots:   input(b, PortSlots, accel.U32, s.Tokens),
 		Lengths: input(b, PortLengths, accel.U32, 1),
 	}
+	if s.Block > 0 {
+		in.Block = s.Block
+		// One row, because one graph records one sequence. The batch axis is
+		// what specs/008-scheduler.md widens, and it widens this port from
+		// [1, MaxPages] to [batch, MaxPages] without changing what an entry
+		// means.
+		in.Pages = tensor.Input(b, tensor.ValueDesc{Name: PortPages, DType: accel.U32,
+			Shape: tensor.Shape{1, s.Capacity / s.Block}})
+	}
 	shape := tensor.Shape{c.NumLayers, s.Capacity, c.NumKVHeads, c.HeadDim}
 	in.Keys = tensor.NewState(b, tensor.StateDesc{Name: PortKeys, DType: s.Cache, Shape: shape})
 	in.Values = tensor.NewState(b, tensor.StateDesc{Name: PortValues, DType: s.Cache, Shape: shape})
@@ -158,6 +195,46 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 		in.Base = ScalarBase
 	}
 	return in, nil
+}
+
+// NewPagedStep is [NewStep] over a cache addressed through a page table.
+//
+// The positions are unchanged -- a token's rotary position is where it sits in
+// the *sequence*, and paging moves where its key and value are *stored*. Only
+// the slots differ, and they differ by exactly one indirection: logical
+// position p lives at row pages[p/Block]*Block + p%Block
+// (specs/005-kv-cache.md §2.2).
+//
+// The table is the sequence's own row and not the pool: a table of n entries
+// addresses n*Block positions, and a position past that is a step the caller
+// has not allocated blocks for. Refusing it here is the difference between a
+// diagnostic and a write into whatever block sits after this sequence's last
+// one -- which is another sequence's cache, and which reads back as a fluent
+// answer to somebody else's prompt.
+func NewPagedStep(c *Config, first, tokens int, pages []int, block int) (Step, error) {
+	s, err := NewStep(c, first, tokens)
+	if err != nil {
+		return Step{}, err
+	}
+	if block <= 0 {
+		return Step{}, fmt.Errorf("model: NewPagedStep: block is %d; it is positions "+
+			"per block and a paged step has at least one", block)
+	}
+	if need := (first + tokens + block - 1) / block; need > len(pages) {
+		return Step{}, fmt.Errorf("model: NewPagedStep: %d positions over blocks of "+
+			"%d need %d page table entries and the table has %d; the missing blocks "+
+			"are ones nothing has allocated", first+tokens, block, need, len(pages))
+	}
+	for i := range s.Slots {
+		p := first + i
+		b := pages[p/block]
+		if b < 0 {
+			return Step{}, fmt.Errorf("model: NewPagedStep: page table entry %d is %d; "+
+				"a physical block is an index", p/block, b)
+		}
+		s.Slots[i] = uint32(b*block + p%block)
+	}
+	return s, nil
 }
 
 // input declares one u32 vector port.
@@ -174,6 +251,15 @@ func input(b *tensor.Builder, name string, dt accel.DType, n int) *tensor.Tensor
 func (s GraphSpec) check() error {
 	if s.Tokens <= 0 {
 		return fmt.Errorf("model: Tokens is %d; a step scores at least one token", s.Tokens)
+	}
+	if s.Block < 0 {
+		return fmt.Errorf("model: Block is %d; it is positions per block, and zero "+
+			"is a contiguous cache", s.Block)
+	}
+	if s.Block > 0 && s.Capacity%s.Block != 0 {
+		return fmt.Errorf("model: Capacity is %d over blocks of %d; a page table "+
+			"addresses whole blocks, so a capacity that is not a multiple of the "+
+			"block size names positions no entry reaches", s.Capacity, s.Block)
 	}
 	if s.Capacity <= 0 {
 		return fmt.Errorf("model: Capacity is %d; a cache holds at least one position",
@@ -316,9 +402,8 @@ type Step struct {
 // NewStep builds the position data for tokens at consecutive positions
 // first..first+tokens-1 of a contiguous cache.
 //
-// Contiguous, so a token's slot is its position: the paged case maps a logical
-// position through a page table (specs/005-kv-cache.md §2.2) and binds
-// AttentionOptions.Pages, which this graph does not record.
+// Contiguous, so a token's slot is its position. [NewPagedStep] is the same
+// step over a cache addressed through a page table.
 func NewStep(c *Config, first, tokens int) (Step, error) {
 	if c == nil {
 		return Step{}, fmt.Errorf("model: NewStep: the config is nil")
