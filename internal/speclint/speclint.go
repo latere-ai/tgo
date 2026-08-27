@@ -30,7 +30,7 @@ import (
 var Status = map[string]bool{
 	"drafted": true, "validated": true, "dispatched": true,
 	"implemented": true, "complete": true,
-	"blocked": true, "deferred": true, "living": true, "normative": true,
+	"blocked": true, "deferred": true, "record": true,
 }
 
 // Layer is the tier a spec belongs to.
@@ -38,15 +38,20 @@ var Layer = map[string]bool{
 	"load": true, "text": true, "graph": true, "engine": true, "api": true, "all": true,
 }
 
-// noRecord are the specs exempt from carrying a decision record. 000 *is* the
-// decision record for the whole project, and 011 records outcomes rather than
-// decisions.
+// noRecord are the files exempt from carrying a decision record, and from the
+// Outcome rule with it. 000 *is* the decision record for the whole project, and
+// 011 records what happened rather than what was decided.
+//
+// They are exactly the files at `status: record`, and the check reads the
+// status rather than this list wherever it can — a second list of names is a
+// second thing to keep in step. The list stays because Load must skip a
+// malformed file's frontmatter before any status is known.
 var noRecord = map[string]bool{"000-decisions.md": true, "011-sequencing.md": true}
 
-// notSpec are the markdown files in specs/ that are not specs. README.md is the
-// index and ROADMAP.md is the order the index does not carry; neither states a
-// decision, so neither takes frontmatter.
-var notSpec = map[string]bool{"README.md": true, "ROADMAP.md": true}
+// notSpec is the markdown in specs/ that is not a spec at all. Only the index,
+// which carries the tree, the workflow and the order all three in one file:
+// a second file restating any of them is a second thing to keep true.
+var notSpec = map[string]bool{"README.md": true}
 
 // Spec is one parsed spec file.
 type Spec struct {

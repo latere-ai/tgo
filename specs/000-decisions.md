@@ -1,6 +1,6 @@
 ---
 title: "The decisions everything else is built on"
-status: normative
+status: record
 layer: all
 depends_on: []
 ---

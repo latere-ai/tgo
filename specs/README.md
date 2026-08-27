@@ -35,8 +35,14 @@ flowchart LR
 | `complete` | the same, and nothing in the spec's own scope is open |
 | `blocked` | correct as written, unbuildable now; `blocked_on` says what by |
 | `deferred` | deliberately not now; the trigger to revisit is stated |
-| `living` | edited after its subject ships; only [011](011-sequencing.md) |
-| `normative` | binds everything else; only [000](000-decisions.md) |
+| `record` | not a spec, so not on the lifecycle: [000](000-decisions.md) and [011](011-sequencing.md) |
+
+`record` was two statuses until 2026-08-27 — `normative` for 000 and `living`
+for 011 — which is two categories with one member each, both saying the same
+thing: this file states no design, so the lifecycle does not apply to it. 000
+records the decisions and 011 records what happened. `internal/speclint` already
+exempted both by name from the decision-record and Outcome rules; the status now
+says why instead of leaving the reason in the linter.
 
 **A status past `dispatched` is checked, not asserted.** `internal/speclint`
 requires an `## Outcome` section on every `implemented` or `complete` spec, and
@@ -113,36 +119,37 @@ teaches nobody why the obvious thing was not done.
 ## The tree
 
 Every status below was checked against the code on 2026-08-27, spec by spec and
-section by section. [ROADMAP.md](ROADMAP.md) is what remains, in the order to do
-it in.
+section by section. The `what remains` column is the spec's own `**Not built.**`
+paragraph in one line — so it has one source, not two, and a `complete` row has
+nothing there by definition.
 
-**What is built.** The subject of each of these has shipped; the Outcome section
-in each says where the code is, what diverged, and what is still open.
+**What is built.** The subject of each has shipped; its Outcome section says
+where the code is, what diverged, and what is open.
 
-| spec | status | what it owns |
-| --- | --- | --- |
-| [000](000-decisions.md) | normative | the thirteen decisions everything is built on |
-| [001](001-weights.md) | implemented | safetensors, dtype conversion, transposition, quantization policy |
-| [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode |
-| [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn |
-| [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass |
-| [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs |
-| [006](006-sampling.md) | implemented | composition order, and reproducibility as a stream |
-| [007](007-engine.md) | complete | sessions, plans, buckets, the decode loop |
-| [008](008-scheduler.md) | complete | continuous batching: slots, admission, eviction, chunked prefill |
-| [009](009-server.md) | implemented | three wire dialects over one neutral request |
-| [010](010-conformance.md) | implemented | **what tgo proves about accel**, and the register of gaps |
-| [011](011-sequencing.md) | living | build order, what landed, and where a measurement is recorded |
-| [013](013-distribution.md) | complete | fetching checkpoints, and the cache |
-| [015](015-structured-output.md) | implemented | schema-constrained decoding |
-| [016](016-prefix-cache.md) | implemented | reusing the KV of a prompt somebody already paid for |
-| [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly |
-| [018](018-hybrid-models.md) | implemented | the two linear-attention blocks, and the index of what a hybrid still needs |
-| [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions |
+| spec | status | what it owns | what remains |
+| --- | --- | --- | --- |
+| [000](000-decisions.md) | record | the thirteen decisions everything is built on | — |
+| [001](001-weights.md) | implemented | safetensors, dtype conversion, transposition, quantization policy | no `Auto`→`Int4` load test; §5.4's bound check is test-time only |
+| [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode | reference id vectors, which need a machine with huggingface `tokenizers` |
+| [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn | **003-D2 has no code path**: nothing reads a checkpoint's `chat_template` |
+| [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass | — |
+| [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs | `cacheBytes` drops the width term, so `Info` reports f32 for an f16 pool; two §7 tests |
+| [006](006-sampling.md) | implemented | composition order, and reproducibility as a stream | **top-*k* selects on logits** where accel selects on softmax weights |
+| [007](007-engine.md) | complete | sessions, plans, buckets, the decode loop | — |
+| [008](008-scheduler.md) | complete | continuous batching: slots, admission, eviction, chunked prefill | — |
+| [009](009-server.md) | implemented | three wire dialects over one neutral request | `logprobs` reported as a loss rather than served; 009-D14's footprint gate |
+| [010](010-conformance.md) | implemented | **what tgo proves about accel**, and the register of gaps | §3's five measurements are named and none is run |
+| [011](011-sequencing.md) | record | build order, what landed, and where a measurement goes | — |
+| [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
+| [015](015-structured-output.md) | implemented | schema-constrained decoding | `json_object` is accepted and reaches no grammar |
+| [016](016-prefix-cache.md) | implemented | reusing the KV of a prompt somebody already paid for | a partial hit's attention at a nonzero base is untested against the oracle |
+| [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly | the recorder drops its oldest steps and reports quantiles anyway |
+| [018](018-hybrid-models.md) | implemented | the two linear-attention blocks, and what a hybrid still needs | the graph: 023–026 below |
+| [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
 
 **What is next.** Ten specs written on 2026-08-27, each scoped to be finished in
-one pass. Six of them are the residue of a spec above that was scoped too large:
-008 shed three, 018 shed four, 017 shed two, 015 shed one.
+one pass. Six are the residue of a spec above that was scoped too large: 008 shed
+three, 018 shed four, 017 shed two, 015 shed one.
 
 | spec | status | what it owns | from |
 | --- | --- | --- | --- |
@@ -157,6 +164,12 @@ one pass. Six of them are the residue of a spec above that was scoped too large:
 | [028](028-performance-gate.md) | drafted | a build that loses throughput fails like one that loses a test | 017 |
 | [029](029-grammar-front-ends.md) | drafted | EBNF and regex over the machine the schema path already built | 015 |
 
+**Three of the ten judged themselves too large** and named their own passes:
+[022](022-batched-serving.md) §14 and [024](024-qwen3-5-architecture.md) §11 each
+cut into three, and [029](029-grammar-front-ends.md) defers regex to a spec after
+it. Disclosed rather than split again, because the sub-scopes share one design.
+Read those sections first: a *large* below is one spec, not one sitting.
+
 **What is waiting.**
 
 | spec | status | what it owns |
@@ -164,75 +177,160 @@ one pass. Six of them are the residue of a spec above that was scoped too large:
 | [012](012-gguf.md) | **blocked** | GGUF, and the kernel accel must register first |
 | [014](014-jinja.md) | deferred | a Jinja subset, and when it becomes right |
 
+## What to build next
 
-## Where the work stands
+Ordered, with what blocks what. Sizes are effort, not importance.
 
-**tgo serves.** Seventeen packages, a CLI, and three wire dialects over one
-model: a checkpoint is fetched, loaded, rendered, tokenized, run, sampled and
-streamed, with schema-constrained output and prefix reuse across the turns of a
-conversation. [011 §2](011-sequencing.md) is the order,
-[011 §2.1](011-sequencing.md) is what is gated upstream, and
-[011 §4](011-sequencing.md) is where a measurement is recorded once it is taken.
+### Qwen3-4B dense
 
-**The engine batches.** `Model.NewScheduler` puts a chunked prefill and the
-decodes beside it in one dispatch, so the weights are read once for all of them
-— [008 §8](008-scheduler.md) is what shipped.
+The code runs. What is left is two defects, proof, and throughput.
 
-What is not yet true is that `tgo serve` uses it: the server pools sessions, and
-a scheduler over a batch is what replaces them. Three specs now carry that,
-in order: [020](020-device-sampling.md) is where sampling runs, which is a
-measurement with a decision attached rather than a detail;
-[021](021-admission-queue.md) is the queue in front of admission, which
-[008-D9](008-scheduler.md) first assigned to [019](019-session-affinity.md)'s
-`Pool` and 021-D1 relocates with the reason; [022](022-batched-serving.md) is
-the server change itself.
+**Correctness** — both blocked by nothing, both one file and one test:
 
-**Twelve specs were `drafted` while their subject shipped**, and the tree said
-so on 2026-08-27 rather than earlier because nothing checked it. Every status
-above is now audited against the code and re-checked by `internal/speclint` on
-each build, and the [lifecycle](#the-lifecycle) rule that separates the two
-built statuses came out of that audit: four readers of one spec split two
-against two on whether it was `implemented` or `complete`, because the tree
-offered a preference where it owed them a rule.
+1. **Fix top-*k*.** Select on the softmax weights, matching accel's
+   `(value, index)` tie rule. Reachable at the deep tail, which is where a
+   *k* = 128 boundary over a 152k vocabulary sits.
+   [020](020-device-sampling.md) needs the host path right before it can be the
+   oracle.
+2. **Build 003-D2's warning.** Read `chat_template` from the checkpoint, hash
+   it, warn naming both checksums, render anyway. Also closes
+   [014](014-jinja.md) §1's second trigger, which is undetectable without it.
 
-**A spec that keeps accumulating open work was scoped too large.** Four of the
-specs above shed theirs into the ten at 020 and higher rather than growing a
-longer list, which is what makes `complete` reachable and what
-[ROADMAP.md](ROADMAP.md) orders.
+**Proof:**
 
-The one thing to know before reading further: **nothing in this tree is blocked
-upstream, and one row of the register is open.** Every issue tgo filed is
-closed, and [010 §2.2.0](010-conformance.md) is the re-audit that says which of
-those closures are capabilities — because on 2026-08-24 accel closed ten issues
-and four of the capabilities were still absent.
+3. **Tier-3 run on a real Qwen3-4B checkpoint**: [010](010-conformance.md) §3's
+   five numbers, recorded in [011](011-sequencing.md) §4. *Large*, blocked on a
+   4B checkpoint on disk. The one on hand is 0.6B, which proves the loader and
+   the graph and not the footprint.
+4. **CPU/Metal greedy divergence**: first differing token index and the logit
+   gap. *Medium*, blocked on a Metal device in the loop;
+   `internal/conformance/measure.go` is otherwise ready.
 
-The one open row is GGUF's K-quant super-blocks
-([C17](010-conformance.md)), which accel closed *as not planned* and recorded in
-its kernel corpus instead. tgo accepted that: a corpus row carrying the layout
-and both workarounds is a better record than an issue with no plan.
+**Throughput.** This is the sequence that makes a busy server faster than an
+idle one, and today `server/` imports no `Scheduler`:
 
-**A closure can move work rather than finish it, and the register does not
-carry the half that moves.** [C21](010-conformance.md), 4-bit weights, closed
-because accel represents and multiplies them — and `weights.Precision` named
-only f16 and int8, so a 27B checkpoint was still 26.7 GiB here. That was
-[001](001-weights.md)'s work and not accel's; it shipped the same day, and a
-27B checkpoint is **13.4 GiB**. What is left of
-[018](018-hybrid-models.md) is the same shape: unblocked upstream, and the graph
-is 018's to write.
+5. **Measure the batched sampling path** and choose the design. *Medium*,
+   blocked by nothing — C3 and C6 are closed, so the device path exists to
+   measure against.
+6. **Device-side sampling** ([020](020-device-sampling.md)). *Large*, blocked on
+   5 and on 1.
+7. **The admission queue** ([021](021-admission-queue.md)). *Medium*, blocked by
+   nothing and independent of 5 and 6, so it can run in parallel.
+8. **The server drives the scheduler** ([022](022-batched-serving.md)). *Large*,
+   blocked on 6 and 7.
+9. **Instrument the batched path** ([027](027-batched-benchmarks.md)), then the
+   **performance gate** ([028](028-performance-gate.md)), which needs a baseline
+   worth committing.
+10. **The vLLM and sglang comparison** under [010](010-conformance.md) §3.1's six
+    rules. *Large*, blocked on 8 and on 017 §4.1's own argument that the row is
+    not worth running before the served path batches.
 
-**Three rows closed on the same lesson**, which is the one worth carrying out of
-this tree. [C5](010-conformance.md) closed on "`ScatterRows`, prefill and paged
-decode all take f16" — three true statements. The *combination* then failed
-twice more: at the ragged kernel ([C22](010-conformance.md)) and at the paged
-prefill ([C24](010-conformance.md)), where the width and the paging selected
-separately and the paging won. A capability claim over three operators is three
-claims, and closing it on the conjunction is what a row is for.
+```mermaid
+flowchart LR
+  K["1 fix top-k"] --> S["6 020 device sampling"]
+  M["5 measure sampling"] --> S
+  Q["7 021 admission queue"] --> V["8 022 batched serving"]
+  S --> V
+  V --> B["9 027 + 028 bench and gate"]
+  V --> C["10 vLLM comparison"]
+```
 
-[C7](010-conformance.md), the bf16 GEMM, turned out never to have been one. tgo
-widens bf16 to f32 at load with a shift — exact, free, once — so a bf16 GEMM
-would only let it hold bf16 on the device, which costs what f16 costs.
-[010 §2](010-conformance.md) is the register and
-[010 §2.2](010-conformance.md) is the audit behind those states.
+### Qwen3.8-27B hybrid
+
+int4 storage shipped, so the footprint is 13.4 GiB, and `nn.LinearAttention` and
+`nn.DepthwiseCausalConv` both exist with value tests that pass. Most of what is
+left is a graph tgo has not written.
+
+**One upstream question comes first.** Writing
+[024](024-qwen3-5-architecture.md) found that accel's `tensor.LinearAttention`
+takes one gate per token with no head axis, while a gated delta network gives
+each value head its own decay. accel refuses the per-head shape rather than
+broadcasting it, which is the good answer — but it means the layer is
+inexpressible if the checkpoint is what it appears to be. Settle it against a
+real `config.json` before starting item 2: a day at the front, a rewrite at the
+end.
+
+1. **A rotary width below `head_dim`, and the output gate.** `nn.Attention`
+   passes `cfg.HeadDim` as the rotary width, so `partial_rotary_factor` is
+   inexpressible for the sixteen full-attention layers, and there is no
+   `attn_output_gate`. Both are `nn` changes
+   [024](024-qwen3-5-architecture.md) owns and does first. *Small.*
+2. **Cache kinds per layer type** ([023](023-cache-kinds.md)). *Large*, blocks
+   3, 4 and 5. It carries the slots axis the convolution state does not have:
+   single-sequence 27B does not need it and **serving** 27B does.
+3. **The `qwen3_5` architecture** ([024](024-qwen3-5-architecture.md)). *Large*,
+   blocked on 1 and 2. Nothing in `model/` reads `layer_types` today.
+4. **Snapshot and restore** ([025](025-recurrent-snapshot.md)). *Medium*,
+   blocked on 2. Without it a hybrid gets no prefix reuse on three layers in
+   four.
+5. **Image tokens on the text path** ([026](026-image-tokens.md)). *Medium*,
+   blocked on 3.
+6. **Tier-3 27B run.** *Large*, blocked on 3 and on a 50 GiB download: 001
+   quantizes from full precision at load, so the 4-bit files the ecosystem
+   publishes stay unreadable until the AWQ/GPTQ reader below exists.
+
+```mermaid
+flowchart LR
+  G["settle the per-head gate"] --> K["2 023 cache kinds"]
+  R["1 rotary width, output gate"] --> A["3 024 qwen3_5 graph"]
+  K --> A
+  K --> N["4 025 snapshot/restore"]
+  A --> I["5 026 image tokens"]
+  A --> T["6 tier-3 27B run"]
+```
+
+### Not specced, and why
+
+Each is a real gap with no spec. Writing one before something depends on it is
+how a tree fills with `drafted` files nobody checks, which is the drift this
+section exists to avoid repeating. They are listed so the absence is a decision.
+
+**AWQ and GPTQ checkpoints.** Group 128 with a zero point, which is exactly the
+shape `quant.Int4Group` and `Int4Quantize` have, so this is a reader and a plane
+layout rather than a kernel. It removes "fetch 50 GiB to produce 13.4" for the
+27B target, which makes it the first of these that should become a spec.
+Distinct from [012](012-gguf.md), which stays blocked on a different shape: a
+Q4_K super-block is two levels of scale over eight sub-blocks with a minimum
+each.
+
+**`rope_scaling`: YaRN.** [004](004-model-graph.md) §7 refuses any scaling it
+does not implement, which is the right refusal and caps tgo at a checkpoint's
+trained context.
+
+**Speculative decoding.** The standard 2–3× decode win, and
+[017](017-benchmarks.md) §4.1 measures decode at 94.62% device time, which is
+the shape speculation attacks. Needs [020](020-device-sampling.md) and
+[022](022-batched-serving.md) first: a rejected suffix unwinds both the KV cache
+and the sampler's history.
+
+**Embeddings and pooling.** `/v1/embeddings`, a pooling strategy, and an
+encoder-shaped graph with no cache. A large share of what inference servers
+serve, and tgo has none of it.
+
+**LoRA adapters.** [016](016-prefix-cache.md) §10.3 records that an adapter must
+reach the prefix cache key, which is what makes this more than a weight sum. It
+should be written `deferred` with its trigger, the way [014](014-jinja.md) is.
+
+**Multi-device.** A permanent scope boundary rather than unwritten work. It
+belongs in [000](000-decisions.md) as a decision with its rejected alternative,
+not as a spec that would never be built.
+
+### One lesson worth carrying out of the register
+
+**A capability claim over three operators is three claims.**
+[C5](010-conformance.md) closed on "`ScatterRows`, prefill and paged decode all
+take f16" — three true statements. The *combination* then failed twice more: at
+the ragged kernel ([C22](010-conformance.md)) and at the paged prefill
+([C24](010-conformance.md)), where the width and the paging selected separately
+and the paging won. Closing a row on the conjunction is what a row is for.
+
+The corollary is that **a closure can move work rather than finish it**.
+[C21](010-conformance.md), 4-bit weights, closed because accel represents and
+multiplies them — and `weights.Precision` named only f16 and int8, so a 27B
+checkpoint was still 26.7 GiB here. That half was [001](001-weights.md)'s and
+shipped the same day. [010 §2](010-conformance.md) is the register and
+[010 §2.2](010-conformance.md) is the audit behind its states.
+
 
 ## The one thing to understand before contributing
 

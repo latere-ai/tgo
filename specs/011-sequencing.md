@@ -1,6 +1,6 @@
 ---
 title: "Sequencing: the order the work is done in, and what actually landed"
-status: living
+status: record
 layer: all
 depends_on:
   - 000-decisions.md

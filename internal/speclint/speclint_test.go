@@ -199,8 +199,8 @@ func TestDecisionRecordsAreChecked(t *testing.T) {
 	}
 	// 000 and 011 are exempt by name, and must stay exempt.
 	if bad := CheckDecisionRecords([]Spec{
-		spec(t, "000-decisions.md", "title: D\nstatus: normative\nlayer: all", "no record"),
-		spec(t, "011-sequencing.md", "title: S\nstatus: living\nlayer: all", "no record"),
+		spec(t, "000-decisions.md", "title: D\nstatus: record\nlayer: all", "no record"),
+		spec(t, "011-sequencing.md", "title: S\nstatus: record\nlayer: all", "no record"),
 	}); len(bad) != 0 {
 		t.Fatalf("an exempt spec was flagged: %v", bad)
 	}
@@ -239,8 +239,8 @@ func TestAClaimedOutcomeIsChecked(t *testing.T) {
 		spec(t, "013-distribution.md", "title: E\nstatus: complete\nlayer: all",
 			record+closed),
 		// The two exempt by name keep their exemption.
-		spec(t, "000-decisions.md", "title: F\nstatus: normative\nlayer: all", "x"),
-		spec(t, "011-sequencing.md", "title: G\nstatus: living\nlayer: all", "x"),
+		spec(t, "000-decisions.md", "title: F\nstatus: record\nlayer: all", "x"),
+		spec(t, "011-sequencing.md", "title: G\nstatus: record\nlayer: all", "x"),
 	}, seq); len(bad) != 0 {
 		t.Fatalf("a spec that is allowed to be silent was flagged: %v", bad)
 	}
