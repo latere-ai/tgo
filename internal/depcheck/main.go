@@ -41,9 +41,11 @@ import (
 // failure without any new dependency. What is gated is which *modules* are
 // reachable, which is the thing 009 §2's argument is about.
 //
-// accel is not listed for the engine because 000-D1 makes tgo accel's consumer:
-// every package here reaches it by construction, and a gate that restates the
-// project's premise checks nothing.
+// accel is listed even though 000-D1 makes reaching it the project's premise.
+// The list is exhaustive rather than interesting: an entry left out because
+// everybody knows about it is an entry the test below cannot tell from an entry
+// nobody decided on, and the gate's answer is which modules are reachable, not
+// which ones are news.
 var gated = map[string][]entry{
 	// Import paths rather than ./relative ones. `go list` resolves a relative
 	// path against its own working directory, so a gate written that way
