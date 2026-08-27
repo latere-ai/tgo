@@ -300,6 +300,14 @@ tree existing.
 
 **What diverged** from the design, and why the code is right:
 
+- **§3's width term reached `cacheBytes` on 2026-08-27**, and until then did
+  not. The function hardcoded f32 while `cmd/tgo`'s `kvBytesPerPosition` took a
+  dtype and priced it correctly, so under `--prefix-cache process` the library
+  reported twice what the f16 pool costs and the command line reported the
+  truth — two numbers for one quantity, neither obviously the wrong one. It now
+  takes the width, chosen by the scope the way `Session.cacheDType` chooses it,
+  and is table-tested against the same worked example §3 states.
+
 - **§3's arithmetic is implemented twice and only the CLI copy takes $w$.**
   `cmd/tgo/info.go:286` is the version §3 describes; `model.go:504` hardcodes
   `const f32 = 4`. The split is not right, and it is the open item below.
@@ -327,12 +335,7 @@ The nearest test is `engine_test.go:116`, and its positive control at
 rows were written" is proved for layer 0 alone — the fix is one term in that
 index and belongs with the new test. §7's stale-version test: reading a `State`
 version `ScatterRows` has superseded must be refused, and nothing here asserts it
-although §1.1's whole no-hand-ordering argument rests on it. §3's width term in
-`cacheBytes` (`model.go:504`), which hardcodes f32 and feeds
-`Info.CacheBytesPerSession`, so a session bound to the f16 pool is reported at
-twice the memory it spends; it wants `cacheBytes(cfg, capacity, dtype)` fed from
-`Session.cacheDType`, table-tested the way `kvBytesPerPosition` already is.
-Deciding where §7's capacity refusal lives: today the number-carrying refusal is
+although §1.1's whole no-hand-ordering argument rests on it. Deciding where §7's capacity refusal lives: today the number-carrying refusal is
 the server's, in `kvAdmission` (`cmd/tgo/serve.go:329`), and the library's is
 `ErrContextExhausted` at request admission — either move that arithmetic behind
 `NewSession` or amend §7 and the decision record to say the server owns it. Documenting the

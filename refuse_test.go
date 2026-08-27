@@ -115,7 +115,7 @@ func TestInfoReportsWhatWasResolved(t *testing.T) {
 		VocabSize: synthVocab, TrainedContext: 4096, Context: DefaultContext,
 		Device: CPU, Precision: F16,
 		WeightBytes:          got.WeightBytes,
-		CacheBytesPerSession: cacheBytes(m.cfg, DefaultContext),
+		CacheBytesPerSession: cacheBytes(m.cfg, DefaultContext, accel.F32),
 	}
 	if got != want {
 		t.Errorf("Info() =\n  %+v\nwant\n  %+v", got, want)
@@ -788,5 +788,52 @@ func TestGainsAreF32BecauseTheGraphDeclaresThemSo(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Error("the decode plan declares no norm gain ports")
+	}
+}
+
+// TestCacheBytesCarriesTheWidth is specs/005-kv-cache.md §3's arithmetic on the
+// library side, against the same worked example cmd/tgo's TestKVCacheArithmetic
+// uses: a Qwen3-4B shape, L=36, H_kv=8, d_h=128, is 2·36·8·128 = 73728 elements
+// per position — 288 KB in f32 and 144 KB in f16.
+//
+// The width was a `const f32 = 4` here until 2026-08-27, so under
+// --prefix-cache process, where the shared pool is f16, Info.CacheBytesPerSession
+// and the startup cost print both reported twice what the cache costs. The
+// command line already had the width and priced it correctly, which is what
+// made the two disagree without either being obviously wrong.
+func TestCacheBytesCarriesTheWidth(t *testing.T) {
+	c := &model.Config{NumLayers: 36, NumKVHeads: 8, HeadDim: 128}
+	for _, tc := range []struct {
+		dt   accel.DType
+		want int64
+	}{
+		{accel.F32, 288 * 1024},
+		{accel.F16, 144 * 1024},
+	} {
+		if got := cacheBytes(c, 1, tc.dt); got != tc.want {
+			t.Errorf("cacheBytes at %v = %d, want %d", tc.dt, got, tc.want)
+		}
+	}
+
+	// The scope is what picks the width, because it is what picks the pool: a
+	// shared pool is f16 (blocks.go) and a session's own contiguous cache is
+	// f32. Getting this backwards is how the number went wrong.
+	for scope, want := range map[CacheScope]accel.DType{
+		CacheOff:     accel.F32,
+		CacheSession: accel.F32,
+		CacheProcess: accel.F16,
+	} {
+		if got := cacheDType(scope); got != want {
+			t.Errorf("cacheDType(%v) = %v, want %v", scope, got, want)
+		}
+	}
+
+	// And the two halves agree: a process-scoped model reports half what an
+	// unscoped one does for the same context.
+	shared := cacheBytes(c, 4096, cacheDType(CacheProcess))
+	own := cacheBytes(c, 4096, cacheDType(CacheOff))
+	if shared*2 != own {
+		t.Errorf("process scope reports %d and no scope reports %d; the pool is "+
+			"half the width, so the first must be half the second", shared, own)
 	}
 }

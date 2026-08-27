@@ -208,12 +208,13 @@ func Open(dir string, opts ...Option) (*Model, error) {
 	// 005-D3: the number before the allocation, not after the failure. A
 	// session's cache is the largest thing a request costs, and a caller who
 	// raised the capacity is the one who wants to know.
-	perSession := cacheBytes(cfg, o.context)
+	cacheWidth := cacheDType(o.cacheScope)
+	perSession := cacheBytes(cfg, o.context, cacheWidth)
 	if o.context > DefaultContext {
 		fmt.Fprintf(os.Stderr, "tgo: a %d-position context costs %s of key/value cache "+
 			"per session (%d layers x %d positions x %d kv heads x %d head dim x 2 states "+
-			"x 4 bytes)\n", o.context, bytesText(perSession), cfg.NumLayers, o.context,
-			cfg.NumKVHeads, cfg.HeadDim)
+			"x %d bytes)\n", o.context, bytesText(perSession), cfg.NumLayers, o.context,
+			cfg.NumKVHeads, cfg.HeadDim, cacheWidth.Size())
 	}
 
 	dev, resolved, err := openDevice(o.device)
@@ -504,10 +505,25 @@ func bindBuffer(into map[string]accel.BufferView, name string, buf *accel.Buffer
 //
 // A function rather than a comment, because a memory model nobody executes is a
 // comment (005 §7).
-func cacheBytes(c *model.Config, capacity int) int64 {
-	const f32 = 4
+func cacheBytes(c *model.Config, capacity int, dt accel.DType) int64 {
 	return 2 * int64(c.NumLayers) * int64(capacity) * int64(c.NumKVHeads) *
-		int64(c.HeadDim) * f32
+		int64(c.HeadDim) * int64(dt.Size())
+}
+
+// cacheDType is the width a session's key and value states are held at, decided
+// by the scope the way [Session.cacheDType] decides it per session.
+//
+// A shared pool is f16 (blocks.go), and a session with its own contiguous cache
+// is f32. The width is half of specs/005-kv-cache.md §3's arithmetic, and
+// cacheBytes hardcoded 4 until 2026-08-27 — so under --prefix-cache process,
+// Info.CacheBytesPerSession and the startup cost print both said twice what the
+// cache actually costs. A memory number that a caller sizes a machine with is
+// the last place to be conservative-by-accident.
+func cacheDType(scope CacheScope) accel.DType {
+	if scope == CacheProcess {
+		return accel.F16
+	}
+	return accel.F32
 }
 
 // bytesText renders a byte count the way a person reads one.
