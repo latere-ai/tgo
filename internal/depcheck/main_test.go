@@ -19,9 +19,9 @@ func TestTheGateFailsOnAModuleNobodyAllowed(t *testing.T) {
 	// exact shape of an upstream import arriving on a `go get`.
 	allow := without(gated[serverPkg], "latere.ai/x/pkg/llmdialect")
 
-	unexpected, _, err := check(serverPkg, allow)
+	unexpected, _, err := checkAll(serverPkg, allow)
 	if err != nil {
-		t.Fatalf("check: %v", err)
+		t.Fatalf("checkAll: %v", err)
 	}
 	if len(unexpected) == 0 {
 		t.Fatal("dropping llmdialect from the allowed set left the gate green; " +
@@ -48,23 +48,29 @@ func TestTheGateFailsOnAModuleNobodyAllowed(t *testing.T) {
 
 // TestTheShippedListIsTheOneTheBuildNeeds runs the gate as CI runs it. It fails
 // when a dependency lands and nobody decided on it, and equally when the list
-// keeps a prefix the build no longer reaches -- a stale allowance is a hole
+// keeps a prefix no platform's build reaches -- a stale allowance is a hole
 // nobody notices, because it can only ever make the gate greener.
+//
+// "No platform" and not "this platform" is the correction the first CI run
+// forced: purego is in the build on darwin, where accel loads Metal, and not on
+// linux, so a host-only check called a live allowance stale and would have
+// called a linux-only dependency absent.
 func TestTheShippedListIsTheOneTheBuildNeeds(t *testing.T) {
 	var out, errw strings.Builder
 	if code := run(gated, true, &out, &errw); code != 0 {
 		t.Errorf("exit code %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errw.String())
 	}
 	for pkg, allow := range gated {
-		_, matched, err := check(pkg, allow)
+		_, matched, err := checkAll(pkg, allow)
 		if err != nil {
-			t.Fatalf("check %s: %v", pkg, err)
+			t.Fatalf("checkAll %s: %v", pkg, err)
 		}
 		for _, e := range allow {
-			if !matched[e.prefix] {
-				t.Errorf("%s does not reach %s; the allowance is stale, and a "+
-					"prefix the build never uses can only hide a module that "+
-					"later appears under it", short(pkg), e.prefix)
+			if matched[e.prefix] == "" {
+				t.Errorf("%s reaches %s on none of the %d platforms; the "+
+					"allowance is stale, and a prefix no build uses can only "+
+					"hide a module that later appears under it",
+					short(pkg), e.prefix, len(platforms))
 			}
 			// -v prints a matched prefix with the reason someone wrote for it,
 			// which is the half of the report that says why the cost is worth

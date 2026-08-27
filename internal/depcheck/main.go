@@ -15,6 +15,13 @@
 // rather than on go.mod, because a module graph says what could be reached and
 // this says what is.
 //
+// It is asked once per GOOS/GOARCH tgo supports, and the answer is the union.
+// A build list is platform-dependent -- purego is in the build on darwin, where
+// accel loads Metal, and not on linux -- so a gate that asks the host is a gate
+// that sees whatever the developer happens to be running. A linux-only
+// dependency would have reached CI unremarked, and the first run of this on
+// linux said as much.
+//
 //	go run ./internal/depcheck
 //
 // It is a command rather than only a test because the thing being gated is the
@@ -55,8 +62,20 @@ var gated = map[string][]entry{
 		{"golang.design/x/accel", "the compute layer; 000 D1 makes every package here reach it"},
 		{"golang.org/x/text", "Unicode normalisation for the tokenizer, 002-D10"},
 		{"latere.ai/x/pkg/llmdialect", "the three wire dialects, 009-D10; this is the one 009-D14 exists to watch"},
-		{"github.com/ebitengine/purego", "accel's cgo-free dynamic loading, reached through accel"},
+		{"github.com/ebitengine/purego", "accel's cgo-free dynamic loading of Metal, reached through accel on darwin only"},
 	},
+}
+
+// platforms are the GOOS/GOARCH pairs the build list is taken on.
+//
+// The same set .github/workflows/ci.yml cross-compiles, for the same reason:
+// what tgo claims to build for is what has to be checked. Asking `go list` is
+// far cheaper than building, so the whole set is affordable here.
+var platforms = [...]struct{ goos, goarch string }{
+	{"linux", "amd64"}, {"linux", "arm64"}, {"linux", "arm"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+	{"freebsd", "amd64"}, {"openbsd", "amd64"}, {"netbsd", "amd64"},
 }
 
 // entry is one allowed module prefix and why it is allowed.
@@ -94,20 +113,21 @@ func run(gates map[string][]entry, verbose bool, out, errw io.Writer) int {
 
 	failed := false
 	for _, pkg := range pkgs {
-		unexpected, matched, err := check(pkg, gates[pkg])
+		unexpected, matched, err := checkAll(pkg, gates[pkg])
 		if err != nil {
 			fmt.Fprintf(errw, "depcheck: %v\n", err)
 			return 2
 		}
 		if verbose {
 			for _, e := range gates[pkg] {
-				if matched[e.prefix] {
-					fmt.Fprintf(out, "       %s -- %s\n", e.prefix, e.why)
+				if where := matched[e.prefix]; where != "" {
+					fmt.Fprintf(out, "       %s -- %s [%s]\n", e.prefix, e.why, where)
 				}
 			}
 		}
 		if len(unexpected) == 0 {
-			fmt.Fprintf(out, "ok   %s reaches only what 009-D14 allows\n", short(pkg))
+			fmt.Fprintf(out, "ok   %s reaches only what 009-D14 allows, on %d platforms\n",
+				short(pkg), len(platforms))
 			continue
 		}
 		failed = true
@@ -126,24 +146,52 @@ func run(gates map[string][]entry, verbose bool, out, errw io.Writer) int {
 	return 0
 }
 
-// check returns the modules pkg's build reaches that no entry allows, and the
-// set of entries that admitted something.
+// checkAll takes the build list on every platform and returns the union.
 //
-// The second return is what lets the test find a stale allowance. A prefix that
-// admits nothing is not an error the build can hit today, so the command only
-// prints it under -v, but it is a hole: it will silently admit whatever module
-// later appears under that path.
-func check(pkg string, allow []entry) (unexpected []string, matched map[string]bool, err error) {
+// unexpected names the platform each module appeared on, because a dependency
+// that arrives only on one is the case a host-only check misses, and saying
+// which one is the difference between a report and a puzzle. matched maps an
+// allowed prefix to the first platform that reached it, so a prefix reached
+// nowhere is distinguishable from one reached somewhere.
+func checkAll(pkg string, allow []entry) (unexpected []string, matched map[string]string, err error) {
+	matched = map[string]string{}
+	seen := map[string]bool{}
+	for _, p := range platforms {
+		where := p.goos + "/" + p.goarch
+		got, hit, err := check(pkg, allow, p.goos, p.goarch)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, prefix := range hit {
+			if matched[prefix] == "" {
+				matched[prefix] = where
+			}
+		}
+		for _, u := range got {
+			if !seen[u] {
+				seen[u] = true
+				unexpected = append(unexpected, u+" (on "+where+")")
+			}
+		}
+	}
+	sort.Strings(unexpected)
+	return unexpected, matched, nil
+}
+
+// check returns the modules pkg's build reaches on one platform that no entry
+// allows, and the prefixes that admitted something.
+func check(pkg string, allow []entry, goos, goarch string) (unexpected, matched []string, err error) {
 	cmd := exec.Command("go", "list", "-deps", pkg)
+	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, nil, fmt.Errorf("go list -deps %s: %w: %s", pkg, err,
-			strings.TrimSpace(stderr.String()))
+		return nil, nil, fmt.Errorf("go list -deps %s on %s/%s: %w: %s", pkg, goos, goarch,
+			err, strings.TrimSpace(stderr.String()))
 	}
 
-	matched = map[string]bool{}
+	hit := map[string]bool{}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		p := strings.TrimSpace(line)
@@ -151,7 +199,10 @@ func check(pkg string, allow []entry) (unexpected []string, matched map[string]b
 			continue
 		}
 		if prefix := allowed(p, allow); prefix != "" {
-			matched[prefix] = true
+			if !hit[prefix] {
+				hit[prefix] = true
+				matched = append(matched, prefix)
+			}
 			continue
 		}
 		if !seen[p] {
@@ -160,6 +211,7 @@ func check(pkg string, allow []entry) (unexpected []string, matched map[string]b
 		}
 	}
 	sort.Strings(unexpected)
+	sort.Strings(matched)
 	return unexpected, matched, nil
 }
 
