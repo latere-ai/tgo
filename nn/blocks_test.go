@@ -198,20 +198,60 @@ func TestSwiGLUMLPGatesTheUpProjectionAndProjectsBack(t *testing.T) {
 	closeTo(t, got, want, 1e-5, "swiglu mlp")
 }
 
-func TestAnOperandCarriesOneFormOrTheOther(t *testing.T) {
+func TestAnOperandCarriesExactlyOneForm(t *testing.T) {
 	r := newRig(t, 1e-6)
 	x := r.input("x", accel.F32, tensor.Shape{1, 3})
-	r.refuses(nn.Linear(r.g, x, nn.Operand{}), "neither a dense plane nor a complete")
+	r.refuses(nn.Linear(r.g, x, nn.Operand{}), "an int8 pair, or an int4 triple")
 }
 
-func TestAHalfQuantizedOperandIsRefused(t *testing.T) {
-	r := newRig(t, 1e-6)
-	x := r.input("x", accel.F32, tensor.Shape{1, 3})
-	quants := tensor.Weight(r.g.B, tensor.ValueDesc{
-		Name: "q", DType: accel.I8, Shape: tensor.Shape{3, 4},
-	})
-	r.refuses(nn.Linear(r.g, x, nn.Operand{Quant: tensor.Quantized{Quants: quants}}),
-		"neither a dense plane nor a complete")
+// TestAHalfBuiltOperandIsRefused covers every incomplete form, and the third
+// one is why the check is worth having.
+//
+// A code plane bound against another matrix's metadata compiles, runs, and
+// produces noise -- which is what bundling the planes into one struct is meant
+// to prevent, and what a caller assembling one by hand can still get wrong.
+func TestAHalfBuiltOperandIsRefused(t *testing.T) {
+	plane := func(r *rig, name string, dt accel.DType, shape tensor.Shape) *tensor.Tensor {
+		return tensor.Weight(r.g.B, tensor.ValueDesc{Name: name, DType: dt, Shape: shape})
+	}
+	for _, c := range []struct {
+		name string
+		of   func(*rig) nn.Operand
+	}{
+		{"int8 quants with no scales", func(r *rig) nn.Operand {
+			return nn.Operand{Quant: tensor.Quantized{
+				Quants: plane(r, "q", accel.I8, tensor.Shape{3, 4})}}
+		}},
+		{"int4 codes with no scales or zeros", func(r *rig) nn.Operand {
+			return nn.Operand{Packed: tensor.Int4{
+				Codes: plane(r, "c", accel.U32, tensor.Shape{2}), Weights: 12}}
+		}},
+		{"int4 with no zero plane", func(r *rig) nn.Operand {
+			return nn.Operand{Packed: tensor.Int4{
+				Codes:  plane(r, "c", accel.U32, tensor.Shape{2}),
+				Scales: plane(r, "s", accel.F16, tensor.Shape{1}), Weights: 12}}
+		}},
+		{"int4 that declares no weight count", func(r *rig) nn.Operand {
+			return nn.Operand{Packed: tensor.Int4{
+				Codes:  plane(r, "c", accel.U32, tensor.Shape{2}),
+				Scales: plane(r, "s", accel.F16, tensor.Shape{1}),
+				Zeros:  plane(r, "z", accel.F16, tensor.Shape{1})}}
+		}},
+		{"two forms at once", func(r *rig) nn.Operand {
+			return nn.Operand{
+				Dense: plane(r, "d", accel.F16, tensor.Shape{3, 4}),
+				Quant: tensor.Quantized{
+					Quants: plane(r, "q", accel.I8, tensor.Shape{3, 4}),
+					Scales: plane(r, "qs", accel.F16, tensor.Shape{1})},
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t, 1e-6)
+			x := r.input("x", accel.F32, tensor.Shape{1, 3})
+			r.refuses(nn.Linear(r.g, x, c.of(r)), "exactly one of them")
+		})
+	}
 }
 
 func TestAWeightPortNeedsAPositiveExtent(t *testing.T) {

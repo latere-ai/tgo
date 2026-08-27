@@ -94,6 +94,17 @@ copying. A list that puts a one-second check behind a nine-minute one is a list
 whose tail gets run and whose head gets skipped, and `gofmt` sat fifth here
 until it failed a build that every other gate had passed.
 
+**Read the exit status, not the output.** `go test ./... | grep FAIL` is a
+pipeline whose result is `grep`'s, so a run that was killed by a timeout, or
+that crashed before reaching the failing package, prints nothing and reads as
+green. That has cost a red build: two `nn` tests pinning a diagnostic string
+went out under a `timeout 700 go test ./... | grep ...` that never got as far as
+`nn`. If you filter the output, check `$?` of the *test* and not of the filter:
+
+```sh
+go test ./... > /tmp/t.log; echo "exit=$?"; grep -E "^(FAIL|--- FAIL)" /tmp/t.log
+```
+
 ```sh
 gofmt -l .
 go build ./...
