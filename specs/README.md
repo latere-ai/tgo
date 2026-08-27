@@ -141,7 +141,7 @@ where the code is, what diverged, and what is open.
 | [010](010-conformance.md) | implemented | **what tgo proves about accel**, and the register of gaps | §3's five measurements are named and none is run |
 | [011](011-sequencing.md) | record | build order, what landed, and where a measurement goes | — |
 | [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
-| [015](015-structured-output.md) | implemented | schema-constrained decoding | `json_object` is accepted and reaches no grammar |
+| [015](015-structured-output.md) | complete | schema-constrained decoding | — |
 | [016](016-prefix-cache.md) | complete | reusing the KV of a prompt somebody already paid for | — |
 | [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly | 017-D5's batch curve, and the vLLM row 011 M13 gates |
 | [018](018-hybrid-models.md) | implemented | the two linear-attention blocks, and what a hybrid still needs | the graph: 023–026 below |

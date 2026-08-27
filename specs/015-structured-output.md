@@ -1,6 +1,6 @@
 ---
 title: "Structured output: a schema compiled to a per-step token mask"
-status: implemented
+status: complete
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -24,6 +24,15 @@ construction** and a retry loop is unnecessary.
 Formally, with $G$ a grammar and $y_{<t}$ the tokens so far:
 
 $$p'(v \mid y_{<t}) \propto p(v \mid y_{<t}) \cdot \mathbb{1}\!\left[y_{<t} v \text{ is a viable prefix of } G\right]$$
+
+**"Parses" is the guarantee, and it is not "fits in your struct".** $G$ admits
+every JSON number RFC 8259 admits, and RFC 8259 bounds no magnitude — a bound is
+spelled `minimum` or `maximum` in JSON Schema, and [§4.1](#41-what-the-language-narrows-and-the-one-thing-it-does-not)
+says why those are refused rather than compiled. So `1e999` is admissible: valid
+JSON that `json.Valid` accepts and that a Go consumer decoding into a `float64`
+field cannot hold. A caller who needs a magnitude bound checks it after
+decoding, and the property test decodes with `UseNumber` for exactly this reason
+(`internal/grammar/property_test.go:208`).
 
 ## 2. The hard part
 
@@ -58,6 +67,30 @@ and comes second. Regex is a special case of the EBNF path.
 **Refuse a schema that cannot be compiled**, naming the construct. Unsupported
 keywords silently ignored produce a document that validates against a schema the
 caller did not write.
+
+### 4.1 What the language narrows, and the one thing it does not
+
+The compiled language is **regular**, which is what makes a byte-level NFA with
+lazy subset determinization enough and a pushdown stack unnecessary. A JSON
+Schema with no recursive `$ref` generates documents of bounded nesting, so that
+holds — and every construct that would break it is refused rather than
+approximated: a subschema with no `"type"`, an array with no `"items"`, an open
+object, a `$ref` cycle. Each of those admits any JSON value, which may nest
+without bound.
+
+Three further narrowings are deliberate. Each **shrinks** the admitted language,
+so a document this accepts still validates against the caller's schema, and the
+direction is the point: a narrowing costs a caller a document the model might
+have written, while a widening costs them a document that does not validate.
+
+| narrowing | what it excludes | why |
+| --- | --- | --- |
+| properties appear in the order the schema declares them | `{"age":36,"name":"Ada"}` under `{name, age}` (`grammar_test.go:190`) | admitting every permutation needs a state per subset already emitted, $2^n$ of them |
+| objects are closed | any property outside the schema (`grammar_test.go:191`) | an explicit `"additionalProperties": true` is **refused** rather than narrowed (`schema_test.go:90`): that one is the caller stating something this cannot honour |
+| `"integer"` admits the plain spelling | `1e2`, which JSON Schema counts as an integer (`grammar_test.go:132`) | the automaton counts characters and cannot evaluate an exponent |
+
+**One thing is not narrowed, and a caller has to know it**: a number's
+magnitude, for the reason [§1](#1-the-idea) gives.
 
 ## 5. Where it is wired
 
@@ -154,18 +187,24 @@ sites, and the wire mapping for three dialects.
   hold. It is the one hole in §1's "parses by construction", and a caller who
   needs the bound checks it after decoding.
 
-**Not built.** `json_object` mode: `response_format: {"type":"json_object"}` is
-accepted, reaches no grammar, and is reported as a subtraction through the
+**Not built.** Nothing that 015 owns. The four behaviours that lived only in
+`internal/grammar/doc.go` are described here as of 2026-08-28:
+[§4.1](#41-what-the-language-narrows-and-the-one-thing-it-does-not) gives the
+three narrowings with the test that pins each, and
+[§1](#1-the-idea) gives the unbounded magnitude, which is the one behaviour that
+widens rather than narrows and therefore the one a caller has to know.
+
+Owned elsewhere: `json_object` mode. `response_format: {"type":"json_object"}`
+is accepted, reaches no grammar, and is reported as a subtraction through the
 `X-Tgo-Loss` header rather than refused (`server/adapt.go:87`,
 `server/schema_test.go:140`). It is the one `response_format` path §5 draws
 straight to a compiled grammar and that enforces nothing, and
-[029 §7](029-grammar-front-ends.md) owns the answer. §4's EBNF front end, and
-regex as a special case of it, is 015-D3's second half, deliberately sequenced
-after the JSON Schema path and now owned by
-[029](029-grammar-front-ends.md). The documentation of the four behaviours above
-is also open: §4 still says only "JSON Schema first" and names no narrowing, and
-§1 carries no magnitude caveat, so the narrowings and the unbounded magnitude
-live only in `internal/grammar/doc.go`.
+[029 §7](029-grammar-front-ends.md) owns the answer — which is that it keeps the
+loss entry and gets no grammar, because "any JSON value" is not a regular
+language and the only regular approximation is a nesting depth the caller never
+wrote. §4's EBNF front end, and regex as a special case of it, is 015-D3's
+second half, deliberately sequenced after the JSON Schema path and now owned by
+[029](029-grammar-front-ends.md).
 
 ## Decision record
 
