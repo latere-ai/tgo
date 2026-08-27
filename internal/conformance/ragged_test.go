@@ -378,89 +378,42 @@ func TestC16TheExtentsAreRead(t *testing.T) {
 	Compare(t, got, want, raggedTerms(probeShape, b), "the 2/1/1 split")
 }
 
-// TestC22TheRaggedStepRefusesAnF16Cache is what the C16 probe turned up beside
-// the capability it went looking for.
+// TestC22ARaggedStepOverAnF16CacheMatchesTheF32One closes C22.
 //
-// C5 closed on the argument that an f16 cache halves the largest allocation a
-// serving process has after the weights, and specs/005-kv-cache.md builds
-// against the f16 column because of it. The ragged kernel reads f32 only, so
-// the step that makes continuous batching possible is also the step that puts
-// the cache back at full width -- and the two capabilities are wanted by the
-// same server at the same time.
-//
-// It is a refusal and not a wrong answer, which is the good case: the register
-// records it and nothing computes garbage in the meantime.
-func TestC22TheRaggedStepRefusesAnF16Cache(t *testing.T) {
+// The row was open because the ragged kernel read f32 only, so the operator
+// that makes batching possible gave back the halving [C5] closed for. accel
+// shipped the narrow variant against tgo's report
+// ([#23](https://github.com/golang-design/accel/issues/23)), and this is the
+// probe that says so by value rather than by the issue being closed -- §2.2.1
+// records four rows that closed upstream and stayed open here.
+func TestC22ARaggedStepOverAnF16CacheMatchesTheF32One(t *testing.T) {
 	sh, c := probeShape, probeCase
 	in := newRaggedInputs(sh, c)
-	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c22-ragged-f16"})
 
-	half := make([]uint16, len(in.k))
-	for i, x := range in.k {
-		half[i] = accel.ToFloat16(x).Bits()
+	// The cache as f16, and the values widened back: what the kernel reads is
+	// what the reference must compute from, or the comparison is charged for
+	// the storage error twice.
+	half := func(v []float32) ([]uint16, []float32) {
+		bits := make([]uint16, len(v))
+		back := make([]float32, len(v))
+		for i, x := range v {
+			h := accel.ToFloat16(x)
+			bits[i], back[i] = h.Bits(), h.F32()
+		}
+		return bits, back
 	}
+	kBits, kBack := half(in.k)
+	vBits, vBack := half(in.v)
+	narrow := in
+	narrow.k, narrow.v = kBack, vBack
+
+	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c22-ragged-f16"})
 	shape := tensor.Shape{c.cacheRows(sh), sh.kvHeads, sh.headDim}
 	k := tensor.NewState(r.G.B, tensor.StateDesc{Name: "k", DType: accel.F16, Shape: shape})
 	v := tensor.NewState(r.G.B, tensor.StateDesc{Name: "v", DType: accel.F16, Shape: shape})
+	r.bind("k", accel.F16, len(kBits), kBits)
+	r.bind("v", accel.F16, len(vBits), vBits)
 
-	q := r.Input("q", accel.F32, tensor.Shape{c.tokens(), sh.qHeads, sh.headDim})
-	pages := r.Input("pages", accel.U32, tensor.Shape{len(c.seqs), sh.maxPages})
-	lengths := r.Input("lengths", accel.U32, tensor.Shape{len(c.seqs)})
-	extents := r.Input("extents", accel.U32, tensor.Shape{len(c.seqs)})
-	r.ScalarF32("scale", c.scale)
-
-	tensor.Attention(r.G.B, q, k, v, tensor.AttentionOptions{
-		Lengths: lengths, Pages: pages, Block: sh.block,
-		ScaleName: "scale", QueryExtents: extents,
-	})
-	err := r.G.Err()
-	if err == nil {
-		t.Fatal("a ragged step over an f16 cache recorded; if the kernel has grown " +
-			"an f16 variant this row is closed and the register says so")
-	}
-	// The refusal has to name the dtype, or a caller reads it as a shape
-	// problem and narrows the wrong thing.
-	for _, want := range []string{"f16", "f32"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q: %v", want, err)
-		}
-	}
-	t.Logf("C22: %v", err)
-}
-
-// TestC23AnUnclaimedQueryRowReadsOutOfBounds is the second thing the C16 probe
-// turned up, and it is the one that decides how a batched step pads.
-//
-// The ragged kernel finds a token's sequence by counting the rows that end at
-// or before it. For a token past the last segment every row does, so the count
-// is Batch and the next read is offsets[Batch+1] -- one past an array of
-// Batch+1 entries. The same index then reaches Lengths and the page-table row
-// base, so on a GPU it reads another sequence's cache and returns a fluent
-// wrong answer instead of crashing.
-//
-// # Why it is upstream and not a caller's mistake to be careful about
-//
-// specs/043-per-row-values.md §2 is what makes this operator right: a value
-// that differs per row is device data. QueryExtents is exactly that, so the sum
-// is not known at record time and tensor.Attention cannot check it -- the
-// validation there covers dtype, emptiness, the page table's shape and
-// BaseName, and correctly says nothing about the sum. The invariant is one only
-// the kernel can enforce, and today it enforces nothing.
-//
-// Filed as accel#24. tgo maintains the invariant itself; see [batch.check].
-func TestC23AnUnclaimedQueryRowReadsOutOfBounds(t *testing.T) {
-	sh, c := probeShape, probeCase
-	in := newRaggedInputs(sh, c)
-	// One fewer token claimed than q holds, so q's last row belongs to no
-	// sequence.
-	in.extents[0]--
-
-	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c24-unclaimed"})
-	shape := tensor.Shape{c.cacheRows(sh), sh.kvHeads, sh.headDim}
-	k := tensor.NewState(r.G.B, tensor.StateDesc{Name: "k", DType: accel.F32, Shape: shape})
-	v := tensor.NewState(r.G.B, tensor.StateDesc{Name: "v", DType: accel.F32, Shape: shape})
-	r.F32("k", in.k)
-	r.F32("v", in.v)
 	q := r.Input("q", accel.F32, tensor.Shape{c.tokens(), sh.qHeads, sh.headDim})
 	r.F32("q", in.q)
 	pages := r.Input("pages", accel.U32, tensor.Shape{len(c.seqs), sh.maxPages})
@@ -475,35 +428,88 @@ func TestC23AnUnclaimedQueryRowReadsOutOfBounds(t *testing.T) {
 		Lengths: lengths, Pages: pages, Block: sh.block,
 		ScaleName: "scale", QueryExtents: extents,
 	})
-	if err := r.G.Err(); err != nil {
-		t.Fatalf("the step was refused at record time: %v\n"+
-			"If accel has grown a way to check the sum, this row is closed and "+
-			"the register says so", err)
-	}
+	got, plan := r.Run(out)
 
-	// The CPU backend reports the index; a GPU would not. Run it through the
-	// runtime directly rather than through Rig.Run, which fails the test on a
-	// submission error -- here the error is the finding.
-	tensor.Output(r.G.B, "out", out)
-	plan, err := r.G.B.Compile(r.RT, tensor.CompileOptions{Label: "c24-unclaimed"})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	defer func() {
-		if err := plan.Close(); err != nil {
-			t.Errorf("plan close: %v", err)
+	want, b := narrow.oracle()
+	Compare(t, got, want, raggedTerms(probeShape, b), "the ragged step over an f16 cache")
+
+	var kernel string
+	for _, sel := range plan.Selections() {
+		if sel.Op == "Attention" {
+			kernel = sel.Kernel
 		}
-	}()
-	r.F32("out", make([]float32, out.Shape().Elements()))
-	err = plan.Submit(r.Dev.Queue(), tensor.Bindings{
-		Buffers: r.views, Scalars: r.scalars}).Wait()
-	if err == nil {
-		t.Fatal("a query row belonging to no sequence was scored without complaint; " +
-			"if the kernel has learned to drop it, accel#24 is closed and a batched " +
-			"step can pad q instead of inflating a real sequence's extent")
 	}
-	if !strings.Contains(err.Error(), "out of range") {
-		t.Fatalf("the failure is not the out-of-bounds read this row is about: %v", err)
+	if !strings.Contains(kernel, "Ragged") {
+		t.Fatalf("the step selected %q", kernel)
 	}
-	t.Logf("C23: %v", err)
+	t.Logf("C22: %s over an f16 cache, half the largest allocation a serving "+
+		"process has after the weights", kernel)
+}
+
+// TestC23AQueryRowPastTheExtentsIsInert closes C23.
+//
+// The row was open because a token past the last segment counted every row,
+// indexed one past the offsets array, and on a GPU read another sequence's
+// cache back as a fluent answer. accel took the shape tgo's report recommended
+// ([#24](https://github.com/golang-design/accel/issues/24)): such a row
+// contributes nothing rather than being clamped into the last sequence, which
+// is the difference between padding and a wrong answer.
+//
+// What it buys tgo is the padding rule. A batched step can pad q to a plan
+// shape and let the extra rows fall off the end, instead of charging them to a
+// real sequence's extent.
+func TestC23AQueryRowPastTheExtentsIsInert(t *testing.T) {
+	sh, c := probeShape, probeCase
+	in := newRaggedInputs(sh, c)
+	claimed, _ := runRagged(t, in)
+
+	// The same step with two more query rows that no extent claims. The rows
+	// carry real values, so a kernel that scored them would produce something
+	// rather than zeros.
+	padded := in
+	padded.q = append(append([]float32(nil), in.q...),
+		spread(2*sh.qHeads*sh.headDim, 61)...)
+	pc := c
+	pc.seqs = append([]seq(nil), c.seqs...)
+	padded.c = pc
+
+	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c23-padded"})
+	shape := tensor.Shape{c.cacheRows(sh), sh.kvHeads, sh.headDim}
+	k := tensor.NewState(r.G.B, tensor.StateDesc{Name: "k", DType: accel.F32, Shape: shape})
+	v := tensor.NewState(r.G.B, tensor.StateDesc{Name: "v", DType: accel.F32, Shape: shape})
+	r.F32("k", in.k)
+	r.F32("v", in.v)
+	q := r.Input("q", accel.F32, tensor.Shape{c.tokens() + 2, sh.qHeads, sh.headDim})
+	r.F32("q", padded.q)
+	pages := r.Input("pages", accel.U32, tensor.Shape{len(c.seqs), sh.maxPages})
+	r.U32("pages", in.pages)
+	lengths := r.Input("lengths", accel.U32, tensor.Shape{len(c.seqs)})
+	r.U32("lengths", in.lengths)
+	extents := r.Input("extents", accel.U32, tensor.Shape{len(c.seqs)})
+	r.U32("extents", in.extents)
+	r.ScalarF32("scale", c.scale)
+
+	out := tensor.Attention(r.G.B, q, k, v, tensor.AttentionOptions{
+		Lengths: lengths, Pages: pages, Block: sh.block,
+		ScaleName: "scale", QueryExtents: extents,
+	})
+	if err := r.G.Err(); err != nil {
+		t.Fatalf("a step with unclaimed query rows was refused: %v", err)
+	}
+	got, _ := r.Run(out)
+
+	// Every claimed row is untouched by the rows past it.
+	if len(got) < len(claimed) {
+		t.Fatalf("the padded step produced %d values and the claimed one %d",
+			len(got), len(claimed))
+	}
+	for i := range claimed {
+		if got[i] != claimed[i] {
+			t.Fatalf("element %d is %v with two unclaimed rows after it and %v "+
+				"without; a row belonging to no sequence has to reach nothing",
+				i, got[i], claimed[i])
+		}
+	}
+	t.Logf("C23: %d query rows past the extents left every claimed row identical",
+		2)
 }

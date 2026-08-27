@@ -279,23 +279,23 @@ func Register() []Row {
 		Cannot: "a **ragged step over an f16 cache**",
 		Specs:  []string{"046", "010"},
 		Issue:  23,
-		State:  Open,
-		Cost: "an f32 cache on the batched path, so [C5](#2-the-register)'s " +
-			"halving is given back by the operator that makes batching " +
-			"possible. Per-sequence traffic $A$ doubles, and " +
-			"[008 §1](008-scheduler.md) makes the batch size worth reaching " +
-			"and the throughput ceiling both proportional to $1/A$",
+		State:  Closed,
+		Cost: "none needed. `AttentionRaggedF16` landed against this report, so " +
+			"batching keeps [C5](#2-the-register)'s halving instead of giving it " +
+			"back. Per-sequence traffic $A$ stays halved, and " +
+			"[008 §1](008-scheduler.md) makes both the batch size worth reaching " +
+			"and the throughput ceiling proportional to $1/A$",
 	}, {
 		ID:     "C23",
 		Cannot: "a **ragged step that tolerates a query row belonging to no sequence**",
 		Specs:  []string{"046", "010"},
 		Issue:  24,
-		State:  Open,
-		Cost: "a host-side invariant, `sum(QueryExtents) == q.shape[0]`, maintained " +
-			"by tgo and untestable by accel — the extents are device data, so " +
-			"the sum is not known at record time. A batched step therefore " +
-			"pads by inflating a real sequence's extent rather than by leaving " +
-			"rows unclaimed, and a bucketed batch cannot pad `q` freely",
+		State:  Closed,
+		Cost: "none needed. A row past the last extent is padding and reaches " +
+			"nothing, which is the shape this report argued for over clamping it " +
+			"into the last sequence — clamping would have turned an " +
+			"out-of-bounds read into a wrong answer. A batched step pads `q` to " +
+			"its plan shape freely",
 	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",
