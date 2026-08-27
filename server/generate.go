@@ -33,6 +33,12 @@ import (
 // recorderCapacity is how many steps one request's recorder keeps. A completion
 // longer than this reports quantiles over its most recent steps, which is the
 // window that says what the device is doing now.
+//
+// [bench.Recorder] is a ring, so "most recent" is what it keeps. It kept the
+// *first* 1024 until 2026-08-27, which made this comment false for exactly the
+// completions long enough to need a window: a long request published
+// percentiles for its own warm-up, and Report.Dropped being non-zero was the
+// only sign — a count nobody reads as "these are the wrong numbers".
 const recorderCapacity = 1024
 
 // generate runs one request and writes the answer, streaming or not.

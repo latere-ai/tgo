@@ -78,19 +78,29 @@ func (s Step) Total() time.Duration {
 // the enabled test.
 //
 // Storage is fixed at construction and never grows, which is what makes the
-// allocation-free claim structural rather than lucky. Observations past
-// capacity are discarded and counted in Report.Dropped; a report with a
-// non-zero Dropped is truncated, and its percentiles describe the start of the
-// run rather than the run.
+// allocation-free claim structural rather than lucky. It is a **ring**:
+// observations past capacity overwrite the oldest, and Report.Dropped counts
+// how many were overwritten. So a report with a non-zero Dropped describes the
+// most recent capacity observations rather than the whole run.
+//
+// It kept the *first* capacity observations until 2026-08-27, which made
+// server/generate.go's "reports quantiles over its most recent steps" false for
+// exactly the completions long enough to need a window: a request past capacity
+// published percentiles for its own warm-up and never noticed. Keeping the
+// newest is the answer 027-D5 chose over refusing to publish a truncated
+// report, because a long request is the one whose current behaviour a reader
+// wants, and refusing would report nothing at all in that case.
 //
 // A Recorder is not safe for concurrent use. One recorder per stepping
 // goroutine, merged by the harness, keeps the hot path free of a lock.
 type Recorder struct {
 	steps []Step // pre-sized; len is the capacity, never appended to
+	first int    // index of the oldest step once the ring has wrapped
 	n     int
 
-	ttfts []time.Duration
-	nttft int
+	ttfts     []time.Duration
+	ttftFirst int
+	nttft     int
 
 	dropped int
 }
@@ -120,17 +130,22 @@ func (r *Recorder) Enabled() bool { return r != nil && len(r.steps) > 0 }
 
 // Step records one step. It is a no-op on a nil or disabled Recorder, and it
 // allocates nothing: s is copied into storage reserved by NewRecorder.
+//
+// Past capacity it overwrites the oldest step. That keeps the cost of a step
+// constant whether or not the ring has wrapped, which is what the hot path
+// needs; the bookkeeping is one modulo and one counter.
 func (r *Recorder) Step(s Step) {
-	if r == nil || r.n == len(r.steps) {
-		// Disabled means zero capacity, which the same test catches. Only a
-		// recorder that is on can drop: nothing was discarded by an instrument
-		// that was never recording.
-		if r != nil && len(r.steps) > 0 {
-			r.dropped++
-		}
+	if r == nil || len(r.steps) == 0 {
+		// Disabled means zero capacity. Only a recorder that is on can drop:
+		// nothing was discarded by an instrument that was never recording.
 		return
 	}
-	r.steps[r.n] = s
+	r.steps[(r.first+r.n)%len(r.steps)] = s
+	if r.n == len(r.steps) {
+		r.first = (r.first + 1) % len(r.steps)
+		r.dropped++
+		return
+	}
 	r.n++
 }
 
@@ -141,13 +156,15 @@ func (r *Recorder) Step(s Step) {
 // recovers it once prefill is chunked, and a cold measurement includes model
 // load and plan compile, which no Step ever sees.
 func (r *Recorder) TTFT(d time.Duration) {
-	if r == nil || r.nttft == len(r.ttfts) {
-		if r != nil && len(r.ttfts) > 0 {
-			r.dropped++
-		}
+	if r == nil || len(r.ttfts) == 0 {
 		return
 	}
-	r.ttfts[r.nttft] = d
+	r.ttfts[(r.ttftFirst+r.nttft)%len(r.ttfts)] = d
+	if r.nttft == len(r.ttfts) {
+		r.ttftFirst = (r.ttftFirst + 1) % len(r.ttfts)
+		r.dropped++
+		return
+	}
 	r.nttft++
 }
 
@@ -158,5 +175,5 @@ func (r *Recorder) Reset() {
 	if r == nil {
 		return
 	}
-	r.n, r.nttft, r.dropped = 0, 0, 0
+	r.first, r.n, r.ttftFirst, r.nttft, r.dropped = 0, 0, 0, 0, 0
 }

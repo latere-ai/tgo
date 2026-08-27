@@ -24,13 +24,15 @@ So [017-D5](017-benchmarks.md) — report a curve, because
 and a point hides that shape — designs a measurement that has never been taken.
 This spec takes it.
 
-It also fixes one live defect the same audit found. `server/generate.go:33-36`
-says a completion longer than `recorderCapacity` "reports quantiles over its
-most recent steps". `bench.Recorder.Step` (`bench/bench.go:123-135`) keeps the
-**first** `capacity` observations and counts the rest in `Dropped`, and
-`Server.report` (`server/generate.go:335-344`) publishes `d.*.P50` without
-consulting `Dropped`. A 2000-step completion publishes the device's behaviour
-from two thousand steps ago as its current one.
+It also carried one live defect the same audit found, and **that half shipped on
+2026-08-27, ahead of the rest of this spec**, because it was separable and was
+publishing wrong numbers meanwhile. `server/generate.go` said a completion
+longer than `recorderCapacity` "reports quantiles over its most recent steps"
+while `bench.Recorder.Step` kept the **first** `capacity` observations, so a
+2000-step completion published the device's behaviour from two thousand steps
+ago as its current one. `Recorder` is a ring now, per 027-D5 below, and
+`TestFullRecorderKeepsTheMostRecent` and `TestARingReportsOldestFirst` pin it.
+§6 records what that changed; the rest of this spec is unbuilt.
 
 ## 1. What is already true
 
@@ -189,10 +191,15 @@ nothing for `cmd/tgo/bench` — which sizes the recorder above its window at
 `cmd/tgo/bench.go:186` and never drops — and costs one modulo on the hot path.
 The ring is the fix.
 
-`Recorder.steps` and `Recorder.ttfts` keep their fixed length and gain a write
-index; `Step` writes at `n % len(steps)` and increments `Dropped` once the
-window has wrapped. `Report` reads the whole slice and does not care about
-order: `phaseStats` sums (`bench/report.go:106`) and `quantiles` sorts an independent copy (`bench/report.go:159`).
+`Recorder.steps` and `Recorder.ttfts` keep their fixed length and gain a first
+index; `Step` writes at `(first + n) % len(steps)` and, once the window has
+wrapped, advances `first` and increments `Dropped`. **Shipped 2026-08-27.**
+
+One thing came out different from the sketch above: `Report` builds its slices
+oldest-first rather than reading the backing array as it lies. No quantile
+depends on the order — `phaseStats` sums and `quantiles` sorts a copy — but a
+`Steps` dump rotated by an arbitrary amount is one nobody can line up against a
+log, and the copy already existed for `ttfts`.
 Allocation-free stays structural, which is [017-D3](017-benchmarks.md), and
 `TestEnabledRecorderAllocatesZero` (`bench/bench_test.go:81`) is what keeps it
 honest.

@@ -74,8 +74,18 @@ func (r *Recorder) Report() Report {
 	var ttfts []time.Duration
 	var dropped int
 	if r != nil {
-		steps = r.steps[:r.n]
-		ttfts = r.ttfts[:r.nttft]
+		// Read the ring oldest-first. Order does not change a quantile, but it
+		// does change what a reader sees in a dump of Steps, and a report whose
+		// entries are rotated by an arbitrary amount is one nobody can line up
+		// against a log.
+		steps = make([]Step, 0, r.n)
+		for i := range r.n {
+			steps = append(steps, r.steps[(r.first+i)%len(r.steps)])
+		}
+		ttfts = make([]time.Duration, 0, r.nttft)
+		for i := range r.nttft {
+			ttfts = append(ttfts, r.ttfts[(r.ttftFirst+i)%len(r.ttfts)])
+		}
 		dropped = r.dropped
 	}
 

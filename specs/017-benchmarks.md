@@ -275,15 +275,18 @@ because [010](010-conformance.md), [011](011-sequencing.md),
 
 **Not built.** Five items, each with the spec that owns it.
 
-- **The recorder window defect, and 017-D5's batch curve**:
-  [027](027-batched-benchmarks.md). `bench.Recorder` keeps the *first*
-  `capacity` steps and counts the rest in `Dropped` (`bench/bench.go:123-135`),
-  while `server/generate.go:33-36` says a longer completion "reports quantiles
-  over its most recent steps" and `Server.report` publishes `d.*.P50` without
-  reading `Dropped` (`server/generate.go:335`). Past `recorderCapacity` the
-  server publishes a completion's oldest steps as what the device is doing now.
-  The curve needs a `bench.Step` from `batch.go` and `scheduler.go` carrying the
-  real slot count.
+- **017-D5's batch curve**: [027](027-batched-benchmarks.md). It needs a
+  `bench.Step` from `batch.go` and `scheduler.go` carrying the real slot count;
+  today `stream.go` is the only writer of one and it hardcodes `Batch: 1`.
+
+  The recorder window defect that sat beside it here is **fixed** (2026-08-27).
+  `bench.Recorder` kept the *first* `capacity` steps while
+  `server/generate.go` said a longer completion "reports quantiles over its most
+  recent steps", so past `recorderCapacity` the server published a completion's
+  warm-up as what the device was doing now. It is a ring now, per 027-D5, which
+  keeps the newest rather than refusing to publish a truncated report — a long
+  request is the one whose current behaviour a reader wants, and refusing would
+  report nothing at all in that case.
 - **Four stale strings in `cmd/tgo`**, which no code change here may make
   alone: `singleBatchNote` (`cmd/tgo/record.go:131`) and the `--batch` refusal
   (`cmd/tgo/bench.go:88`) both say "specs/008-scheduler.md is drafted and

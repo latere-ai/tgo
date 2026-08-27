@@ -103,11 +103,18 @@ func TestEnabledRecorderAllocatesZero(t *testing.T) {
 	}
 }
 
-// TestFullRecorderCountsDrops is the negative test for the bound above: a
-// recorder past capacity must say so rather than truncate in silence.
-func TestFullRecorderCountsDrops(t *testing.T) {
+// TestFullRecorderKeepsTheMostRecent is the negative test for the bound above:
+// a recorder past capacity must say so rather than truncate in silence, and
+// what it keeps must be the end of the run rather than the beginning.
+//
+// It kept the beginning until 2026-08-27, which made
+// server/generate.go's "reports quantiles over its most recent steps" false for
+// exactly the completions long enough to need a window. A request past capacity
+// published percentiles for its own warm-up, and nothing said so: Dropped was
+// non-zero, and no reader treats a count as "these numbers are the wrong ones".
+func TestFullRecorderKeepsTheMostRecent(t *testing.T) {
 	r := bench.NewRecorder(2)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		r.Step(bench.Step{Phase: bench.Decode, Tokens: 1, Host: time.Duration(i+1) * time.Microsecond})
 		r.TTFT(time.Duration(i+1) * time.Millisecond)
 	}
@@ -116,12 +123,45 @@ func TestFullRecorderCountsDrops(t *testing.T) {
 		t.Errorf("Steps = %d, TTFT.N = %d; want 2 and 2", rep.Steps, rep.TTFT.N)
 	}
 	if want := 6; rep.Dropped != want {
-		t.Errorf("Dropped = %d, want %d (3 steps and 3 TTFTs past capacity)", rep.Dropped, want)
+		t.Errorf("Dropped = %d, want %d (3 steps and 3 TTFTs overwritten)", rep.Dropped, want)
 	}
-	// The kept observations are the first ones, which is why a non-zero
-	// Dropped invalidates the percentiles rather than merely trimming them.
-	if rep.Decode.Host.P99 != 2*time.Microsecond {
-		t.Errorf("Host.P99 = %v, want 2µs: the recorder keeps the prefix", rep.Decode.Host.P99)
+	// The kept observations are the last two, 4µs and 5µs. The old behaviour
+	// gave 2µs here, so this assertion is the one that changes with it.
+	if got, want := rep.Decode.Host.P99, 5*time.Microsecond; got != want {
+		t.Errorf("Host.P99 = %v, want %v: the recorder keeps the suffix", got, want)
+	}
+	if got, want := rep.Decode.Host.P50, 4*time.Microsecond; got != want {
+		t.Errorf("Host.P50 = %v, want %v", got, want)
+	}
+	if got, want := rep.TTFT.P50, 4*time.Millisecond; got != want {
+		t.Errorf("TTFT.P50 = %v, want %v: TTFT is a ring too", got, want)
+	}
+
+	// Reset returns it to empty, ring state included: a recorder that had
+	// wrapped must not report its stale head as the oldest entry.
+	r.Reset()
+	r.Step(bench.Step{Phase: bench.Decode, Tokens: 1, Host: 9 * time.Microsecond})
+	rep = r.Report()
+	if rep.Steps != 1 || rep.Dropped != 0 || rep.Decode.Host.P50 != 9*time.Microsecond {
+		t.Errorf("after Reset: Steps = %d, Dropped = %d, P50 = %v; want 1, 0, 9µs",
+			rep.Steps, rep.Dropped, rep.Decode.Host.P50)
+	}
+}
+
+// TestARingReportsOldestFirst pins the order Report hands back, which no
+// quantile depends on and every reader lining a dump against a log does.
+func TestARingReportsOldestFirst(t *testing.T) {
+	r := bench.NewRecorder(3)
+	for i := range 5 {
+		r.Step(bench.Step{Phase: bench.Prefill, Tokens: i + 1})
+	}
+	// Five recorded into three: 3, 4, 5 survive, in that order.
+	rep := r.Report()
+	if rep.Steps != 3 {
+		t.Fatalf("Steps = %d, want 3", rep.Steps)
+	}
+	if got, want := rep.Prefill.Tokens, 3+4+5; got != want {
+		t.Errorf("Tokens = %d, want %d: the surviving steps are the last three", got, want)
 	}
 }
 

@@ -143,7 +143,7 @@ where the code is, what diverged, and what is open.
 | [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
 | [015](015-structured-output.md) | implemented | schema-constrained decoding | `json_object` is accepted and reaches no grammar |
 | [016](016-prefix-cache.md) | implemented | reusing the KV of a prompt somebody already paid for | a partial hit's attention at a nonzero base is untested against the oracle |
-| [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly | the recorder drops its oldest steps and reports quantiles anyway |
+| [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly | 017-D5's batch curve, and the vLLM row 011 M13 gates |
 | [018](018-hybrid-models.md) | implemented | the two linear-attention blocks, and what a hybrid still needs | the graph: 023–026 below |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
 
@@ -185,11 +185,12 @@ Ordered, with what blocks what. Sizes are effort, not importance.
 
 The code runs. What is left is two defects, proof, and throughput.
 
-**Correctness.** All three defects the audit found are fixed: an int4 load could
-not be staged onto a device without unified memory; top-*k* selected on the
-logits where accel selects on the softmax weights; and 003-D2's warn-on-mismatch
-had no code path, so no checkpoint could ever be found to disagree with the
-renderer. Each shipped with the test that fails without it.
+**Correctness.** All four defects the audit found are fixed, each with the test
+that fails without it: an int4 load could not be staged onto a device without
+unified memory; top-*k* selected on the logits where accel selects on the
+softmax weights; 003-D2's warn-on-mismatch had no code path, so no checkpoint
+could ever be found to disagree with the renderer; and `bench.Recorder` kept a
+long completion's *first* steps while the server called them its most recent.
 
 **Proof:**
 
