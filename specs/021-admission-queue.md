@@ -96,9 +96,9 @@ type Admitter interface {
     // admitted: ceil((T+R)/B_block) against the pool's total blocks.
     Feasible(prompt int) error
 
-    // TryAdmit is Scheduler.Admit: it takes a slot or refuses with
-    // ErrNoSlot or a wrapped prefix.ErrExhausted.
-    TryAdmit(prompt []int, salt string) (int, error)
+    // Admit takes a slot or refuses with ErrNoSlot or a wrapped
+    // prefix.ErrExhausted. It never waits, which is the point.
+    Admit(prompt []int, salt string) (int, error)
 
     // Capacity fires when a slot or a block was released, so a waiter wakes
     // on an event rather than on a timer.
@@ -114,10 +114,11 @@ func (q *Queue) Stats() QueueStats
 func (q *Queue) Close() error
 ```
 
-`Scheduler` gains three things and no behaviour change: `Feasible`, an exported
-`TryAdmit` (`Admit` renamed, its refusal contract unchanged), and a capacity
+`Scheduler` gains two things and no behaviour change: `Feasible`, and a capacity
 channel of capacity 1 that `Finish`, `Evict` and `Step` send to without
-blocking.
+blocking. `Admit` keeps its name and its refusal contract, so the interface is
+satisfied by the method already there and the nine call sites in
+`scheduler_test.go` and `leak_test.go` do not move.
 
 **The interface is what makes this testable without a device.** [008
 §8](008-scheduler.md) records that `nextStep` and `victim` are pure functions
@@ -259,7 +260,7 @@ so which slot a request lands in does not change what it reuses.
 What survives of 019 is the **key**, and it survives intact. 019-D3's closed
 failure — an unkeyed request never reads a keyed one's state — is enforced by
 the hash seed rather than by the routing, so the queue neither reads the key nor
-orders by it, and it passes it through to `TryAdmit` as the salt.
+orders by it, and it passes it through to `Admit` as the salt.
 
 **Rejected: batching queued requests that share a prefix so they are admitted
 adjacently.** It needs the queue to hash every waiting prompt, it reorders
@@ -290,7 +291,9 @@ type QueueStats struct {
 | `tgo_sessions_rejected_total{reason}` | `metrics.go:188-191` | the same three reasons `server/admit.go` already emits: `queue_full`, `queue_timeout`, `client_gone` |
 
 `metrics.go:169`'s help text says "waiting for a session slot" and becomes wrong
-when the denominator changes; 022 updates it.
+when the denominator changes. That, and adding the new series to
+[009 §6](009-server.md)'s exported list, are 022's — named here so the drift has
+an owner rather than a discoverer.
 
 **One new series, and it is the one [008 §3](008-scheduler.md) asks for:**
 `tgo_admission_deferred_total{reason}`, counting `no_slot` against
@@ -315,7 +318,7 @@ flowchart TD
   D -- yes --> Q["enqueue, by arrival"]
   Q --> H{"head, or overtakes < K?"}
   H -- no --> Q
-  H -- yes --> T{"TryAdmit"}
+  H -- yes --> T{"Admit"}
   T -- "ErrNoSlot or exhausted" --> DEF["count deferred<br/>wait on Capacity"]
   DEF --> W{"W elapsed?"}
   W -- yes --> R3["429 queue_timeout"]
@@ -330,9 +333,11 @@ flowchart TD
   C --> H
 ```
 
-The two refusal exits are `queue_full` at the door and `queue_timeout` from
-inside; 499 is a departure rather than a refusal, and nothing is written to the
-client on it (`server/errors.go:83-85`).
+Three exits are refusals: **infeasible** at the door, which 021-D3 exists to
+create; **`queue_full`** at the depth bound, still before anything waits; and
+**`queue_timeout`** from inside, past $W$. The fourth exit, 499, is a departure
+rather than a refusal, and nothing is written to the client on it
+(`server/errors.go:83-85`).
 
 ## 9. Tests
 
@@ -342,9 +347,10 @@ suite needs no device (§2, and [008 §8](008-scheduler.md)'s reason).
 | test | what it asserts |
 | --- | --- |
 | `TestQueueAdmitsImmediatelyWhenASlotIsFree` | no waiting, and the wait observation is `0` rather than absent |
-| `TestQueueWaitsRatherThanRefusing` | `TryAdmit` returning `ErrNoSlot` puts the request in the queue; a capacity signal admits it |
+| `TestQueueWaitsRatherThanRefusing` | `Admit` returning `ErrNoSlot` puts the request in the queue; a capacity signal admits it |
 | `TestQueueIsFIFO` | three waiters admit in arrival order when capacity arrives one slot at a time |
 | `TestQueueOvertakesTheHeadAtMostKTimes` | a 6-block head and 1-block followers: the head is overtaken exactly `K` times, then nothing is admitted before it |
+| `TestQueueRefusesAnEmptyPrompt` | **negative**: an empty prompt is refused before it is enqueued, matching `batch.go:239` rather than reaching it |
 | `TestQueueRefusesAnInfeasiblePromptAtTheDoor` | **negative**: a prompt needing more blocks than the pool holds is refused without being enqueued, and the depth never moves |
 | `TestQueueFullIsRefusedWithRetryAfter` | past `D`, 429 with `reason="queue_full"` and `Retry-After` = `ceil(W)` |
 | `TestQueueTimeoutIsNotClientGone` | past `W`, `reason="queue_timeout"`; the context is untouched, so the two are distinguishable |
@@ -360,8 +366,9 @@ suite needs no device (§2, and [008 §8](008-scheduler.md)'s reason).
 
 - **The server rewrite.** Replacing `server/admit.go`'s semaphore with this
   queue, deleting the second semaphore [019 §8.6](019-session-affinity.md)
-  describes, wiring `QueueStats` into `metrics`, and fixing
-  `metrics.go:169`'s help text are **spec 022**.
+  describes, wiring `QueueStats` into `metrics`, fixing `metrics.go:169`'s help
+  text, and adding the new series to [009 §6](009-server.md)'s list are
+  **spec 022**.
 - **Sampling on the batched path.** [008 §9](008-scheduler.md)'s first bullet: a
   decision with a measurement attached ([C3/C6](010-conformance.md)), not this.
 - **Eviction policy.** 008-D5 and `victim` (`schedule.go:128`) are decided and
@@ -373,8 +380,8 @@ suite needs no device (§2, and [008 §8](008-scheduler.md)'s reason).
 ## 11. Scope
 
 One pass, one person. `queue.go` and `queue_test.go` are new; `scheduler.go`
-gains `Feasible`, the `Admit` to `TryAdmit` rename, and a capacity channel
-touched in `Finish`, `Evict` and `Step`. `batch.go` is unchanged. `server` is
+gains `Feasible` and a capacity channel touched in `Finish`, `Evict` and
+`Step`; `Admit` is unchanged, so no call site moves. `batch.go` is unchanged. `server` is
 unchanged, because 022 owns it. Every test in §9 but the last runs against a
 fake.
 
@@ -384,10 +391,11 @@ fake.
 | --- | --- | --- | --- |
 | 021-D1 | the queue is a third object over `Scheduler`, in package `tgo` | put it in [019](019-session-affinity.md)'s `Pool`, as [008-D9](008-scheduler.md) says; or in `Batch` | `Pool.sem` waits on an idle session and takes its token before the prompt exists (`pool.go:188`), so it cannot express §1's second condition; `Batch` is mechanism (008-D8). 008-D9's conclusion — the scheduler inherits the waiting — is kept and its placement is superseded |
 | 021-D2 | the queue drives the scheduler through an `Admitter` interface, not by holding `Scheduler.mu` | a blocking `Scheduler.Admit` | `Step` holds `s.mu` for the whole dispatch (`scheduler.go:206`), so a blocking admit under it would wait on the lock it needs released. The interface also makes every ordering and cancellation case testable with no device, which is [008 §8](008-scheduler.md)'s principle |
-| 021-D3 | feasibility is arithmetic at the door, not error classification | queue everything and let `TryAdmit` sort it out | `prefix.ErrExhausted` means "the pool is too small" (`prefix.go:275-278`) and "the blocks are busy" (`prefix.go:352`), and `Scheduler.Admit` returns both unwrapped (`scheduler.go:105-107`). Refusing the first at the door is what makes §3's head-of-line bound finite |
+| 021-D3 | feasibility is arithmetic at the door, not error classification | queue everything and let `Admit` sort it out | `prefix.ErrExhausted` means "the pool is too small" (`prefix.go:275-278`) and "the blocks are busy" (`prefix.go:352`), and `Scheduler.Admit` returns both unwrapped (`scheduler.go:105-107`). Refusing the first at the door is what makes §3's head-of-line bound finite |
 | 021-D4 | FIFO with a bounded overtake of $K$; the head becomes reserving on the $K$-th | strict FIFO; or best-fit over the whole queue | strict FIFO idles a free slot behind a head waiting for blocks; best-fit starves large prompts, and a starving admission is a refusal that never says so. The bound makes the worst case $K$ overtakes and then $W$ |
 | 021-D5 | a waiter never evicts | let a starving head preempt with [008-D5](008-scheduler.md)'s victim | a waiter that preempts makes the last-admitted sequence's latency unbounded, which is the quantity 008-D5 exists to bound. An evicted sequence re-enters at its original arrival stamp, so eviction cannot livelock against the queue |
 | 021-D6 | $D = 8N$ and $W$ stay a bound, and `Retry-After` is $\lceil W \rceil$ | an unbounded queue; or a `Retry-After` estimated from service time | an unbounded queue converts a refusal into an unbounded latency ([009-D3](009-server.md)). $W$ is the only interval the queue can promise; a service-time estimate guesses low under the load that produced the 429, which is a retry storm |
 | 021-D7 | the wait budget is a timer beside the context, not a context derived from it | `context.WithTimeout(ctx, W)` | a derived context reports `DeadlineExceeded` for both a full budget and a caller's own deadline, and the two answer 429 and 499 (`server/errors.go:82-85`). `server/admit.go:91` already splits them |
 | 021-D8 | arrival order wins over affinity, and the queue does not read the key | reorder so requests sharing a prefix are admitted adjacently | under `CacheProcess` reuse is keyed on chained block hashes seeded with the salt (`batch.go:244`), so the slot a request lands in does not change what it reuses — 008-D9's own amendment. Reordering would cost FIFO and buy what the pool's LRU already gives |
 | 021-D9 | the queue exports a stats snapshot; `server` keeps the series names | write Prometheus text from package `tgo` | `server.metrics` is package-private (`server/metrics.go:75`) and the exposition is [009 §6](009-server.md)'s. `tgo_queue_depth` and `tgo_queue_wait_seconds` keep their names and change denominator, and `tgo_admission_deferred_total{reason}` is added because [008 §3](008-scheduler.md) requires the two deferral reasons to be distinguishable |
+| 021-D10 | a waiter cancelled after the admit side won is **finished** by the queue before `Admit` returns `ctx.Err()` | return the error and let the caller's `defer` sort it out; or refuse to admit an entry whose context is already done | the caller is returning an error and holds no slot index, so nothing would call `Finish` and the slot is out of the batch for the life of the process — `pool.go:177-180`'s failure, worse here because a slot also holds blocks. Checking the context first does not help: the check and the win are two moments, so the race survives it |
