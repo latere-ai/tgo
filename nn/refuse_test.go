@@ -18,12 +18,12 @@ import (
 // case in more than the thing it names, and a reader could not tell which
 // difference produced the diagnostic.
 type parts struct {
-	r                              *rig
-	x                              *tensor.Tensor
-	w                              nn.AttentionWeights
-	k, v                           *tensor.State
-	posQ, posK, slots, lens, pages *tensor.Tensor
-	cfg                            nn.AttentionConfig
+	r                                       *rig
+	x                                       *tensor.Tensor
+	w                                       nn.AttentionWeights
+	k, v                                    *tensor.State
+	posQ, posK, slots, lens, pages, extents *tensor.Tensor
+	cfg                                     nn.AttentionConfig
 }
 
 func newParts(t *testing.T) *parts {
@@ -62,7 +62,7 @@ func newParts(t *testing.T) *parts {
 }
 
 func (p *parts) record() *tensor.Tensor {
-	return nn.Attention(p.r.g, p.x, p.w, p.k, p.v, p.posQ, p.posK, p.slots, p.lens, p.pages, p.cfg)
+	return nn.Attention(p.r.g, p.x, p.w, p.k, p.v, nn.Step{PosQ: p.posQ, PosK: p.posK, Slots: p.slots, Lengths: p.lens, Pages: p.pages, Extents: p.extents}, p.cfg)
 }
 
 // One position per row, not per token. A positions tensor built per token has

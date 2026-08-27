@@ -86,7 +86,10 @@ func (m *qwen3) Forward(g *nn.Graph, in Inputs) *tensor.Tensor {
 				KNorm: g.Gain("knorm", c.HeadDim),
 			},
 			tensor.LayerState(b, in.Keys, l), tensor.LayerState(b, in.Values, l),
-			in.PosQ, in.PosK, in.Slots, in.Lengths, in.Pages, cfg)
+			nn.Step{
+				PosQ: in.PosQ, PosK: in.PosK, Slots: in.Slots,
+				Lengths: in.Lengths, Pages: in.Pages, Extents: in.Extents,
+			}, cfg)
 
 		// Row 19, then rows 20 to 24, then row 25.
 		h = tensor.Add(b, h, a)
@@ -106,7 +109,15 @@ func (m *qwen3) Forward(g *nn.Graph, in Inputs) *tensor.Tensor {
 	// Contiguous after Slice because a slice is a view at a non-zero offset
 	// and accel refuses a strided operand into MatMul rather than copying
 	// behind the caller's back. At [1, d] the copy is kilobytes.
-	last := tensor.Contiguous(b, tensor.Slice(b, h, 0, t-1, t))
+	//
+	// A batch takes one row per sequence instead of one row, and takes it by
+	// gather rather than by slice: the sequences contribute different counts,
+	// so the last row of each is at an index only the caller knows. GatherRows
+	// produces a contiguous [B, d] and needs no Contiguous after it.
+	last := tensor.GatherRows(b, h, in.Last)
+	if in.Batch <= 1 {
+		last = tensor.Contiguous(b, tensor.Slice(b, h, 0, t-1, t))
+	}
 
 	// Rows 27 and 28. lm_head is [d, V]: the checkpoint's [V, d] transposed at
 	// load, or the embedding table transposed when the two are tied -- a

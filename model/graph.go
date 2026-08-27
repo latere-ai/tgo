@@ -48,6 +48,24 @@ const (
 	// this port.
 	PortPages = "pages"
 
+	// PortExtents is how many query tokens each sequence contributes to this
+	// step, [B] u32. Declared only when [GraphSpec.Batch] is above one.
+	//
+	// It is what makes the step ragged: q is every sequence's tokens end to
+	// end, so a 512-token prefill chunk and three decodes are one dispatch
+	// (specs/008-scheduler.md §2).
+	PortExtents = "extents"
+
+	// PortLast is the flat row each sequence's logits are taken from, [B] u32.
+	//
+	// One sequence's last token is at a different flat index from the next
+	// one's, because the sequences contribute different counts, so the row is
+	// data rather than an offset the graph can compute. §3.2's "the last
+	// position only" becomes "one position per sequence", and the same
+	// argument holds: running the head over every row would cost T*V values
+	// nobody reads.
+	PortLast = "last"
+
 	// PortKeys and PortValues are the two cache states, [L, C, H_kv, d_h]
 	// each: one allocation per role for the whole model, sliced per layer
 	// (specs/005-kv-cache.md §2.1).
@@ -109,6 +127,18 @@ type GraphSpec struct {
 	// (specs/005-kv-cache.md §3).
 	Cache accel.DType
 
+	// Batch is how many sequences step together, and zero or one is a single
+	// sequence.
+	//
+	// Fixed for the life of a plan, and 008-D1 is why: batch is a leading
+	// dimension on every port, so a step that changed it would be a different
+	// graph and a different compile. Idle slots are parked on a zero-length
+	// sequence instead, which costs one row of arithmetic and no plan.
+	//
+	// [GraphSpec.Tokens] is then the *total* across the batch rather than one
+	// sequence's, because a ragged step's q is flat.
+	Batch int
+
 	// Block is how many positions one physical block holds, and zero means
 	// the cache is contiguous.
 	//
@@ -145,6 +175,12 @@ type Inputs struct {
 	// addresses nothing, and accel refuses the pair split apart.
 	Block int
 
+	// Extents and Last are the batch's two ports, nil for a single sequence.
+	Extents, Last *tensor.Tensor
+
+	// Batch mirrors [GraphSpec.Batch].
+	Batch int
+
 	// Base is the name of the prefill's first-position scalar, and is empty on
 	// a decode step. It is carried rather than assumed so that a hand-built
 	// Inputs says which of the two plans it is for.
@@ -168,21 +204,25 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 	if err := s.check(); err != nil {
 		return Inputs{}, err
 	}
+	batch := max(s.Batch, 1)
 	in := Inputs{
+		Batch:   batch,
 		IDs:     input(b, PortIDs, accel.U32, s.Tokens),
 		PosQ:    input(b, PortPosQ, accel.U32, s.Tokens*c.NumHeads),
 		PosK:    input(b, PortPosK, accel.U32, s.Tokens*c.NumKVHeads),
 		Slots:   input(b, PortSlots, accel.U32, s.Tokens),
-		Lengths: input(b, PortLengths, accel.U32, 1),
+		Lengths: input(b, PortLengths, accel.U32, batch),
 	}
 	if s.Block > 0 {
 		in.Block = s.Block
-		// One row, because one graph records one sequence. The batch axis is
-		// what specs/008-scheduler.md widens, and it widens this port from
-		// [1, MaxPages] to [batch, MaxPages] without changing what an entry
-		// means.
+		// One row per sequence. A single sequence is the same port with one
+		// row, not a different port.
 		in.Pages = tensor.Input(b, tensor.ValueDesc{Name: PortPages, DType: accel.U32,
-			Shape: tensor.Shape{1, s.Capacity / s.Block}})
+			Shape: tensor.Shape{batch, s.Capacity / s.Block}})
+	}
+	if batch > 1 {
+		in.Extents = input(b, PortExtents, accel.U32, batch)
+		in.Last = input(b, PortLast, accel.U32, batch)
 	}
 	shape := tensor.Shape{c.NumLayers, s.Capacity, c.NumKVHeads, c.HeadDim}
 	in.Keys = tensor.NewState(b, tensor.StateDesc{Name: PortKeys, DType: s.Cache, Shape: shape})
@@ -190,7 +230,7 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 
 	tensor.Scalar(b, tensor.ScalarDesc{Name: ScalarRoPEBase, Kind: tensor.ScalarF32})
 	tensor.Scalar(b, tensor.ScalarDesc{Name: ScalarScale, Kind: tensor.ScalarF32})
-	if s.Tokens > 1 {
+	if s.Tokens > 1 && batch == 1 {
 		tensor.Scalar(b, tensor.ScalarDesc{Name: ScalarBase, Kind: tensor.ScalarU32})
 		in.Base = ScalarBase
 	}
@@ -251,6 +291,22 @@ func input(b *tensor.Builder, name string, dt accel.DType, n int) *tensor.Tensor
 func (s GraphSpec) check() error {
 	if s.Tokens <= 0 {
 		return fmt.Errorf("model: Tokens is %d; a step scores at least one token", s.Tokens)
+	}
+	if s.Batch < 0 {
+		return fmt.Errorf("model: Batch is %d; it is how many sequences step "+
+			"together, and zero or one is a single sequence", s.Batch)
+	}
+	if s.Batch > 1 && s.Block <= 0 {
+		return fmt.Errorf("model: Batch is %d and Block is %d; sequences that step "+
+			"together have different lengths, so a contiguous cache would pad every "+
+			"one of them to the longest -- which is the allocation paging exists to "+
+			"avoid (specs/008-scheduler.md §2)", s.Batch, s.Block)
+	}
+	if s.Batch > 1 && s.Tokens < s.Batch {
+		return fmt.Errorf("model: Batch is %d and Tokens is %d; Tokens is the total "+
+			"across the batch, and a step with fewer rows than sequences has at "+
+			"least one contributing nothing -- which is legal, but not expressible "+
+			"as a plan this small", s.Batch, s.Tokens)
 	}
 	if s.Block < 0 {
 		return fmt.Errorf("model: Block is %d; it is positions per block, and zero "+
@@ -317,11 +373,34 @@ func (in Inputs) Validate(c *Config) error {
 	if _, err := vector(PortSlots, in.Slots, t); err != nil {
 		return err
 	}
-	if _, err := vector(PortLengths, in.Lengths, 1); err != nil {
+	batch := max(in.Batch, 1)
+	if _, err := vector(PortLengths, in.Lengths, batch); err != nil {
 		return err
+	}
+	if batch > 1 {
+		for _, e := range []struct {
+			name string
+			x    *tensor.Tensor
+		}{{PortExtents, in.Extents}, {PortLast, in.Last}} {
+			if _, err := vector(e.name, e.x, batch); err != nil {
+				return err
+			}
+		}
 	}
 	if in.Keys == nil || in.Values == nil {
 		return fmt.Errorf("model: the %s or %s cache state is missing", PortKeys, PortValues)
+	}
+	// A batched step is ragged, and a ragged step derives every token's
+	// position from its sequence's length and count. So there is no single
+	// first position for a base to name, and accel refuses one -- which makes
+	// the two rules below a single-sequence question.
+	if batch > 1 {
+		if in.Base != "" {
+			return fmt.Errorf("model: Base is %q on a %d-sequence step; a ragged step "+
+				"derives each token's position from its own sequence, so a base is a "+
+				"value nothing reads", in.Base, batch)
+		}
+		return nil
 	}
 	// A decode names no base. accel refuses a BaseName on a one-token step,
 	// and a plan that declared the scalar anyway would demand a binding for a

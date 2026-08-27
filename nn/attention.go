@@ -16,6 +16,42 @@ type AttentionWeights struct {
 	QNorm, KNorm *tensor.Tensor
 }
 
+// Step is the per-step tensors one attention node binds, as opposed to the
+// model constants [AttentionConfig] carries.
+//
+// A struct rather than five more parameters. They arrived one at a time -- the
+// page table in Wave 8, the segmented extent here -- and a positional list of
+// eight same-typed pointers is one a caller can permute silently, which for
+// PosQ against PosK is a model that rotates every key at the wrong angle and
+// still emits plausible text.
+type Step struct {
+	// PosQ and PosK are the rotary position of every query and key *row*:
+	// T*QHeads and T*KVHeads entries, not T (specs/004-model-graph.md §3).
+	PosQ, PosK *tensor.Tensor
+
+	// Slots is the cache row each token's key and value are written to.
+	Slots *tensor.Tensor
+
+	// Lengths is how much of each sequence's cache holds real tokens after
+	// this step: one entry, or one per sequence in a batch.
+	Lengths *tensor.Tensor
+
+	// Pages is the page table, or nil for a contiguous cache. It travels with
+	// [AttentionConfig.Block] and never without it.
+	Pages *tensor.Tensor
+
+	// Extents is how many query tokens each sequence contributes to this step,
+	// and setting it makes the step ragged: q is read as every sequence's
+	// tokens end to end rather than as one sequence's.
+	//
+	// Nil is one sequence. That is presence-of-a-field deciding a reading,
+	// which this tree has refused twice; it is safe for accel's reason one
+	// layer down, that the two readings select different kernels, so the plan
+	// digest tells them apart structurally rather than by a bit somebody
+	// remembered to record.
+	Extents *tensor.Tensor
+}
+
 // AttentionConfig carries the model constants attention reads.
 type AttentionConfig struct {
 	QHeads, KVHeads, HeadDim int
@@ -80,8 +116,9 @@ type AttentionConfig struct {
 // and this block does not record: a [tensor.State] does not report its dtype,
 // so nn cannot tell which case it is in.
 func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
-	k, v *tensor.State, posQ, posK, slots, lengths, pages *tensor.Tensor,
-	cfg AttentionConfig) *tensor.Tensor {
+	k, v *tensor.State, st Step, cfg AttentionConfig) *tensor.Tensor {
+
+	posQ, posK, slots, lengths, pages := st.PosQ, st.PosK, st.Slots, st.Lengths, st.Pages
 
 	// The page table and the block size are one binding in two values, so a
 	// caller that supplied one of them supplied half a cache addressing and
@@ -171,11 +208,21 @@ func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
 	// shape of the computation (specs/004-model-graph.md section 3.1).
 	shaped := tensor.Reshape(g.B, qh, tensor.Shape{t, cfg.QHeads, cfg.HeadDim})
 	opts := tensor.AttentionOptions{
-		Lengths:   lengths,
-		Pages:     pages,
-		Block:     cfg.Block,
-		ScaleName: cfg.ScaleName,
-		BaseName:  cfg.BaseName,
+		Lengths:      lengths,
+		Pages:        pages,
+		Block:        cfg.Block,
+		ScaleName:    cfg.ScaleName,
+		BaseName:     cfg.BaseName,
+		QueryExtents: st.Extents,
+	}
+	if st.Extents != nil {
+		// A ragged step keeps the flat rank-3 shape whatever T is -- a decode
+		// contributing one token is one row of it -- and derives each token's
+		// position from its sequence's length and count. So there is no single
+		// base for the causal mask to hang on, and accel refuses one.
+		opts.BaseName = ""
+		a := tensor.Attention(g.B, shaped, kNext, vNext, opts)
+		return Linear(g, tensor.Reshape(g.B, a, tensor.Shape{t, cfg.QHeads * cfg.HeadDim}), w.O)
 	}
 	if t == 1 {
 		shaped = tensor.Reshape(g.B, qh, tensor.Shape{cfg.QHeads, cfg.HeadDim})
