@@ -32,7 +32,7 @@ restored together:
 | state | shape | declared by |
 | --- | --- | --- |
 | the gated delta recurrence | `[slots, heads, valueDim, keyDim]` | `nn.LinearAttention`, `nn/linear.go:67` |
-| the convolution's rolling window | `[slots, K−1+T, C]` | `nn.ConvState`, `nn/linear.go:123` |
+| the convolution's rolling window | `[K−1+T, C]` today, one sequence; the slot axis is [023](023-cache-kinds.md)'s | `nn.ConvState`, `nn/linear.go:123` |
 
 Restoring the recurrence alone is wrong and is not visible in a prefill-only
 test. `DepthwiseCausalConv` reads the $K-1$ rows *before* this step

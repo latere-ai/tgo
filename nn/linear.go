@@ -122,13 +122,18 @@ func shapeOf(x *tensor.Tensor) tensor.Shape {
 
 // ConvState is the rolling window a depthwise causal convolution reads.
 //
-// [slots, K-1+T, C]: the K−1 rows before this step, then this step's own.
+// [K-1+T, C]: the K−1 rows before this step, then this step's own.
 // [C26](../specs/010-conformance.md) is why it is a state and not a padded
 // operand — `tensor` joins no two tensors along an axis, and the rows a
 // convolution needs in front of a decode step are the *previous step's*
 // anyway, not zeros.
+//
+// One sequence. Axis 0 is time, because that is the axis the taps slide along,
+// and a state has one row axis — so a slot axis in front of it would make one
+// row a whole sequence and a token write inexpressible. Addressing several
+// slots is specs/023-cache-kinds.md's, as arithmetic in the index ports below.
 type ConvState struct {
-	// State is the window, [slots, K-1+T, C].
+	// State is the window, [K-1+T, C].
 	State *tensor.State
 
 	// Write is where this step's rows go: K-1+i for row i, a [T] u32 port.

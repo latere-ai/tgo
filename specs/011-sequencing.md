@@ -575,8 +575,10 @@ blocks.
 input *port*, and a real layer convolves a projection the graph computes — and
 then said what to build instead: not a `Concat`, because a convolution running a
 token at a time needs the K−1 inputs of the *previous step* rather than zeros. A
-`[slots, K−1+T, C]` state, scattered into, read K windows out of, and written
-back to the front for the next step.
+`[K−1+T, C]` state, scattered into, read K windows out of, and written back to
+the front for the next step. The wave entry said `[slots, K−1+T, C]` until
+2026-08-27: axis 0 is the time axis the taps slide along, so what shipped holds
+one sequence and the slot axis is [023](023-cache-kinds.md)'s.
 
 That last write is after the read and the state versions say so; a write before
 it would convolve rows the step has not produced. And the carry is the half a

@@ -517,11 +517,12 @@ the same idea, 023 wins and this section is amended.
 
 ### 6.4 The convolution window is rank two, and a batch needs rank three
 
-`nn.ConvState`'s doc says `[slots, K-1+T, C]` (`nn/linear.go:125`) and the block
-slices axis 0 of the window (`nn/linear.go:220`), which is the *rows* axis. The
-shipped test binds a rank-2 `[K-1+T, C]` state (`nn/linear_test.go:214`), and
-that is the shape the block actually works over: on a rank-3 state the slice
-would cut slots.
+The block slices axis 0 of the window (`nn/linear.go:220`), which is the *time*
+axis. The shipped test binds a rank-2 `[K-1+T, C]` state
+(`nn/linear_test.go:214`), and that is the shape the block works over: on a
+rank-3 state the slice would cut slots. `nn.ConvState`'s doc comment said
+`[slots, K-1+T, C]` until 2026-08-27, which is what made this look done; it now
+says what the block addresses, and so does [C26](010-conformance.md).
 
 So the convolution is **single-sequence today**. A batched hybrid graph needs
 either a slot axis the block slices past or one state per slot, and neither

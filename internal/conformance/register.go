@@ -340,10 +340,13 @@ func Register() []Row {
 			"convolution running a token at a time needs the K−1 inputs of the " +
 			"*previous step*, not zeros, and a decode step has no earlier rows " +
 			"in its own tensor at all. `nn.DepthwiseCausalConv` runs over a " +
-			"rolling `[slots, K−1+T, C]` state built from `ScatterRows`, " +
-			"`GatherRows` and `Slice`, all of which exist. It costs ~3K+5 " +
-			"dispatches and K−1 copies of a `[T, C]` tensor per layer, which " +
-			"over 48 layers is one kernel to *want* and none to be blocked on",
+			"rolling `[K−1+T, C]` state built from `ScatterRows`, `GatherRows` " +
+			"and `Slice`, all of which exist. It costs ~3K+5 dispatches and K−1 " +
+			"copies of a `[T, C]` tensor per layer, which over 48 layers is one " +
+			"kernel to *want* and none to be blocked on. The row said " +
+			"`[slots, K−1+T, C]` until 2026-08-27: the block slices axis 0 as " +
+			"the time axis, so what is built holds one sequence, and the slot " +
+			"axis is [023](023-cache-kinds.md)'s work",
 	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",
