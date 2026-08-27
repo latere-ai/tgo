@@ -105,6 +105,27 @@ jobs:
         name: coverage-profile
         path: cover.out
 
+  deps:
+    name: dependency footprint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: actions/setup-go@v6
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+
+    # specs/009-server.md 009-D14. The server carries three wire dialects
+    # because llmdialect's subtree is stdlib-only, which is a property of its
+    # current imports rather than a promise. One upstream import would arrive
+    # on the next `go get`, and without this the first symptom is a slower
+    # build.
+    #
+    # `go list -deps` and not go.mod: a module graph says what could be
+    # reached, and the argument in 009 §2 is about what is.
+    - name: Gate what the server's build reaches
+      run: go run ./internal/depcheck -v
+
   fuzz:
     name: fuzz seed corpus
     runs-on: ubuntu-latest
