@@ -265,7 +265,8 @@ a separate problem this section owns.
 
 ### 4.4 The gate is per head and accel's is per token
 
-**This is what decides whether the block is buildable, and it is open.**
+**This is what decides whether the block is buildable, and the answer is that
+it is not buildable today.**
 
 `tensor.LinearOptions.Alpha` and `.Beta` hold *"one entry per token, in the flat
 order q is in"* (accel `tensor/linear.go:21`); the operator refuses anything else
@@ -298,11 +299,30 @@ on 47 heads in 48, computed silently, which is the class
 `[tokens]` keeps meaning every head shares a token's gate and nothing existing
 moves.
 
-**What must be established first is whether the gates are per head at all.**
-`in_proj_ba`'s width is the evidence and it is an unconfirmed name
-([§2](#2-the-config-and-which-field-names-are-guesses)). A checkpoint whose `ba`
-projection is 2 wide rather than 96 makes this section moot and the block
-buildable today. That check is one safetensors header read.
+**Settled on 2026-08-28: the gates are per head.** This section was open on
+whether `in_proj_ba` is $2 H_v$ wide or 2 wide, and read the answer as a
+safetensors header nobody had. It is answerable without one, from a public
+implementation of this architecture:
+
+- ollama's `qwen3_5` loader permutes `in_proj_ba` through a permutation of
+  length $2 H_v$ and states the native layout as *"rows grouped per key head as
+  `[beta(vPerK) | alpha(vPerK)]`"*, where `vPerK` is $H_v / H_k$
+  (`x/models/qwen3_5/gdn_projections.go:64-77`, ollama/ollama at `bd3f22e2`);
+- a split checkpoint reaches the same layout by concatenating `in_proj_b` and
+  `in_proj_a`, each $H_v$ wide (`gdn_projections.go:18-38`);
+- the forward pass hands the whole $[B, L, 2 H_v]$ result to its gated delta
+  kernel rather than reducing it (`x/models/qwen3_5/qwen3_5.go:1091,1116`).
+
+So β and α are one per value head per token, the width is 96 for this config,
+and **[C27](010-conformance.md) blocks the block**. Stage **C** below is gated
+on accel taking a `[tokens, heads]` gate, not on a download.
+
+The evidence is a second implementation and not a checkpoint, which is weaker
+in one specific way: it settles what the *architecture* does, and a checkpoint
+whose header disagrees would still win. [§2](#2-the-config-and-which-field-names-are-guesses)'s
+names stay unconfirmed. The distinction that mattered here is not which name a
+tensor has but whether the gate has a head axis, and two independent readings of
+the architecture now say it does.
 
 ### 4.5 The weight map
 
@@ -592,8 +612,7 @@ carrying across steps.
 **What only a real checkpoint proves:** every field name in
 [§2](#2-the-config-and-which-field-names-are-guesses) and every tensor name in
 [§4.5](#45-the-weight-map); the schedule's convention
-([§3](#3-the-layer-schedule)); whether the gates are per head
-([§4.4](#44-the-gate-is-per-head-and-accels-is-per-token)); the head-replication
+([§3](#3-the-layer-schedule)); the head-replication
 convention ([§4.3](#43-q-and-k-are-16-heads-and-the-state-is-48)); and where
 $\alpha$ sits ([018 §2](018-hybrid-models.md)). Each is a value the fixture
 supplies to itself and therefore cannot check.
@@ -641,7 +660,7 @@ not size — it is that sub-scope A ends in a question tgo cannot answer alone.
 
 | | sub-scope | executable now? |
 | --- | --- | --- |
-| **A** | the `nn` prerequisites: `AttentionConfig.RotaryDim`, `AttentionWeights.Gate`, and reading a real `config.json` and safetensors header to settle [§2](#2-the-config-and-which-field-names-are-guesses), [§4.4](#44-the-gate-is-per-head-and-accels-is-per-token) and [§4.5](#45-the-weight-map) | the `nn` half yes; the answer is a download somebody does by hand |
+| **A** | the `nn` prerequisites: `AttentionConfig.RotaryDim`, `AttentionWeights.Gate`, and reading a real `config.json` and safetensors header to settle [§2](#2-the-config-and-which-field-names-are-guesses) and [§4.5](#45-the-weight-map) | the `nn` half yes; the names are a download somebody does by hand. [§4.4](#44-the-gate-is-per-head-and-accels-is-per-token) is no longer on this list: it is settled, and against tgo |
 | **B** | `qwen35Config`, the schedule, its refusals, the weight map, the registry entry, `Declare`'s extents and the dense KV index | **yes, today**, and it needs nothing from A except the field names |
 | **C** | `nn.GatedDelta` and `model/qwen3_5_graph.go` wired end to end against the host reference | **gated on A**: a per-head gate makes the block inexpressible |
 

@@ -236,17 +236,22 @@ int4 storage shipped, so the footprint is 13.4 GiB, and `nn.LinearAttention` and
 `nn.DepthwiseCausalConv` both exist with value tests that pass. Most of what is
 left is a graph tgo has not written.
 
-**One upstream gap comes first, and it is now reported.** Writing
-[024](024-qwen3-5-architecture.md) found that accel's `tensor.LinearAttention`
-takes one gate per token with no head axis, while a gated delta network gives
-each value head its own decay. accel refuses the per-head shape rather than
-broadcasting it, which is the good answer — but the layer is inexpressible if
-the checkpoint is what it appears to be. Filed as
-[C27](010-conformance.md) / [accel#27](https://github.com/golang-design/accel/issues/27)
-with a skipping probe. **The half tgo can settle itself is one safetensors
-header read**: `in_proj_ba`'s width, 96 or 2, decides whether C27 blocks the
-graph or is moot. Do that before item 2 — a header read at the front, or a
-rewrite at the end.
+**One upstream gap comes first, it is reported, and it is now confirmed
+blocking.** Writing [024](024-qwen3-5-architecture.md) found that accel's
+`tensor.LinearAttention` takes one gate per token with no head axis, while a
+gated delta network gives each value head its own decay. accel refuses the
+per-head shape rather than broadcasting it, which is the good answer — but it
+leaves the layer inexpressible. Filed as [C27](010-conformance.md) /
+[accel#27](https://github.com/golang-design/accel/issues/27) with a skipping
+probe.
+
+024 §4.4 left one half open — whether the gates are per head at all — and
+priced it as a safetensors header read on a checkpoint nobody has. **It is
+settled without one.** ollama's public `qwen3_5` implementation permutes
+`in_proj_ba` through a permutation of length $2 H_v$, names the layout
+`[beta | alpha]` per key head, and hands the whole width to its gated delta
+kernel. The gates are per head, the width is 96, and C27 blocks item 3 rather
+than being moot. Nothing below reorders: the block waits on accel.
 
 1. **A rotary width below `head_dim`, and the output gate.** `nn.Attention`
    passes `cfg.HeadDim` as the rotary width, so `partial_rotary_factor` is
@@ -269,9 +274,9 @@ rewrite at the end.
 
 ```mermaid
 flowchart LR
-  G["settle the per-head gate"] --> K["2 023 cache kinds"]
-  R["1 rotary width, output gate"] --> A["3 024 qwen3_5 graph"]
-  K --> A
+  G["accel#27 per-head gate<br/>blocked upstream"] --> A["3 024 qwen3_5 graph"]
+  R["1 rotary width, output gate"] --> A
+  K["2 023 cache kinds"] --> A
   K --> N["4 025 snapshot/restore"]
   A --> I["5 026 image tokens"]
   A --> T["6 tier-3 27B run"]
