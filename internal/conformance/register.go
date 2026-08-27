@@ -158,15 +158,19 @@ func Register() []Row {
 		Cost: "none needed. The policy runs on the device, so a step can return " +
 			"a token id rather than reading back 608 KB of logits",
 	}, {
-		ID:        "C7",
-		Cannot:    "a **bf16 GEMM**",
-		Specs:     []string{"002", "010"},
-		Issue:     14,
-		State:     Open,
-		StateNote: "narrowed",
-		Cost: "convert on the host at load. `Cast` now widens bf16 to f32, so " +
-			"only the GEMM is missing, and a weight would not want a per-step " +
-			"cast anyway",
+		ID:     "C7",
+		Cannot: "a **bf16 GEMM**",
+		Specs:  []string{"002", "010"},
+		State:  WontFix,
+		Cost: "convert on the host at load, which is the right answer and not a " +
+			"workaround. [001 §3](001-weights.md): bf16 is the top half of an " +
+			"f32, so widening is a shift — exact, free, and done once. A bf16 " +
+			"GEMM would let tgo keep bf16 *on the device*, which costs the same " +
+			"two bytes as f16 and buys nothing. Filed inside " +
+			"[#14](https://github.com/golang-design/accel/issues/14) and answered " +
+			"with the mixed GEMM that closed [C8](#2-the-register); re-audited " +
+			"2026-08-27 and reclassified rather than re-filed, because a " +
+			"capability tgo would not use is not a gap",
 	}, {
 		ID:     "C8",
 		Cannot: "f32 activations against f16 or int8 weights",
@@ -267,13 +271,15 @@ func Register() []Row {
 	}, {
 		ID:     "C21",
 		Cannot: "**4-bit weights**",
-		Specs:  []string{"027", "010"},
+		Specs:  []string{"027", "048", "010"},
 		Issue:  22,
-		State:  Open,
-		Cost: "int8, so a 27B model is 25.1 GiB rather than 12.6 GiB and does " +
-			"not fit a 24 GiB device. A second blocker on the 27B target, " +
-			"independent of the linear attention in #17 " +
-			"([011 §2.3](011-sequencing.md))",
+		State:  Closed,
+		Cost: "none needed. `quant.Int4Quantize` and `Int4MatMul` landed against " +
+			"this report, verified against a reconstruction reference at a " +
+			"transformer's shape. **What remains is tgo's**: `weights.Precision` " +
+			"names f16 and int8, so a 27B checkpoint is still 25.1 GiB in this " +
+			"process. That is [001](001-weights.md)'s work and not an accel gap, " +
+			"which is why the row closes rather than narrowing",
 	}, {
 		ID:     "C22",
 		Cannot: "a **ragged step over an f16 cache**",
@@ -301,10 +307,14 @@ func Register() []Row {
 		Cannot: "a decode step whose submit cost is amortised",
 		Specs:  []string{"021"},
 		Issue:  21,
-		State:  Open,
-		Cost: "none. Submit is 15.61% of a decode step against 1.12% of a " +
-			"prefill: a fixed per-dispatch cost over a ~790-node graph, paid in " +
-			"full by a one-token step ([017 §4.1](017-benchmarks.md))",
+		State:  Closed,
+		Cost: "none needed, and this row closes on a **measurement** rather than " +
+			"a probe because that is what it asked for. Submit went from 15.61% " +
+			"of a decode step to **3.34%**, throughput +43%, and p99 fell 84% — " +
+			"device is 94.62% of a step, which is the shape a decode step should " +
+			"have ([017 §4.1](017-benchmarks.md), Qwen3-0.6B f16 on Metal, " +
+			"2026-08-25). The row's cost cell quoted the *before* number for two " +
+			"days after the spec it cites recorded the after",
 	}}
 	return rows
 }

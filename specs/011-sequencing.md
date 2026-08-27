@@ -36,7 +36,7 @@ was discovered by reading its config rather than assuming.
 | named | actual | status |
 | --- | --- | --- |
 | "Qwen3 3B" | **Qwen3-4B**. There is no 3B; the dense line is 0.6B, 1.7B, 4B, 8B, 14B, 32B | **buildable now** |
-| "Qwen3.8 27B" | **Qwen3.8-27B**, Apache 2.0, released August 2026 | **blocked**, [018](018-hybrid-models.md) |
+| "Qwen3.8 27B" | **Qwen3.8-27B**, Apache 2.0, released August 2026 | **buildable, not built.** Both upstream blockers closed on 2026-08-27: `tensor.LinearAttention` for its 48 gated-delta layers ([018](018-hybrid-models.md)) and `Int4MatMul` for its footprint ([C21](010-conformance.md)). What is left is tgo's — the graph, and a loader that stores int4 |
 
 ### 2.1.1 What "well tested" means for each, and what it cannot mean
 
@@ -45,11 +45,11 @@ than restating the goal.
 
 | | Qwen3 dense | Qwen3.8-27B |
 | --- | --- | --- |
-| architecture expressible | **yes** — the graph compiles at 36 layers and $V=151936$ | **no** — 48 of 64 layers need an operator accel does not have |
-| numerics verified | **yes** — against the f64 oracle, per block and end to end | not reachable |
-| real weights loaded | **yes** — Qwen3-0.6B, 311 tensors, 1.40 GiB at f16 | not reachable |
-| generation verified | **Wave 4** | not reachable |
-| blocked by | nothing | [accel#17](https://github.com/golang-design/accel/issues/17) |
+| architecture expressible | **yes** — the graph compiles at 36 layers and $V=151936$ | **yes, upstream** — `tensor.LinearAttention` covers the 48 gated-delta layers, verified against a float64 reference. tgo records no such graph yet |
+| numerics verified | **yes** — against the f64 oracle, per block and end to end | not yet: no graph to check |
+| real weights loaded | **yes** — Qwen3-0.6B, 311 tensors, 1.40 GiB at f16 | not yet: `weights.Precision` names f16 and int8, so it would be 25.1 GiB |
+| generation verified | **Wave 4** | not yet |
+| blocked by | nothing | **nothing upstream.** [018](018-hybrid-models.md)'s graph and an int4 loader, both tgo's |
 
 **Two honest qualifications on the dense side.** The checkpoint on hand is
 **0.6B**, not 4B — same architecture, same code path, one twelfth the
@@ -143,33 +143,48 @@ for, so the absent things are absent from the accounting too.
 
 **Ranked by what decides whether tgo is usable, not by effort.**
 
-### 1. Four-bit weights — decides which models are reachable at all
+### 1. Four-bit weights — accel has them and tgo does not store them
 
-accel's `quant` registers one representation: int8, one fp16 scale per 32. There
-is no 4-bit path, and the arithmetic on the 27B target is decisive:
+**Closed upstream on 2026-08-27** ([C21](010-conformance.md)):
+`quant.Int4Quantize` packs eight codes per word with an fp16 scale *and zero*
+per 128, and `Int4MatMul` and `Int4MatVec` are the prefill and decode shapes.
+The arithmetic on the 27B target, with accel's actual representation rather than
+the idealised one this section used to quote:
 
-| stored as | resident | fits |
-| --- | ---: | --- |
-| bf16 | 50.3 GiB | a large workstation |
-| **int8, all tgo has** | **25.1 GiB** | not a 24 GiB card |
-| int4 | 12.6 GiB | hardware people own |
+| stored as | bytes/weight | 27B resident | fits |
+| --- | ---: | ---: | --- |
+| bf16 | 2.0 | 50.3 GiB | a large workstation |
+| **int8, what tgo stores** | 1.0625 | **26.7 GiB** | not a 24 GiB card |
+| int4, scale + zero per 128 | 0.53125 | **13.4 GiB** | hardware people own |
 
-**This is a second blocker on Qwen3.8-27B that has nothing to do with
-[accel#17](https://github.com/golang-design/accel/issues/17)'s linear attention.**
-Even if that operator lands tomorrow, the model does not fit.
+**What is left is tgo's.** `weights.Precision` names `F16` and `Int8`, so this
+process still resolves a 27B checkpoint to 26.7 GiB whatever accel can compute
+with. That is [001](001-weights.md)'s work: a third stored form, a graph that
+binds three planes rather than two, and `auto` learning when to reach for it.
 
-And [001](001-weights.md) reads *full-precision safetensors and quantizes at
-load*, so running a 27B means downloading **50 GiB** to produce 25 GiB, when the
-file the ecosystem publishes for it is a 13 GiB 4-bit checkpoint. Filed as
-[accel#22](https://github.com/golang-design/accel/issues/22).
+The download is the other half and is unchanged: [001](001-weights.md) reads
+full-precision safetensors and quantizes at load, so running a 27B still means
+fetching **50 GiB** to produce 13.4, when the file the ecosystem publishes is a
+13 GiB 4-bit checkpoint. That is §2 below, and it is now much closer than it
+was.
 
 ### 2. Reading pre-quantized checkpoints — AWQ, GPTQ, GGUF
 
-Distinct from the above: even with 4-bit kernels, tgo would still quantize from
-full precision at load. AWQ and GPTQ dominate what is published for open weights
-and both use a group size of 128 with a **zero point**, which is a different
-shape from accel's symmetric per-32 int8. [012](012-gguf.md) covers GGUF's
-K-quants and is blocked; AWQ and GPTQ have no spec at all.
+Distinct from the above: even with 4-bit kernels, tgo still quantizes from full
+precision at load. AWQ and GPTQ dominate what is published for open weights, and
+both use a group size of **128 with a zero point**.
+
+**That is exactly the shape accel's int4 now has** — `quant.Int4Group` is 128
+and `Int4Quantize` returns a scale *and* a zero per group — which it did not
+when this section was written against a symmetric per-32 int8. So reading an AWQ
+or GPTQ checkpoint is no longer a representation problem. What is left is the
+file format and the layout each toolchain writes, which is a reader rather than
+a kernel, and neither has a spec yet.
+
+[012](012-gguf.md) covers GGUF's K-quants and stays blocked for a different
+reason: a Q4_K super-block is two levels of scale over eight sub-blocks with a
+minimum each, which is a different shape and not a smaller one
+([C17](010-conformance.md)).
 
 ### 3. `rope_scaling` — decides context length
 

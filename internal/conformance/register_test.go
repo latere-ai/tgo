@@ -129,9 +129,20 @@ func TestTheSpecTableIsGenerated(t *testing.T) {
 	// The comparison has to be able to fail. A tripwire that would pass over
 	// two empty strings is not a tripwire, so one row is mutated and the
 	// mismatch is required.
+	//
+	// The mutation is *away from* whatever the row says rather than to a fixed
+	// verdict. Setting the last row to Closed stopped mutating anything the day
+	// that row closed, and the tripwire went off -- correctly, and for a reason
+	// that had nothing to do with the table. A mutation that depends on the
+	// data it mutates is one that keeps working as the data moves.
 	t.Run("a mutated register no longer matches the spec", func(t *testing.T) {
 		rows := Register()
-		rows[len(rows)-1].State = Closed
+		last := &rows[len(rows)-1]
+		if last.State == Closed {
+			last.State = Open
+		} else {
+			last.State = Closed
+		}
 		if Document(rows) == want {
 			t.Fatal("the spec table matched a register with a different verdict in it")
 		}

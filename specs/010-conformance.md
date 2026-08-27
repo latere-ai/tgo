@@ -37,7 +37,7 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C4 | a paged KV **decode** | 030, 043 | [#1](https://github.com/golang-design/accel/issues/1) | **closed** | none needed |
 | C5 | an f16 KV cache that can be **written**, or paged | 007, 010 | [#13](https://github.com/golang-design/accel/issues/13) | **closed** | none needed; `ScatterRows`, prefill and paged decode all take f16. **Halves the cache** |
 | C6 | penalties and temperature on device | 039 | [#6](https://github.com/golang-design/accel/issues/6) | **closed** | none needed. The policy runs on the device, so a step can return a token id rather than reading back 608 KB of logits |
-| C7 | a **bf16 GEMM** | 002, 010 | [#14](https://github.com/golang-design/accel/issues/14) | **open, narrowed** | convert on the host at load. `Cast` now widens bf16 to f32, so only the GEMM is missing, and a weight would not want a per-step cast anyway |
+| C7 | a **bf16 GEMM** | 002, 010 | — | won't fix, correctly | convert on the host at load, which is the right answer and not a workaround. [001 §3](001-weights.md): bf16 is the top half of an f32, so widening is a shift — exact, free, and done once. A bf16 GEMM would let tgo keep bf16 *on the device*, which costs the same two bytes as f16 and buys nothing. Filed inside [#14](https://github.com/golang-design/accel/issues/14) and answered with the mixed GEMM that closed [C8](#2-the-register); re-audited 2026-08-27 and reclassified rather than re-filed, because a capability tgo would not use is not a gap |
 | C8 | f32 activations against f16 or int8 weights | 010 | [#14](https://github.com/golang-design/accel/issues/14) | **closed** | none needed. **The cast chain is gone**: 1013 selections → 760 on the Qwen3 graph |
 | C9 | a strided view into `MatMul` | 025 | — | won't fix, correctly | host-side transpose at load ([001 §4](001-weights.md)) |
 | C10 | avoiding a host copy of every converted weight | 001 | [#7](https://github.com/golang-design/accel/issues/7) | **closed** | none needed; `Buffer.Access` |
@@ -50,10 +50,10 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C17 | GGUF's K-quant super-blocks | 010 | [#15](https://github.com/golang-design/accel/issues/15), not planned | **open, not scheduled** | read safetensors and quantize at load ([012](012-gguf.md)) |
 | C18 | `Contiguous` on Metal | 010, 021 | [#19](https://github.com/golang-design/accel/issues/19) | **closed** | none needed. It was the only kernel in the corpus with no MSL artifact, so every graph that slices — which [004 §3.2](004-model-graph.md) requires — was refused at compile. Fixed upstream the day it was filed |
 | C19 | a CPU backend that dispatches in parallel | 006 | [#20](https://github.com/golang-design/accel/issues/20) | **closed** | none needed. The worker pool landed: 19.5x per prompt token on a real model, and device is 99.98% of a step, so nothing measurable remains between dispatches. The residual gap to Metal is kernel throughput rather than a missing capability |
-| C21 | **4-bit weights** | 027, 010 | [#22](https://github.com/golang-design/accel/issues/22) | **open** | int8, so a 27B model is 25.1 GiB rather than 12.6 GiB and does not fit a 24 GiB device. A second blocker on the 27B target, independent of the linear attention in #17 ([011 §2.3](011-sequencing.md)) |
+| C21 | **4-bit weights** | 027, 048, 010 | [#22](https://github.com/golang-design/accel/issues/22) | **closed** | none needed. `quant.Int4Quantize` and `Int4MatMul` landed against this report, verified against a reconstruction reference at a transformer's shape. **What remains is tgo's**: `weights.Precision` names f16 and int8, so a 27B checkpoint is still 25.1 GiB in this process. That is [001](001-weights.md)'s work and not an accel gap, which is why the row closes rather than narrowing |
 | C22 | a **ragged step over an f16 cache** | 046, 010 | [#23](https://github.com/golang-design/accel/issues/23) | **closed** | none needed. `AttentionRaggedF16` landed against this report, so batching keeps [C5](#2-the-register)'s halving instead of giving it back. Per-sequence traffic $A$ stays halved, and [008 §1](008-scheduler.md) makes both the batch size worth reaching and the throughput ceiling proportional to $1/A$ |
 | C23 | a **ragged step that tolerates a query row belonging to no sequence** | 046, 010 | [#24](https://github.com/golang-design/accel/issues/24) | **closed** | none needed. A row past the last extent is padding and reaches nothing, which is the shape this report argued for over clamping it into the last sequence — clamping would have turned an out-of-bounds read into a wrong answer. A batched step pads `q` to its plan shape freely |
-| C20 | a decode step whose submit cost is amortised | 021 | [#21](https://github.com/golang-design/accel/issues/21) | **open** | none. Submit is 15.61% of a decode step against 1.12% of a prefill: a fixed per-dispatch cost over a ~790-node graph, paid in full by a one-token step ([017 §4.1](017-benchmarks.md)) |
+| C20 | a decode step whose submit cost is amortised | 021 | [#21](https://github.com/golang-design/accel/issues/21) | **closed** | none needed, and this row closes on a **measurement** rather than a probe because that is what it asked for. Submit went from 15.61% of a decode step to **3.34%**, throughput +43%, and p99 fell 84% — device is 94.62% of a step, which is the shape a decode step should have ([017 §4.1](017-benchmarks.md), Qwen3-0.6B f16 on Metal, 2026-08-25). The row's cost cell quoted the *before* number for two days after the spec it cites recorded the after |
 
 **This table is a dated snapshot and accel is moving under it fast.** Within a
 day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
@@ -136,6 +136,40 @@ makes cross-request prefix sharing inexpressible, so it blocks
 
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
+
+### 2.2.0 The re-audit when the tracker went to zero
+
+**On 2026-08-27 every issue tgo had filed was closed, and four rows were not.**
+§2.3 rule 1 says an open row cites an *open* issue, so that state is either a
+register behind its evidence or a tracker ahead of its capabilities, and
+[§2.2.1](#221-the-earlier-audit-kept-because-the-lesson-stands) is the reason it
+cannot be assumed to be the second. Each of the four was probed.
+
+| row | verdict | what settled it |
+| --- | --- | --- |
+| [C21](#2-the-register) 4-bit weights | **closed** | `Int4MatMul` computes to within a reconstruction reference at a transformer's shape. What remains is `weights.Precision` naming only f16 and int8, which is tgo's own work |
+| [C20](#2-the-register) submit cost | **closed** | a measurement, not a probe: 15.61% → 3.34%, +43% throughput, p99 −84% ([017 §4.1](017-benchmarks.md)) |
+| [C7](#2-the-register) bf16 GEMM | **won't fix, correctly** | [001 §3](001-weights.md) widens bf16 to f32 with a shift, exactly and once. A bf16 GEMM would let tgo hold bf16 on the device, which costs what f16 costs and buys nothing |
+| [C17](#2-the-register) K-quant super-blocks | **stays open** | `quant` registers one level of scale; a Q4_K super-block is two levels over eight sub-blocks with a minimum each. Nothing reads one |
+
+**Two of the four moved for reasons the tracker could not have told anyone.**
+
+- **C21 did not close where its issue closed.** The issue said "no 4-bit
+  representation" and accel shipped one; the *row* is about a 27B model fitting
+  a 24 GiB device, and that needs a loader storing int4. The row closes because
+  what is left is tgo's, and the register is the register of accel's gaps —
+  which is the [C8](#2-the-register) lesson read the other way round.
+- **C7 was never a gap.** It sat open for a week as "narrowed to what would
+  actually close it: a bf16 GEMM", and re-reading [001 §3](001-weights.md)
+  says tgo would not use one. Re-filing it under §2.3 rule 2 would have asked
+  accel for a kernel no consumer wants. It is [C9](#2-the-register)'s kind of
+  row and is recorded as one.
+
+**And one cell was stale against the spec it cites.** C20's cost quoted submit
+at 15.61% while [017 §4.1](017-benchmarks.md) had recorded 3.34% two days
+earlier. [010-D6](#decision-record)'s generator guarantees the *table* matches
+`Register()`; it cannot guarantee that `Register()`'s prose matches the
+measurement it names, and nothing else was checking.
 
 ### 2.2 Sixteen rows closed, four open, and what that took
 

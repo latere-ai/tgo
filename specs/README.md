@@ -112,25 +112,28 @@ both named in §9 — sampling on the batched path, which is a decision with a
 measurement attached rather than a detail, and a queue in front of admission,
 which [008-D9](008-scheduler.md) makes [019](019-session-affinity.md)'s `Pool`.
 
-The one thing to know before reading further: **no spec in this tree is blocked
-upstream.** accel closed fifteen of the eighteen gaps tgo filed, including the
-three that decided the shape of this tree — a KV cache capped at 128 positions,
-a missing batch axis, and the ragged step that lets a prefill chunk share a
-dispatch with decodes. [018](018-hybrid-models.md) was the last one blocked and
-`tensor.LinearAttention` unblocked it.
+The one thing to know before reading further: **nothing in this tree is blocked
+upstream, and one row of the register is open.** Every issue tgo filed is
+closed, and [010 §2.2.0](010-conformance.md) is the re-audit that says which of
+those closures are capabilities — because on 2026-08-24 accel closed ten issues
+and four of the capabilities were still absent.
 
-What is still open is narrower: an f16 cache on the *ragged* path
-([C22](010-conformance.md)), a bf16 GEMM ([C7](010-conformance.md), narrowed to
-the GEMM alone), a decode step whose submit cost is amortised
-([C20](010-conformance.md)), GGUF's K-quants ([C17](010-conformance.md), not
-planned upstream), and **4-bit weights** ([C21](010-conformance.md)).
+The one open row is GGUF's K-quant super-blocks
+([C17](010-conformance.md)), which accel closed *as not planned* and recorded in
+its kernel corpus instead. tgo accepted that: a corpus row carrying the layout
+and both workarounds is a better record than an issue with no plan.
 
-Two of those cost something specific rather than being gaps in the abstract.
-C21 blocks a target: at int8 a 27B model is 25.1 GiB and does not fit a 24 GiB
-device, which is a second blocker on Qwen3.8-27B independent of its linear
-attention. C22 narrows a win: the operator that makes batching possible reads an
-f32 cache, so a build that batches gives back the halving
-[C5](010-conformance.md) closed for.
+**Two closures moved work rather than finishing it, and the difference is worth
+reading.** [C21](010-conformance.md), 4-bit weights, closed because accel
+represents and multiplies them — but `weights.Precision` still names only f16
+and int8, so a 27B checkpoint is 26.7 GiB in this process. And
+[018](018-hybrid-models.md) is unblocked without being built. Both of those are
+now [001](001-weights.md)'s and 018's work, not accel's, which is why the
+register does not carry them: it is the register of *accel's* gaps.
+
+[C7](010-conformance.md), the bf16 GEMM, turned out never to have been one. tgo
+widens bf16 to f32 at load with a shift — exact, free, once — so a bf16 GEMM
+would only let it hold bf16 on the device, which costs what f16 costs.
 [010 §2](010-conformance.md) is the register and
 [010 §2.2](010-conformance.md) is the audit behind those states.
 
