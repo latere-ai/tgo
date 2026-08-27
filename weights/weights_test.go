@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -520,6 +521,91 @@ func TestLoadStagesWhereAccessIsRefused(t *testing.T) {
 	q, _ := set.Get("q")
 	if q.Data.DType() != accel.I8 || q.Scales.DType() != accel.F16 {
 		t.Errorf("staged int8 value = %+v", q)
+	}
+}
+
+func TestLoadStagesInt4CodesTheDeviceCannotBeHandedDirectly(t *testing.T) {
+	// The staging path is per dtype, and int4's code plane is the one width no
+	// other precision uses: f16 and int8 both write through it, and u32 did not
+	// until this test. A load at Int4 on a discrete device died with "no staging
+	// path for U32" — every unified-memory machine takes the mapped branch, so
+	// the whole int4 precision was untested on the hardware it exists for.
+	forceStaging = true
+	defer func() { forceStaging = false }()
+
+	dev := openCPU(t)
+	// One group's worth and a bit, so the plane spans two groups and the second
+	// is short: a packing that only ever sees whole groups can be wrong at the
+	// tail and still pass.
+	const n = quant.Int4Group + 8
+	vals := ramp(n)
+	repo := writeRepo(t, tensorSpec{"w", []int{n / 8, 8}, vals})
+
+	set, err := Load(dev, repo, []Tensor{{Name: "w", Precision: Int4}},
+		Options{Policy: Int4, Log: io.Discard})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer set.Close()
+
+	v, _ := set.Get("w")
+	if v.Data.DType() != accel.U32 || v.Scales.DType() != accel.F16 ||
+		v.Zeros.DType() != accel.F16 {
+		t.Fatalf("staged int4 value = %+v", v)
+	}
+
+	// The bytes, not just the shapes. Staging re-reads the plane at the buffer's
+	// dtype, so a width read wrongly is a buffer full of plausible codes.
+	wantCodes, wantScales, wantZeros := quant.Int4Quantize(vals)
+	gotCodes := make([]uint32, v.Data.Count())
+	if err := dev.Queue().ReadBuffer(v.Data, 0, gotCodes); err != nil {
+		t.Fatalf("ReadBuffer: %v", err)
+	}
+	if err := dev.Queue().Flush().Wait(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if !slices.Equal(gotCodes, wantCodes) {
+		t.Errorf("staged codes = %v, want %v", gotCodes, wantCodes)
+	}
+	for _, p := range []struct {
+		what string
+		buf  *accel.Buffer
+		want []accel.Float16
+	}{
+		{"scales", v.Scales, wantScales},
+		{"zeros", v.Zeros, wantZeros},
+	} {
+		got := readF16(t, dev, p.buf)
+		for i, h := range p.want {
+			if got[i] != h.F32() {
+				t.Errorf("staged %s[%d] = %v, want %v", p.what, i, got[i], h.F32())
+			}
+		}
+	}
+}
+
+func TestArenaStagesEveryWidthAWeightIsStoredIn(t *testing.T) {
+	// The complement of TestArenaHasNoStagingPathForAnUnexpectedDType: that one
+	// says an unknown width is refused, and this says the known ones are not.
+	// Without it, "refuse what you do not know" is satisfied by refusing
+	// everything, which is how U32 came to be missing.
+	dev := openCPU(t)
+	for _, dt := range []accel.DType{accel.F16, accel.I8, accel.U32} {
+		t.Run(dt.String(), func(t *testing.T) {
+			a := &arena{dev: dev, kind: accel.MemoryDevice, max: 1 << 20}
+			defer a.close()
+			b, err := a.alloc(dt, 8, "w")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			if err := a.fill(b, func(dst []byte) error { return nil }); err != nil {
+				t.Fatalf("fill: %v", err)
+			}
+			if err := a.flush(); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+		})
 	}
 }
 

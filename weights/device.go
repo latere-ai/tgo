@@ -149,6 +149,16 @@ func (a *arena) fill(b *accel.Buffer, write func(dst []byte) error) error {
 // slice rather than bytes, so the plane is re-read at the buffer's dtype here.
 // The extra pass exists only on the fallback path; making the conversion itself
 // dtype-generic would cost it on the path that matters.
+//
+// One case per width a weight is stored in, and the set is closed: f16, int8's
+// codes, and int4's, which are packed eight to a u32 word. A width with no case
+// is refused rather than guessed, because guessing means writing a buffer full
+// of plausible numbers.
+//
+// U32 was missing until 2026-08-27 and int4 could not load on a discrete
+// device. It survived because the branch runs only where memory is not
+// unified, which is every GPU this project targets and no machine it is tested
+// on — so [forceStaging] exists, and every width now has a test that takes it.
 func (a *arena) stage(b *accel.Buffer, host []byte) error {
 	switch b.DType() {
 	case accel.F16:
@@ -163,6 +173,12 @@ func (a *arena) stage(b *accel.Buffer, host []byte) error {
 			q[i] = int8(v)
 		}
 		return a.dev.Queue().WriteBuffer(b, 0, q)
+	case accel.U32:
+		w := make([]uint32, len(host)/4)
+		for i := range w {
+			w[i] = binary.LittleEndian.Uint32(host[4*i:])
+		}
+		return a.dev.Queue().WriteBuffer(b, 0, w)
 	default:
 		return fmt.Errorf("weights: no staging path for %v", b.DType())
 	}
