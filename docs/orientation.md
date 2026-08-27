@@ -147,6 +147,13 @@ top of the weights:
 A larger model has proportionally more layers and heads, so scale it by the
 model's size.
 
+**`--prefix-cache process` halves it**, to about 72 KB per token, because the
+shared pool stores the cache at half the width. That is not quality you are
+trading away: what gets narrowed are *inputs* to the attention arithmetic, and
+the arithmetic itself still adds up at full width — the same trade the weights
+already make. What you get is twice the tokens in the same memory: twice the
+conversations kept warm, and more room to run several at once.
+
 Each conversation reserves a whole block of it, sized by the context you asked
 for, not by the context it uses. `tgo serve` reserves that block for several
 conversations at once, at startup, and holds it until the process exits: see

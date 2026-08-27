@@ -466,10 +466,8 @@ sequence does.
 
 **Remaining**: [008 §9](008-scheduler.md)'s three — sampling on the batched
 path, a queue in front of admission, and the server actually using it — the rest
-of [018](018-hybrid-models.md)'s graph, and
-[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps. The f16 block
-pool is **blocked upstream** on [C24](010-conformance.md); tgo's half of it is
-built.
+of [018 §6](018-hybrid-models.md)'s rows, and
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
 
 ### 2026-08-27 — Wave 11: the gated delta layer, and the convolution in front of it
 
@@ -538,17 +536,27 @@ children, on a test about something else. And the weight binding used
 `v.Elements` as the view count, which stops being the buffer's count at int4 by
 a factor of eight.
 
-**And one thing built to the point of being blocked.** [005 §3](005-kv-cache.md)
-wants a narrow key/value cache and the refusal was tgo's: `nn.Attention`
-recorded no `Cast` on the scattered rows, so an f16 state could not be written.
-It records one now, `model.GraphSpec` stopped refusing f16, and the pool is one
-line from narrow — and stays f32, because
-[C24](010-conformance.md) found that accel selects the f16 prefill kernel and
-then overwrites the selection whenever a page table is supplied. A pool is paged
-by construction, so the narrow cache is reachable for a contiguous single
-sequence and for nobody who shares blocks. [accel#25](https://github.com/golang-design/accel/issues/25),
-and it is [C5](010-conformance.md)'s pattern a third time: each of "ScatterRows,
-prefill and paged decode all take f16" is true and the combination is not.
+**And one thing that was blocked for six hours.** [005 §3](005-kv-cache.md)
+wants a narrow key/value cache, and the first refusal was tgo's own:
+`nn.Attention` recorded no `Cast` on the scattered rows, so an f16 state could
+not be written. It records one now and `model.GraphSpec` stopped refusing f16 —
+and the pool still could not be narrow, because
+[C24](010-conformance.md) found accel selecting the f16 prefill kernel and then
+overwriting that selection whenever a page table was supplied. A pool is paged
+by construction, so the narrow cache was reachable for a contiguous single
+sequence and for nobody who shares blocks.
+[accel#25](https://github.com/golang-design/accel/issues/25), fixed the same day
+on the *pair* rather than as a fourth kernel name.
+
+It is [C5](010-conformance.md)'s pattern a third time, and the third time is
+what makes it a lesson rather than an incident: each of "`ScatterRows`, prefill
+and paged decode all take f16" is true, and the *combination* has now failed at
+the ragged kernel ([C22](010-conformance.md)) and at the paged prefill. **A
+capability claim over three operators is three claims, and closing it on the
+conjunction is what a register row is for.**
+
+The pool is f16, which is twice the blocks, twice the prefixes worth keeping,
+and by [008 §1](008-scheduler.md) twice the batch size worth reaching.
 
 **Two claims withdrawn.** A first test compared int4's tokens against f16's and
 required them to match; the fixture's weights are multiples of $1/8$ over a

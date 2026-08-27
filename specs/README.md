@@ -123,13 +123,22 @@ The one open row is GGUF's K-quant super-blocks
 its kernel corpus instead. tgo accepted that: a corpus row carrying the layout
 and both workarounds is a better record than an issue with no plan.
 
-**Two closures moved work rather than finishing it, and the difference is worth
-reading.** [C21](010-conformance.md), 4-bit weights, closed because accel
-represents and multiplies them — but `weights.Precision` still names only f16
-and int8, so a 27B checkpoint is 26.7 GiB in this process. And
-[018](018-hybrid-models.md) is unblocked without being built. Both of those are
-now [001](001-weights.md)'s and 018's work, not accel's, which is why the
-register does not carry them: it is the register of *accel's* gaps.
+**A closure can move work rather than finish it, and the register does not
+carry the half that moves.** [C21](010-conformance.md), 4-bit weights, closed
+because accel represents and multiplies them — and `weights.Precision` named
+only f16 and int8, so a 27B checkpoint was still 26.7 GiB here. That was
+[001](001-weights.md)'s work and not accel's; it shipped the same day, and a
+27B checkpoint is **13.4 GiB**. What is left of
+[018](018-hybrid-models.md) is the same shape: unblocked upstream, and the graph
+is 018's to write.
+
+**Three rows closed on the same lesson**, which is the one worth carrying out of
+this tree. [C5](010-conformance.md) closed on "`ScatterRows`, prefill and paged
+decode all take f16" — three true statements. The *combination* then failed
+twice more: at the ragged kernel ([C22](010-conformance.md)) and at the paged
+prefill ([C24](010-conformance.md)), where the width and the paging selected
+separately and the paging won. A capability claim over three operators is three
+claims, and closing it on the conjunction is what a row is for.
 
 [C7](010-conformance.md), the bf16 GEMM, turned out never to have been one. tgo
 widens bf16 to f32 at load with a shift — exact, free, once — so a bf16 GEMM

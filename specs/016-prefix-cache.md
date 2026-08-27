@@ -379,25 +379,32 @@ Three constraints remain, and the third is tgo's own.
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
-- **f16 is not reachable for a pool, and the reason moved twice.**
+- **The pool is f16, and it took three rows to get there.**
   [C5](010-conformance.md) closed on "`ScatterRows`, prefill and paged decode
-  all take f16", and each of those is true. [C22](010-conformance.md) was the
-  ragged kernel reading f32, and accel closed it. What remains is
-  [C24](010-conformance.md): `Attention` selects the f16 prefill kernel and then
-  overwrites the selection whenever `Pages` is set, and there is no paged f16
-  prefill kernel to select.
+  all take f16", and each of those is true. Twice more the *combination* was
+  not: [C22](010-conformance.md) was the ragged kernel reading f32, and
+  [C24](010-conformance.md) was `Attention` selecting the f16 prefill kernel and
+  then overwriting that selection whenever `Pages` was set. Both are closed.
 
-  That is not a configuration. **A pool is addressed through a page table by
-  construction** ([§3](#3-blocks-are-the-unit-so-the-key-is-block-aligned)) and
-  every conversation begins with a prefill, so the narrow cache is available to
-  a contiguous single sequence and to nobody who shares blocks — which is the
-  opposite of who wants it, since concurrency is what forces paging in the first
-  place. Filed as
-  [accel#25](https://github.com/golang-design/accel/issues/25).
+  C24 is the one worth keeping, because it was not a configuration a deployment
+  could avoid. **A pool is addressed through a page table by construction**
+  ([§3](#3-blocks-are-the-unit-so-the-key-is-block-aligned)) and every
+  conversation begins with a prefill, so the narrow cache was available to a
+  contiguous single sequence and to nobody who shares blocks — the opposite of
+  who wants it, since concurrency is what forces paging in the first place.
+  Filed as [accel#25](https://github.com/golang-design/accel/issues/25) and
+  fixed the same day, on the *pair* rather than as a fourth kernel name.
 
-  tgo's half is built: `nn.Attention` casts the scattered rows, because one
-  kernel reads them and writes the state and accel refuses the pair split apart.
-  The pool is one line from narrow the day the kernel lands.
+  What that buys: half the bytes per position, so twice the blocks, twice the
+  prefixes worth keeping, and by [008 §1](008-scheduler.md) — where the
+  throughput ceiling is proportional to $1/A$ — twice the batch size worth
+  reaching.
+
+  tgo's half is `nn.Attention` casting the scattered rows, because one kernel
+  reads them and writes the state and accel refuses the pair split apart. A
+  session that owns its cache keeps f32: it is sized to one conversation, so
+  halving it buys one conversation's memory rather than the allocation that
+  grows with concurrency.
 
 ## 10. Against vLLM and sglang
 
