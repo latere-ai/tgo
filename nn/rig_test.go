@@ -126,6 +126,29 @@ func (r *rig) input(name string, dtype accel.DType, shape tensor.Shape) *tensor.
 
 // run compiles the graph with out as its only output, submits it once, and
 // returns the result and the plan the selections can be read from.
+// compile records out and compiles, without binding or submitting.
+//
+// For a test whose question is which kernels the graph selected rather than
+// what they computed -- a Cast that should or should not be there is visible in
+// Selections and needs no buffers behind it.
+func (r *rig) compile(t *testing.T, out *tensor.Tensor) *tensor.Plan {
+	t.Helper()
+	tensor.Output(r.g.B, "out", out)
+	if err := r.g.Err(); err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	plan, err := r.g.B.Compile(r.rt, tensor.CompileOptions{Label: "nn"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := plan.Close(); err != nil {
+			t.Errorf("plan close: %v", err)
+		}
+	})
+	return plan
+}
+
 func (r *rig) run(out *tensor.Tensor) ([]float32, *tensor.Plan) {
 	r.t.Helper()
 	tensor.Output(r.g.B, "out", out)

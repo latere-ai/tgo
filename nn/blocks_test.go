@@ -409,3 +409,55 @@ func TestTheScalePlaneIsDeclaredUnderTheWeightsNameAndSuffix(t *testing.T) {
 	closeTo(t, got, matmul(f64s(linX[:3]), f64s(quant.Int8Dequantize(quants, scales)), 1, 3, 4),
 		1e-5, "quantized linear")
 }
+
+// TestAnF16CacheNarrowsTheScatteredRows is tgo's half of C24, built and
+// checked while accel's half is filed.
+//
+// One kernel reads the rows and writes the state, so the two share a dtype and
+// accel refuses the pair split apart. The projections that produce the rows are
+// f32, so an f16 cache needs a Cast — which this block records now, and did not
+// before, and which is the reason model.GraphSpec stopped refusing f16
+// outright.
+//
+// The dtype is a config field and not something read off the State because a
+// tensor.State does not report its own. The caller knows: it allocated it.
+func TestAnF16CacheNarrowsTheScatteredRows(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		cache accel.DType
+		casts int
+	}{
+		{"an f32 cache scatters what the projections produced", accel.F32, 0},
+		{"an f16 cache narrows the key and the value", accel.F16, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newParts(t)
+			p.cfg.Cache = c.cache
+			p.k = tensor.NewState(p.r.g.B, tensor.StateDesc{
+				Name: "k16", DType: c.cache,
+				Shape: tensor.Shape{attCap, attKVHeads, attHeadDim},
+			})
+			p.v = tensor.NewState(p.r.g.B, tensor.StateDesc{
+				Name: "v16", DType: c.cache,
+				Shape: tensor.Shape{attCap, attKVHeads, attHeadDim},
+			})
+			out := p.record()
+			if err := p.r.g.Err(); err != nil {
+				t.Fatalf("recording over a %v cache: %v", c.cache, err)
+			}
+			plan := p.r.compile(t, out)
+			casts := 0
+			for _, s := range plan.Selections() {
+				if s.Op == "Cast" {
+					casts++
+				}
+			}
+			if casts != c.casts {
+				t.Fatalf("a %v cache recorded %d casts, want %d; one kernel reads the "+
+					"rows and writes the state, so an f16 state needs f16 rows and an "+
+					"f32 state must not pay for a conversion it does not need",
+					c.cache, casts, c.casts)
+			}
+		})
+	}
+}

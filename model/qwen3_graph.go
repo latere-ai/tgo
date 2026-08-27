@@ -63,7 +63,7 @@ func (m *qwen3) Forward(g *nn.Graph, in Inputs) *tensor.Tensor {
 	cfg := nn.AttentionConfig{
 		QHeads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim,
 		RoPEBase: ScalarRoPEBase, ScaleName: ScalarScale, BaseName: in.Base,
-		Block: in.Block,
+		Block: in.Block, Cache: in.Cache,
 		// Qwen3's one departure from Llama: Q and K are normalized per head,
 		// over head_dim, before RoPE (§2.4).
 		QKNorm: true,

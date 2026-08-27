@@ -379,16 +379,25 @@ Three constraints remain, and the third is tgo's own.
 - **the block pool is tgo's.** `tensor/internal/pagetable` is unexported, and
   that is right: accel 030 declines to evict because choosing a victim is
   policy, and [§5](#5-lifetime-refcounts-then-lru) is that policy.
-- **f16 is available on every path except the ragged one.**
-  [C5](010-conformance.md) closed, so a paged prefill and a paged decode both
-  read an f16 cache: half the memory, twice the blocks, twice the prefixes worth
-  keeping. [C22](010-conformance.md) is the exception, and it decides the pool's
-  dtype rather than being a detail of it — the ragged kernel
-  [008](008-scheduler.md) batches with reads **f32**, and one pool cannot be
-  both. So a build that batches runs an f32 pool and holds half the prefixes,
-  and a build that does not keeps f16. Filed as
-  [accel#23](https://github.com/golang-design/accel/issues/23); until it closes
-  this is a configuration rather than a default.
+- **f16 is not reachable for a pool, and the reason moved twice.**
+  [C5](010-conformance.md) closed on "`ScatterRows`, prefill and paged decode
+  all take f16", and each of those is true. [C22](010-conformance.md) was the
+  ragged kernel reading f32, and accel closed it. What remains is
+  [C24](010-conformance.md): `Attention` selects the f16 prefill kernel and then
+  overwrites the selection whenever `Pages` is set, and there is no paged f16
+  prefill kernel to select.
+
+  That is not a configuration. **A pool is addressed through a page table by
+  construction** ([§3](#3-blocks-are-the-unit-so-the-key-is-block-aligned)) and
+  every conversation begins with a prefill, so the narrow cache is available to
+  a contiguous single sequence and to nobody who shares blocks — which is the
+  opposite of who wants it, since concurrency is what forces paging in the first
+  place. Filed as
+  [accel#25](https://github.com/golang-design/accel/issues/25).
+
+  tgo's half is built: `nn.Attention` casts the scattered rows, because one
+  kernel reads them and writes the state and accel refuses the pair split apart.
+  The pool is one line from narrow the day the kernel lands.
 
 ## 10. Against vLLM and sglang
 

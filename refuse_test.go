@@ -626,7 +626,7 @@ func TestPlanRefusesAStepTheGraphCannotHold(t *testing.T) {
 	for _, c := range []struct{ tokens, capacity int }{
 		{0, 64}, {-1, 64}, {8, 0}, {65, 64},
 	} {
-		if _, err := m.plan(c.tokens, c.capacity, 0, 1); err == nil {
+		if _, err := m.plan(c.tokens, c.capacity, 0, 1, accel.F32); err == nil {
 			t.Errorf("plan(T=%d, C=%d) was recorded", c.tokens, c.capacity)
 		}
 	}
@@ -772,7 +772,7 @@ func TestGainsAreF32BecauseTheGraphDeclaresThemSo(t *testing.T) {
 	}
 	// And the plan agrees, which is the assertion that would fail if nn ever
 	// changed its mind.
-	p, err := m.plan(1, 64, 0, 1)
+	p, err := m.plan(1, 64, 0, 1, accel.F32)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}

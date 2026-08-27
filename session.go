@@ -627,7 +627,7 @@ func (s *Session) run(rows int, toks []int, first int) ([]float32, timings, erro
 		return nil, t, err
 	}
 	start := time.Now()
-	plan, err := s.m.plan(rows, s.stateRows(), s.block(), 1)
+	plan, err := s.m.plan(rows, s.stateRows(), s.block(), 1, s.cacheDType())
 	if err != nil {
 		return nil, t, err
 	}
@@ -783,6 +783,19 @@ func (s *Session) stateRows() int {
 		return s.m.blocks.positions
 	}
 	return s.capacity
+}
+
+// cacheDType is what this session's key and value states hold: the shared
+// pool's when it borrows one, and f32 when it owns its own.
+//
+// A session's own cache is f32 because it is sized to one conversation and
+// halving it buys one conversation's memory; the pool is every conversation's
+// and is the allocation that scales with concurrency (specs/005-kv-cache.md §3).
+func (s *Session) cacheDType() accel.DType {
+	if s.shared {
+		return s.m.blocks.dtype
+	}
+	return accel.F32
 }
 
 // block is the graph's block size, and zero when the cache is contiguous.

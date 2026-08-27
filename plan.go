@@ -83,13 +83,13 @@ func batchBuckets(n, rows int) (tensor.Buckets, error) {
 // makes "N decode steps compile exactly one plan" a measurement rather than a
 // tautology: a plan held in a variable cannot miss, whatever §6's Weight and
 // Input ports are declared as.
-func (m *Model) plan(tokens, capacity, block, batch int) (*tensor.Plan, error) {
+func (m *Model) plan(tokens, capacity, block, batch int, cache accel.DType) (*tensor.Plan, error) {
 	spec := model.GraphSpec{
 		Tokens:   tokens,
 		Capacity: capacity,
 		Block:    block,
 		Batch:    batch,
-		Cache:    accel.F32,
+		Cache:    cache,
 		Stored:   m.stored,
 	}
 	label := "prefill"

@@ -304,6 +304,20 @@ func Register() []Row {
 			"out-of-bounds read into a wrong answer. A batched step pads `q` to " +
 			"its plan shape freely",
 	}, {
+		ID:     "C24",
+		Cannot: "a **paged prefill over an f16 cache**",
+		Specs:  []string{"010", "030"},
+		Issue:  25,
+		State:  Open,
+		Cost: "an f32 block pool, so [C5](#2-the-register)'s halving is " +
+			"unreachable for anyone who pages — which is everyone who shares " +
+			"blocks, because a pool is addressed through a page table by " +
+			"construction. `Attention` selects the f16 prefill kernel and then " +
+			"overwrites the selection when `Pages` is set, and there is no " +
+			"paged f16 variant. tgo's half is built: `nn.Attention` casts the " +
+			"scattered rows and `GraphSpec` carries the width, so this is one " +
+			"line the day the kernel lands",
+	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",
 		Specs:  []string{"021"},

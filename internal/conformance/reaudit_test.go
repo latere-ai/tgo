@@ -355,3 +355,112 @@ func groupRange(w []float32, group int) float32 {
 	}
 	return mx - mn
 }
+
+// TestC24APagedPrefillOverAnF16CacheHasNoKernel is the gap the f16 block pool
+// walked into, and it is [C5](#2-the-register)'s pattern a third time.
+//
+// C5 closed on "ScatterRows, prefill and paged decode all take f16", and each
+// of those is true. The combination is not: `Attention` selects
+// `AttentionPrefillF16Kernel` for a narrow cache and then, two lines later,
+// overwrites it with `AttentionPrefillPagedKernel` whenever a page table is
+// supplied — and there is no paged f16 variant to select.
+//
+// It is not a wrong answer: accel's compile catches the mismatch. But it
+// catches it as a *binding* complaint about slot widths, from a plan the
+// caller assembled correctly, rather than as a refusal naming the missing
+// kernel — so a consumer reads it as their own mistake.
+//
+// It blocks the f16 block pool outright. A shared pool is addressed through a
+// page table by construction ([016 §3](016-prefix-cache.md)) and every
+// conversation begins with a prefill, so there is no configuration that reaches
+// the narrow cache and skips this.
+func TestC24APagedPrefillOverAnF16CacheHasNoKernel(t *testing.T) {
+	const qHeads, kvHeads, headDim, block, maxPages = 4, 2, 4, 4, 4
+	const rows, tokens = block * maxPages, 3
+
+	// Its own device rather than the rig's, and the reason is the second
+	// finding: a Compile that fails leaves device children behind. The rig
+	// closes the device in a cleanup and accel refuses to close one with live
+	// children, so a probe that deliberately compiles something invalid cannot
+	// use it. This closes the runtime and lets the device go, which is what a
+	// caller who hit this error would have to do too.
+	dev := Device(t, Tier1)
+	rt, err := tensor.NewRuntime(dev)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	b := rt.NewBuilder("c24")
+
+	shape := tensor.Shape{rows, kvHeads, headDim}
+	k := tensor.NewState(b, tensor.StateDesc{Name: "k", DType: accel.F16, Shape: shape})
+	v := tensor.NewState(b, tensor.StateDesc{Name: "v", DType: accel.F16, Shape: shape})
+	q := tensor.Input(b, tensor.ValueDesc{
+		Name: "q", DType: accel.F32, Shape: tensor.Shape{tokens, qHeads, headDim}})
+	pages := tensor.Input(b, tensor.ValueDesc{
+		Name: "pages", DType: accel.U32, Shape: tensor.Shape{1, maxPages}})
+	lengths := tensor.Input(b, tensor.ValueDesc{
+		Name: "lengths", DType: accel.U32, Shape: tensor.Shape{1}})
+	tensor.Scalar(b, tensor.ScalarDesc{Name: "scale", Kind: tensor.ScalarF32})
+	tensor.Scalar(b, tensor.ScalarDesc{Name: "base", Kind: tensor.ScalarU32})
+
+	out := tensor.Attention(b, q, k, v, tensor.AttentionOptions{
+		Lengths: lengths, Pages: pages, Block: block,
+		ScaleName: "scale", BaseName: "base",
+	})
+	if err := b.Err(); err != nil {
+		t.Fatalf("the step was refused at record time: %v\n"+
+			"If accel has grown a named refusal for this, the row is narrower "+
+			"than it says and the probe should assert the new message", err)
+	}
+
+	// It records. It does not compile, and the message is about a binding
+	// rather than about a kernel that does not exist.
+	tensor.Output(b, "out", out)
+	plan, err := b.Compile(rt, tensor.CompileOptions{Label: "c24"})
+	if err == nil {
+		_ = plan.Close()
+		_ = rt.Close()
+		t.Fatal("a paged prefill over an f16 cache compiled; if the paged f16 kernel " +
+			"has landed, this row is closed and the block pool can be narrow")
+	}
+	for _, want := range []string{"f32", "f16"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the failure does not mention %q, so it is not the width "+
+				"mismatch this row is about: %v", want, err)
+		}
+	}
+	if cerr := rt.Close(); cerr != nil {
+		t.Logf("C24, second finding: the runtime does not close cleanly after a "+
+			"failed compile: %v", cerr)
+	}
+	t.Logf("C24: %v", err)
+
+	// The control: the same step over an f32 cache compiles, so what fails
+	// above is the width and not the paging.
+	t.Run("an f32 cache compiles", func(t *testing.T) {
+		pagedPrefillF32(t)
+	})
+}
+
+func pagedPrefillF32(t *testing.T) {
+	const qHeads, kvHeads, headDim, block, maxPages = 4, 2, 4, 4, 4
+	const rows, tokens = block * maxPages, 3
+	r2 := New(t, Tier1, Options{Eps: 1e-6, Label: "c24-paged-prefill-f32"})
+	shape2 := tensor.Shape{rows, kvHeads, headDim}
+	k2 := tensor.NewState(r2.G.B, tensor.StateDesc{Name: "k", DType: accel.F32, Shape: shape2})
+	v2 := tensor.NewState(r2.G.B, tensor.StateDesc{Name: "v", DType: accel.F32, Shape: shape2})
+	r2.F32("k", make([]float32, rows*kvHeads*headDim))
+	r2.F32("v", make([]float32, rows*kvHeads*headDim))
+	q2 := r2.Input("q", accel.F32, tensor.Shape{tokens, qHeads, headDim})
+	r2.F32("q", spread(tokens*qHeads*headDim, 7))
+	p2 := r2.Input("pages", accel.U32, tensor.Shape{1, maxPages})
+	r2.U32("pages", []uint32{0, 1, 2, 3})
+	l2 := r2.Input("lengths", accel.U32, tensor.Shape{1})
+	r2.U32("lengths", []uint32{tokens})
+	r2.ScalarF32("scale", 0.5)
+	r2.ScalarU32("base", 0)
+	r2.Run(tensor.Attention(r2.G.B, q2, k2, v2, tensor.AttentionOptions{
+		Lengths: l2, Pages: p2, Block: block,
+		ScaleName: "scale", BaseName: "base",
+	}))
+}

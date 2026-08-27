@@ -178,8 +178,9 @@ type Inputs struct {
 	// Extents and Last are the batch's two ports, nil for a single sequence.
 	Extents, Last *tensor.Tensor
 
-	// Batch mirrors [GraphSpec.Batch].
+	// Batch mirrors [GraphSpec.Batch] and Cache mirrors [GraphSpec.Cache].
 	Batch int
+	Cache accel.DType
 
 	// Base is the name of the prefill's first-position scalar, and is empty on
 	// a decode step. It is carried rather than assumed so that a hand-built
@@ -207,6 +208,7 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 	batch := max(s.Batch, 1)
 	in := Inputs{
 		Batch:   batch,
+		Cache:   s.Cache,
 		IDs:     input(b, PortIDs, accel.U32, s.Tokens),
 		PosQ:    input(b, PortPosQ, accel.U32, s.Tokens*c.NumHeads),
 		PosK:    input(b, PortPosK, accel.U32, s.Tokens*c.NumKVHeads),
@@ -327,22 +329,14 @@ func (s GraphSpec) check() error {
 			s.Tokens, s.Capacity)
 	}
 	switch s.Cache {
-	case accel.F32:
-	case accel.F16:
-		// accel takes an f16 cache -- C5 closed, and halving the largest
-		// allocation after the weights is what specs/005-kv-cache.md §3 is
-		// written for. What is missing is one layer down: ScatterRows reads
-		// the rows and writes the state with one kernel, so the two share a
-		// dtype, and the projections that produce the rows are f32. Reaching
-		// an f16 cache needs a Cast on the scattered rows inside nn.Attention,
-		// which does not record one. Refused here, naming that, rather than
-		// left to surface as accel's "Cast the rows" from a call this package
-		// does not make.
-		return fmt.Errorf("model: Cache is f16 and the graph writes f32 projections to " +
-			"it; tgo/nn's attention block records no Cast on the scattered rows, so an " +
-			"f16 cache is not reachable yet (specs/005-kv-cache.md §3)")
+	case accel.F32, accel.F16:
+		// f16 was refused here until 2026-08-27, and the refusal named what was
+		// missing rather than the dtype: ScatterRows reads the rows and writes
+		// the state with one kernel, so the two share a dtype, and the
+		// projections that produce the rows are f32. nn.Attention records the
+		// Cast now, so both widths are reachable.
 	default:
-		return fmt.Errorf("model: Cache is %v; a key/value cache is f32 "+
+		return fmt.Errorf("model: Cache is %v; a key/value cache is f32 or f16 "+
 			"(specs/005-kv-cache.md §3)", s.Cache)
 	}
 	return nil

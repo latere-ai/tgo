@@ -354,7 +354,7 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	}
 	b.host = step
 
-	plan, err := b.m.plan(rows, b.m.blocks.positions, CacheBlock, len(b.slots))
+	plan, err := b.m.plan(rows, b.m.blocks.positions, CacheBlock, len(b.slots), b.m.blocks.dtype)
 	if err != nil {
 		return nil, err
 	}

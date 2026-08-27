@@ -3,6 +3,7 @@
 package nn
 
 import (
+	"golang.design/x/accel"
 	"golang.design/x/accel/tensor"
 )
 
@@ -70,6 +71,15 @@ type AttentionConfig struct {
 	// the cache. It decides what the causal mask hides. Required when more
 	// than one token is scored; unread at T=1, which is a decode.
 	BaseName string
+
+	// Cache is the dtype the key and value states hold, and the zero value is
+	// [accel.F32].
+	//
+	// It decides whether the projected rows are narrowed before they are
+	// scattered: one kernel reads the rows and writes the state, so they share
+	// a dtype and accel refuses the pair split apart. A [tensor.State] does not
+	// report its own dtype, so this cannot be derived and has to be told.
+	Cache accel.DType
 
 	// Block is how many positions one physical block holds, and zero means the
 	// cache is contiguous.
@@ -199,9 +209,24 @@ func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
 
 	// The cache is written with one row per token, not one per head: a slot
 	// holds a token's whole key.
-	kNext := tensor.ScatterRows(g.B, k,
-		tensor.Reshape(g.B, kh, tensor.Shape{t, cfg.KVHeads * cfg.HeadDim}), slots)
-	vNext := tensor.ScatterRows(g.B, v, vals, slots)
+	//
+	// Narrowed first when the cache is f16, because one kernel reads the rows
+	// and writes the state and accel refuses the pair split apart. Two casts
+	// per layer against halving the largest allocation a serving process has
+	// after the weights -- and the only one that scales with both concurrency
+	// and context (specs/005-kv-cache.md §3).
+	//
+	// It is a config field and not something read off the State because a
+	// [tensor.State] does not report its dtype, so this block cannot tell which
+	// case it is in. The caller knows: it allocated the buffer.
+	kRows := tensor.Reshape(g.B, kh, tensor.Shape{t, cfg.KVHeads * cfg.HeadDim})
+	vRows := vals
+	if cfg.Cache == accel.F16 {
+		kRows = tensor.Cast(g.B, kRows, accel.F16)
+		vRows = tensor.Cast(g.B, vRows, accel.F16)
+	}
+	kNext := tensor.ScatterRows(g.B, k, kRows, slots)
+	vNext := tensor.ScatterRows(g.B, v, vRows, slots)
 
 	// q's rank says which computation this is: [QHeads, HeadDim] is a decode
 	// and [T, QHeads, HeadDim] is a prefill. A rank is not a hint, it is the
