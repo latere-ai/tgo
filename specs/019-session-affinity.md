@@ -1,6 +1,6 @@
 ---
 title: "Session affinity: cross-request prefix reuse without a page table"
-status: implemented
+status: complete
 layer: api
 depends_on:
   - 007-engine.md
@@ -28,11 +28,14 @@ different reasons, and only one of them is upstream.
 
 ## 2. Why this needs nothing from accel
 
-The refusal `CacheProcess` returns names a missing page table. That is the
-obstruction for **block-level** sharing — arbitrary requests sharing arbitrary
-physical blocks, which is [016 §4](016-prefix-cache.md)'s pool and what
-`internal/prefix` implements. It is not the obstruction for cross-request reuse
-as such.
+`CacheProcess` was refused when this was written, because it needs a page table
+and tgo had no port for one. The port exists now, and the scope with it
+(`WithPrefixCache`). So the obstruction this section argued around is gone, and
+what survives is the distinction it drew. **Block-level** sharing — arbitrary
+requests sharing arbitrary physical blocks, which is
+[016 §4](016-prefix-cache.md)'s pool and what `internal/prefix` implements —
+needs the page table, a lease, and a hash to find a run by. Cross-request reuse
+as such needs none of the three.
 
 `Session.reusable` compares token ids against that session's own history and
 returns how many agree. The cache behind it is contiguous and single-owner, and
@@ -42,8 +45,11 @@ with no page table, no `AttentionOptions.Pages`, and no change to
 [004 §3](004-model-graph.md)'s port table.
 
 The unit of sharing is the session, not the block. That is strictly weaker than
-016 — two conversations with the same system prompt still pay for it twice —
-and it is available now rather than after two layers of work.
+016 — under the session scope, two conversations with the same system prompt
+still pay for it twice — and it shipped first, before either layer of block
+work. Both layers exist now, and the process scope dedups that system prompt in
+the block pool instead, which is where [§9](#9-what-this-is-not) says this
+spec's routing stops running.
 
 ```mermaid
 flowchart LR
@@ -61,7 +67,11 @@ pool** with its history intact instead of being closed.
 
 ## 3. The pool, and what a hit costs
 
-The pool holds $N$ sessions, each with its KV reserved for the process's life.
+The pool holds $N$ sessions, and $N$ sessions' worth of key/value memory is
+reserved for the process's life. Which object holds it depends on the scope:
+each session holds its own under `CacheOff` and `CacheSession`, and under
+`CacheProcess` the model's block pool holds one allocation of the same size for
+all of them. The quantity is the same either way, and so is the life of it.
 Routing compares the request's token ids against every pooled session's history
 and takes the longest agreement.
 
@@ -103,10 +113,16 @@ owner is least likely to return.
 gives it back on close. With a pool, the KV is reserved once at startup and
 never returned, so:
 
-- **admission becomes "is a pooled session free"**, a counting semaphore of $N$,
-  rather than arithmetic over free device memory;
+- **admission gains a second question**, "is a pooled session free": a counting
+  semaphore of $N$ rather than arithmetic over free device memory. It does not
+  replace the admitter's own semaphore, it sits behind it, and the two have to
+  agree — [§8.6](#86-the-pool-is-a-second-semaphore-and-two-of-them-must-agree)
+  records what shipped and why `server.New` refuses a concurrency above the
+  pool;
 - $N$ is chosen at startup from `CacheBytesPerSession` and the device budget,
-  and it is the concurrency limit as well as the reuse depth;
+  and it is the concurrency limit as well as the reuse depth — under the process
+  scope it is the concurrency limit alone
+  ([§8.4](#84-what-tgo-serve-does-with-it));
 - a process that served one request now holds $N$ sessions' KV for its life.
   For a 32B model at f16 that is the dominant resident cost, and it is paid
   whether or not a second request ever arrives.
@@ -122,10 +138,12 @@ miss, so a request landing on another conversation's session can measure whether
 that conversation exists. The pool, not the block, is what a scope has to bound.
 
 **The decision: affinity is keyed, and an unkeyed request never matches another
-request's session.** The key is whatever the layer in front supplies — 016 §7.1
-already puts `cache_salt` on the request for exactly this, and
-[009 §7](009-server.md) says tgo has no notion of a tenant, so tgo must not
-invent one. Concretely:
+request's session.** The key is whatever the layer in front supplies. 016 §7.1
+decided `cache_salt` for exactly this but did not put it on the request;
+`server` parses it and carries it in as the affinity key, which
+[§8.5](#85-cache_salt-was-not-on-the-request-and-is-now) records. tgo takes the
+key and does not derive one: [009 §7](009-server.md) says tgo has no notion of a
+tenant, so tgo must not invent one. Concretely:
 
 | the request carries | it may match |
 | --- | --- |
@@ -171,12 +189,48 @@ The first row is the one that must be measured rather than asserted structurally
 — [010-D7](010-conformance.md): a probe that only checks the code path was taken
 is what let [016 §9](016-prefix-cache.md) be confidently wrong.
 
-## 8. What shipped
+## Outcome
 
 Shipped 2026-08-26. `tgo.Pool` holds N sessions; `Pool.Acquire` returns a
 `Lease`; `Lease.Chat` and `Lease.Complete` render, tokenize, route and generate;
 `Lease.Release` returns the session with its history. `server.WrapPool` is
 `server.Wrap` with that pool behind it, and `tgo serve` builds one.
+
+**What shipped**, section by section: the win this spec exists for, measured
+against the recorder rather than a clock
+([§8.1](#81-the-win-measured)); the pool in package `tgo` and why the server
+cannot hold it ([§8.2](#82-where-the-pool-lives-and-why-it-is-not-in-server));
+what [§6](#6-correctness)'s early-end truncation turned out to cost
+([§8.3](#83-the-truncation-is-a-no-op-for-a-cancellation-and-not-for-a-failure));
+the two flags `tgo serve` exposes
+([§8.4](#84-what-tgo-serve-does-with-it)); the affinity key over the wire
+([§8.5](#85-cache_salt-was-not-on-the-request-and-is-now)); and the startup
+refusal that keeps the two semaphores in step
+([§8.6](#86-the-pool-is-a-second-semaphore-and-two-of-them-must-agree)).
+
+**What diverged** from the design, and why the code is right:
+[§1](#1-the-gap-this-closes) reads as though the win were automatic, and what
+shipped puts it one flag away, because turning reuse on changes what an answer
+says ([§8.4](#84-what-tgo-serve-does-with-it));
+[§5](#5-isolation-the-pool-is-now-the-boundary) assumed 016 §7.1 had already put
+`cache_salt` on the request, and it had not, so `server` had to carry it
+([§8.5](#85-cache_salt-was-not-on-the-request-and-is-now));
+[§4](#4-admission-changes-and-this-is-the-real-cost) reads as though the
+admitter became the pool, and it is a second semaphore behind the first, which
+is a deployment `server.New` refuses rather than a wait it invents
+([§8.6](#86-the-pool-is-a-second-semaphore-and-two-of-them-must-agree)).
+
+**Not built.** Nothing in this spec's scope: every section's subject is built
+and tested. What moved out went to specs that own it —
+[022](022-batched-serving.md) replaces the pooled engine with a scheduler engine
+and is where this design's successor lives, and
+[021](021-admission-queue.md) takes the waiting
+[008-D9](008-scheduler.md) assigned to `Pool`. One description debt is open:
+the `CacheProcess` interaction is stated in [§9](#9-what-this-is-not) and has no
+section of its own, so a reader looking for how affinity and block sharing
+compose finds it in the section about what this spec is not. A stale comment on
+`TestPoolSecondTurnPrefillsOnlyTheSuffix` says "the 42 a cold request pays"
+where [§8.1](#81-the-win-measured)'s cold prompt is 32.
 
 ### 8.1 The win, measured
 
@@ -257,13 +311,20 @@ keeping the clearing of the failure leaves the whole suite green.
 
 ### 8.4 What `tgo serve` does with it
 
-`--sessions N` is the pool, and `--prefix-cache` is whether it reuses anything.
-Two flags rather than one, because they are two costs:
+`--sessions N` is the pool, and `--prefix-cache` is what may share with what.
+Two flags rather than one, because they are two costs. `--prefix-cache` is not a
+boolean: it takes `off`, `session` or `process`, one dimension with three
+settings, and only `session` leaves
+[§3](#3-the-pool-and-what-a-hit-costs)'s routing live —
+[§9](#9-what-this-is-not) says what `process` runs instead. The flag still
+reports itself as boolean to the `flag` package, so a bare `--prefix-cache`
+means `session` and does not swallow the model directory after it.
 
 | flag | default | what it costs |
 | --- | --- | --- |
 | `--sessions N` | 4, or what the device holds if that is less | N sessions' cache, reserved at startup, held until the process exits |
-| `--prefix-cache` | off | a warm answer equals a cold one in distribution rather than bit for bit ([016-D6](016-prefix-cache.md)) |
+| `--prefix-cache session` | off | a warm answer equals a cold one in distribution rather than bit for bit ([016-D6](016-prefix-cache.md)) |
+| `--prefix-cache process` | off | that, and one conversation reading another's blocks: a request's `cache_salt` is what keeps tenants apart, and `--sessions` is concurrency rather than reuse depth |
 
 The pool size is **not** the device's whole capacity, which is what
 [§4](#4-admission-changes-and-this-is-the-real-cost) reads as. `N_max` was a
@@ -282,10 +343,10 @@ semaphore.
 
 ### 8.5 `cache_salt` was not on the request, and is now
 
-[§5](#5-isolation-the-pool-is-now-the-boundary) says
-"[016 §7.1](016-prefix-cache.md) already puts `cache_salt` on the request".
-It did not: 016 §7.1 decided it and `internal/prefix` carries a `Salt` field
-that nothing reaches from the server. `server` now parses `cache_salt` from the
+[§5](#5-isolation-the-pool-is-now-the-boundary) was drafted as though
+[016 §7.1](016-prefix-cache.md) had already put `cache_salt` on the request. It
+had not: 016 §7.1 decided it and `internal/prefix` carries a `Salt` field that
+nothing reached from the server. `server` now parses `cache_salt` from the
 raw body beside the other members `ir.Request` has no room for, and it becomes
 `SessionSpec.Key` and then the pool's affinity key.
 
@@ -346,9 +407,21 @@ named, and neither size shows in the report.
 It is not [016](016-prefix-cache.md), and it does not make 016 unnecessary.
 Block sharing dedups a system prompt across *different* conversations, which
 affinity cannot do at any pool size: two conversations are two sessions, and two
-sessions hold two copies. When the page-table port lands, the two compose —
-affinity picks the session, blocks dedup across them — and this spec's pool
-becomes the allocator the block pool hands memory to.
+sessions hold two copies.
+
+The port landed and the two do not compose the way this section predicted.
+`Session.reusable` returns 0 unless the scope is `CacheSession`, so under
+`CacheProcess` `Pool.route` scores every entry zero, falls through to the
+coldest session by last use, and `Lease.generate` rewinds that session to 0.
+[§3](#3-the-pool-and-what-a-hit-costs)'s longest match,
+[§3.1](#31-when-a-conversation-keeps-its-session)'s reuse distance and
+[§3.2](#32-choosing-the-victim-destroys-history)'s tie-break never execute.
+Reuse moves one layer down instead: `Session.acquire` leases blocks from the
+model's pool and is told how many positions were already computed, matched by
+hash on the same key this spec routes on. So `--prefix-cache process` gets block
+sharing and a coldest-session round robin, not affinity as well, and the session
+pool there is admission and eviction only. It hands the block pool nothing — the
+block pool is the model's, sized by `tgo serve` as `--sessions` × `--context`.
 
 It is also not a scheduler. [008](008-scheduler.md) runs many conversations in
 one step; this runs one conversation per session and only changes when the
@@ -357,8 +430,10 @@ session dies.
 ## Decision record
 
 **019-D1. The pool is sessions, not blocks.** The block is the better unit and
-needs a port tgo does not have. A session is the unit the kernels already
-address, so it ships now. See [§2](#2-why-this-needs-nothing-from-accel).
+needed a page-table port tgo did not have when this was decided. A session is
+the unit the kernels already address, so it shipped first. The port landed
+afterwards, and [§9](#9-what-this-is-not) records that the two did not compose
+the way this spec predicted. See [§2](#2-why-this-needs-nothing-from-accel).
 
 **019-D2. KV is reserved at startup, not per request.** It is what makes a hit
 possible, and it costs a process $N$ sessions' memory for its life. Admission

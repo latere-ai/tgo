@@ -1,6 +1,6 @@
 ---
 title: "The server: three wire dialects through one neutral request, and none of it in the engine"
-status: drafted
+status: implemented
 layer: api
 depends_on:
   - 000-decisions.md
@@ -239,7 +239,7 @@ reporting itself as lost.
 than a list.** A field is advisory if a request with it and a request without it
 produce the same tokens.
 
-### 4.1 The rest of the field map
+### 4.2 The rest of the field map
 
 | field | tgo |
 | --- | --- |
@@ -249,7 +249,7 @@ produce the same tokens.
 | `seed` | honoured as a **stream** seed, [006 §4](006-sampling.md) |
 | `presence_penalty`, `frequency_penalty`, `repetition_penalty` | mapped |
 | `logit_bias` | applied first, [006 §3](006-sampling.md) |
-| `logprobs`, `top_logprobs` | from `Sampler.Probs`, which does not move the stream |
+| `logprobs`, `top_logprobs` | **advisory**: accepted, not served, and reported in `X-Tgo-Loss` (`server/loss_test.go:273`). `sample.Sampler.Probs` does not move the stream and nothing in `server/` calls it; the legacy encoder answers `logprobs: null` on every choice |
 | `thinking` / `reasoning` | maps to the template's thinking flag, [003 §3](003-chat-template.md). The **budget is advisory**: tgo does not stop the model mid-thought |
 | `tools`, `tool_choice` | rendered into the prompt via the model's template; the model's text comes back as blocks. **No forced grammar** until [015](015-structured-output.md), so a malformed call is possible and is reported as text rather than as a parsed call |
 
@@ -303,8 +303,11 @@ shape to borrow.
 
 **tgo therefore owns a small per-dialect error encoder**, beside the frontend
 rather than inside it, covering the pre-stream body and the mid-stream frame.
-§8 tests it per dialect. This is the one place §2's "three surfaces for one
-adapter" is not true, and it is worth stating rather than discovering.
+§8 tests it per dialect. This is one of **two** places §2's "three surfaces for
+one adapter" is not true. The other is `/v1/completions`: `llmdialect` carries
+three dialects and §1's fourth route is a `Frontend` tgo wrote itself
+(`server/legacy.go`), so the legacy surface costs a whole codec rather than a
+table row.
 
 ## 6. Concurrency
 
@@ -366,6 +369,78 @@ need no device and no weights:
 
 One end-to-end test runs a synthetic model through the real handler, which is
 what proves the fake engine's contract matches the real one.
+
+## Outcome
+
+The server is built and serving. It shipped in Wave 5 (`e6f2cfe`, 2026-08-26)
+and grew over the seven commits since, the last on 2026-08-27: `server/` is
+7229 lines across 13 production files and 13 test files, `go test ./server
+-cover` reports 96.0% of statements, and [011](011-sequencing.md) records the
+wave against a real Qwen3-0.6B checkpoint. All four POST routes and the three
+GET routes are live.
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 1 | the four POST routes and the three GET routes, each POST round-tripping one golden request | `server/server.go:87-93`, `server/dialect_test.go:20` |
+| 2 | `ir` meets `chat.Message` and `Policy` in one file, and the root module imports no `llmdialect` package | `server/adapt.go:16-19` |
+| 2.1 | the measurement still holds at `latere.ai/x/pkg v0.41.0`: one require, `go.sum` at two lines, a stdlib-only build list | `go.mod`, `go.sum` |
+| 3 | blocks as a strict subset: `ir.BlockImage` is refused rather than dropped, redacted thinking is dropped with the reason stated | `chat/chat.go:49-67`, `server/adapt.go:162-228` |
+| 3.1 | thinking is dropped by block type, so the forgeable textual boundary does not exist | `chat/qwen3.go:261-266`, `server/dialect_test.go:121` |
+| 3.2 | typed stream events, one to one with `ir.Event` | `stream.go:20-70,163-192`, `server/generate.go:247-268` |
+| 4 | refusals name their field; advisory fields run and come back in `X-Tgo-Loss` and the counter | `server/refuse.go:37-53`, `server/loss.go:155-213`, `server/server.go:123-126` |
+| 4.1 | the subtraction is per dialect, and the whole name-by-route matrix is tested | `server/loss.go:104-126`, `server/loss_test.go:136,183` |
+| 4.2 | the field map, including the 2026-08-26 schema amendment | `server/adapt.go:86-123,272-325`, `server/extras.go:150-175` |
+| 5 | a flush per event, cancellation on disconnect, and a terminal `MessageDelta`+`MessageStop` | `server/generate.go:107-173`, `server/stream_test.go:174,380,413` |
+| 5.1 | the per-dialect error encoder, pre-stream body and mid-stream frame | `server/errors.go:51-71,129-149,179-193` |
+| 6 | the semaphore, the bounded queue with its timeout, the 429 with `Retry-After`, and all seven series under the names §6 gives | `server/admit.go:54-117`, `server/metrics.go:155-192` |
+| 7 | loopback by default, a flag for a public bind, and the printed no-authentication line | `server/options.go:18`, `server/server.go:246-296` |
+| 8 | all ten rows, and an end-to-end set larger than the one row asked for | `server/e2e_test.go:195,259,286,340` |
+
+**What diverged** from the design, and why the code is right:
+
+- §1 attributes every dialect to `llmdialect`, which carries three.
+  `/v1/completions` is a fourth `Frontend` tgo wrote itself, 277 lines of
+  decode, encode and SSE (`server/legacy.go`). Writing it as a `Frontend`
+  rather than as a fifth handler is what keeps it on one pipeline, one pair of
+  loss tables and one error encoder instead of a fourth copy of each.
+- §4.1 asks for the subtraction list as one named constant. It is four tables
+  in `server/loss.go`: `honoured` (:41), keyed by `Policy` field and pinned by
+  the reflect test at `server/loss_test.go:136`, `honouredEverywhere` (:86) and
+  `honouredHere` (:104) for the per-dialect split, and `honouredSession` (:67)
+  for `cache_salt`, which is honoured and reaches no `Policy` field at all. One
+  table cannot hold a name that configures the session rather than the sampler.
+- §5's flush uses `http.NewResponseController` rather than an `http.Flusher`
+  type assertion. It reports the failure a wrapped `ResponseWriter` would
+  otherwise swallow, which is the trap the section names.
+
+**Not built.** `logprobs` and `top_logprobs` are accepted and reported as an
+advisory loss rather than served: `sample.Sampler.Probs` exists and nothing in
+`server/` calls it, and the legacy encoder answers `logprobs: null` on every
+choice (`server/loss_test.go:273`, `server/legacy.go:193`). Serving them is
+009's. [009-D14](#decision-record)'s CI footprint gate is the one decision row
+with nothing behind it: no `go list -deps` step and no allowlist in
+`.github/workflows/` or the `Makefile`, so the property D10 rests on is
+unguarded, and building the gate is 009's. `stopReason` reaches two of the IR's
+five values, so a completion that ended on a stop string is answered as
+`end_turn`; closing it needs `Stream.StopReason`, filed upstream, and the row
+is 009's (`server/generate.go:297-309`). Six pieces of shipped surface have no
+section, all of them 009's to write: the legacy codec's internals
+(`dialectLegacy`, the `legacyKeys` allowlist as the loss input, the
+prompt-as-string-or-array rule, and the `suffix`/`echo`/`best_of` refusals);
+the exported seam of `Engine`, `Session`, `Stream` and `SessionSpec`, with
+`Wrap` and `WrapPool` as its two constructors; the seven `With*` options; the
+operational defaults `DefaultAddr` (`127.0.0.1:11434`) and
+`DefaultMaxBodyBytes` (8 MiB); the rule that a cancelled request answers 499
+rather than an empty 200; and the loss counter's 256-label cardinality bound,
+which is what keeps a client-controlled label from growing memory on a public
+bind. Two items are not 009's: [022](022-batched-serving.md) makes a scheduler
+engine the default and leaves `WrapPool` behind `--prefix-cache session` and
+`off`, which is what makes concurrent requests go faster rather than interleave
+(§6); and [021](021-admission-queue.md) gives `tgo_queue_wait_seconds` a real
+number, counting the wait for cache blocks as well as the wait for a session
+slot.
 
 ## Decision record
 

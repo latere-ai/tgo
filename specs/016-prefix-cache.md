@@ -1,6 +1,6 @@
 ---
 title: "Prefix caching: reusing the KV of a prompt somebody already paid for"
-status: drafted
+status: implemented
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -83,6 +83,17 @@ error against the win, and the alternative (sharing partial blocks) would mean
 two sequences writing into one block at different offsets, which is a
 correctness problem rather than an optimisation.
 
+Each block gets a hash chained over its predecessor, so a block's identity
+includes everything before it:
+
+$$h_0 = H(\text{ids}[0{:}B]), \qquad h_i = H(h_{i-1} \parallel \text{ids}[iB{:}(i{+}1)B])$$
+
+**The chain is what makes the hash a prefix key rather than a content key.** Two
+different prompts that happen to contain the same 32 tokens in the middle have
+different $h_i$ there, because their $h_{i-1}$ differ. Without the chain they
+would collide and the second request would silently attend to the first's
+context.
+
 ### 3.1 A full hit must still prefill one token
 
 **The reusable prefix is capped at $T-1$, never $T$.**
@@ -114,18 +125,7 @@ if matched == len(inputs) && matched > 0 {
 §8 tests it with an identical prompt submitted twice, which is the case the
 chat path cannot produce.
 
-Each block gets a hash chained over its predecessor, so a block's identity
-includes everything before it:
-
-$$h_0 = H(\text{ids}[0{:}B]), \qquad h_i = H(h_{i-1} \parallel \text{ids}[iB{:}(i{+}1)B])$$
-
-**The chain is what makes the hash a prefix key rather than a content key.** Two
-different prompts that happen to contain the same 32 tokens in the middle have
-different $h_i$ there, because their $h_{i-1}$ differ. Without the chain they
-would collide and the second request would silently attend to the first's
-context.
-
-### 3.1 The hash is a security boundary, so $H$ is not free choice
+### 3.2 The hash is a security boundary, so $H$ is not free choice
 
 A hash collision here does not corrupt data — it hands one request **another
 request's KV**, and the output stays fluent. So $H$ must be chosen adversarially,
@@ -196,10 +196,11 @@ point is not associative, so the bits can differ from what this request would
 have computed alone.
 
 This is the same class as the CPU/Metal divergence [006 §4.1](006-sampling.md)
-already refuses to bound and instead measures. It is handled the same way:
-[010 §3](010-conformance.md) gains a measurement — greedy, same prompt, cold
-against warm, the first differing token index — rather than an assertion nobody
-verified.
+already refuses to bound and instead measures. What shipped **asserts** it
+rather than reporting it: `prefixcache_test.go:153` runs one greedy prompt cold
+and warm and names the first differing token index on a mismatch.
+[010 §3](010-conformance.md) carries no cold-against-warm row, so the divergence
+is checked in tgo's own tests and is not one of the numbers tgo reports back.
 
 > It is worth saying plainly that this makes a cache hit **observable**, and
 > therefore that "prefix caching is transparent" is not quite true. It is
@@ -244,18 +245,25 @@ The scope is what makes the default safe; the salt is what makes it precise.
 Neither alone is enough: a scope cannot express "these two sessions are the same
 customer", and a salt cannot protect a caller who forgot it.
 
-**The decision: the cache is scoped, the default scope is the process, and a
-request may narrow further with a salt.** [009 §7](009-server.md) says tgo serves one model with no
-authentication and no tenancy — so within one tgo process there is no tenant
-boundary to cross, and sharing is correct. The moment something in front of it
-multiplexes users, the operator must scope the cache, and tgo makes that
-possible rather than deciding it:
+**The decision: the cache is scoped, a request may narrow further with a salt,
+and the shipped default is `off`.** [009 §7](009-server.md) says tgo serves one
+model with no authentication and no tenancy — so within one tgo process there is
+no tenant boundary to cross, and sharing is correct. `process` is therefore
+*permitted* by this argument, and it is still not the default, for a reason that
+is not isolation: any scope changes what an answer costs and, in the last
+decimal places, what it says ([016-D6](#decision-record)), and `process`
+additionally allocates a block pool at startup sized from `--sessions`. Changing
+an answer's bits and taking device memory are the operator's decisions, so
+`defaults()` returns `CacheOff` (`options.go:117`) and the reason is recorded
+where the flag is read (`cmd/tgo/engine.go:115`). The moment something in front
+of tgo multiplexes users, the operator must also scope the cache, and tgo makes
+that possible rather than deciding it:
 
 | scope | when |
 | --- | --- |
-| `process` (default) | single-tenant: a CLI, one team's server, an agent runtime |
-| `session` | share within a conversation only; safe under multi-tenancy. Reachable from the server since [019](019-session-affinity.md) pooled the sessions; `tgo serve --prefix-cache` |
-| `off` | measurement, and comparison against a cold baseline |
+| `process` | single-tenant: a CLI, one team's server, an agent runtime. `tgo serve --prefix-cache process` |
+| `session` | share within a conversation only; safe under multi-tenancy. Reachable from the server since [019](019-session-affinity.md) pooled the sessions; bare `tgo serve --prefix-cache` |
+| `off` (default) | measurement, and comparison against a cold baseline |
 
 **`session` is the important row.** It is the scope that keeps the largest share
 of the benefit with no cross-user leak at all, so an operator who cannot reason
@@ -265,72 +273,53 @@ The documentation states the trade rather than burying it. An inference
 framework that silently makes one user's prompts detectable by another has made
 a security decision on the operator's behalf.
 
-### 7.2 What shipped, and why the server gets none of it
+### 7.2 What shipped
 
-Shipped 2026-08-26: `WithPrefixCache(CacheSession, n)` reuses a session's own
-prefix. The default is `off`, not the `process` this section chose, because
-`process` cannot be honoured at all: it needs the page-table port
-[§9](#9-what-accel-gives-verified-by-value) records as missing.
+**Both scopes ship and both reach the server.** `WithPrefixCache` takes
+`CacheSession` and `CacheProcess` (`options.go:302`), and `--prefix-cache off |
+session | process` maps onto all three (`cmd/tgo/scope.go:43,47`); bare
+`--prefix-cache` is `session`. `session` keeps every block inside one
+conversation, `process` shares one pool between conversations
+(`server/pool_test.go:502`). The page-table port that `process` needs landed on
+2026-08-26 ([§9](#9-what-accel-gives-verified-by-value)), so `CacheProcess` is
+refused only for a pool smaller than one block (`options.go:317`). The default
+is `off` by the decision in
+[§7](#7-isolation-sharing-kv-across-tenants-is-a-side-channel), not by an
+obstruction.
 
-**The larger correction is that `session` is unreachable from `tgo serve`, and
-the table above says the opposite.** `server/generate.go` opens one session per
-request and closes it on the way out — that is what returns the KV reservation
-[§6](#6-correctness-two-subtleties-one-of-which-is-real) accounts for. A session
-that is destroyed at the end of the request it was made for never sees a second
-turn, so there is no own-prefix to reuse. The $1 - 1/n$ win this table credits
-to `session` is a win only for a caller who holds a `Session` across
-generations, which today means an embedded caller and not the server.
-
-So: **no scope reuses anything from `tgo serve`.** The feature is real and
-tested at the library surface, and the product does not reach it.
-
-**Closed by [019](019-session-affinity.md), 2026-08-26.** `tgo serve` keeps a
-pool of sessions and routes a request to the one already holding the longest
-matching prefix, so a session sees a second turn and `session` reuses what it
-holds. `--prefix-cache` turns it on; `--sessions N` is the pool. 019 §8.1 has
-the measurement.
-
-**And the refusal `CacheProcess` returns names the wrong obstruction.** It names
-the missing page-table port, which is the blocker for *block-level* sharing —
-arbitrary requests sharing arbitrary blocks, which is what
-[§4](#4-the-structure-a-hash-map-not-a-trie)'s pool and `internal/prefix` are
-for. It is **not** the blocker for cross-request reuse as such: a server that
-kept a pool of sessions and routed a request to the session already holding the
-longest matching prefix would get cross-request reuse with no page table and no
-accel change, because `Session.reusable` is a token comparison against that
-session's own history and each pooled session keeps its own contiguous,
-single-owner cache. That design trades this section's isolation argument for a
-different one — the affinity pool, not the block, becomes the thing a scope has
-to bound — and it changes when the KV reservation is released, so it is a
-decision to be made rather than a gap to be filled.
+Reaching the server took [019](019-session-affinity.md), 2026-08-26. One session
+opened per request and closed on the way out never sees a second turn, so for a
+week there was no own-prefix for `session` to reuse and the feature was real
+only at the library surface. `tgo serve` now keeps a pool of sessions and routes
+a request to the one already holding the longest matching prefix; `--sessions N`
+is the pool, and 019 §8.1 has the measurement.
 
 ## 8. Tests
 
-Every one is host-side logic — the trie, the refcounts, the eviction — plus a
-small device test for the reuse itself. No weights.
+Every one is host-side logic — the map, the refcounts, the eviction — plus a
+small device test for the reuse itself. No weights. Each row names the test that
+covers it; the one row with no test is marked as such.
 
-**The rows below are the POOLED path, which has no code yet.** Everything that
-mentions a block, a refcount, an eviction or a lease is waiting on the port in
-[§9](#9-what-accel-gives-verified-by-value); a table that reads as a test plan
-for shipped work would be the third false green in this document. What the
-session-local path shipped with is the first row, the last row, the seeded row,
-and one more that is not here: **a request refused after the rewind leaves the
-session's history intact**, which is what stops a rejected request from
-silently truncating the conversation it was rejected from.
+| test | what it catches | covered by |
+| --- | --- | --- |
+| a warm request produces the same tokens as a cold one (greedy) | the whole point | `prefixcache_test.go:153` |
+| hit length is block-aligned and never exceeds the true common prefix | §3 | `internal/prefix/prefix_test.go:247` |
+| **the chained hash**: two prompts sharing an interior run do **not** share a block, asserted **at `Publish`** | §3's chain. The collision does its damage at publish, not at acquire: a match loop stops at the first miss, so an interior block is never looked up, and the second prompt instead *adopts* the first's physical block when it publishes. A test written against "they do not share" without publishing passes under an unchained hash | `internal/prefix/prefix_test.go:125` |
+| **a freed block's hash entry is gone**: force eviction, then request the evicted prefix, and assert a miss rather than a hit | §5's invariant, tested directly | `internal/prefix/prefix_test.go:269` |
+| refcount: a block shared by two sequences survives one of them finishing | §5 | `internal/prefix/prefix_test.go:297` |
+| eviction never frees a block at refcount > 0 | §5 | `internal/prefix/prefix_test.go:330` |
+| a seeded completion is identical cold and warm | §6 | `prefixcache_test.go:460` |
+| `session` scope: two sessions with the same prefix do not share | §7 | `internal/prefix/scope_test.go:8` |
+| a partial hit's attention **output** matches the host oracle, not merely its `base` value | §9 — asserting the base is what let C13 pass | **no test** |
+| concurrent identical-prefix inserts keep one block, under `-race` | §10.4 | `internal/prefix/concurrent_test.go:12` |
+| **the identical prompt submitted twice** returns the same completion, and the second prefills exactly one token | §3.1 — the case the chat path cannot produce | `prefixcache_test.go:197` |
+| **a request refused after the rewind leaves the session's history intact** | a rejected request must not silently truncate the conversation it was rejected from | `prefixcache_test.go:430` |
 
-| test | what it catches |
-| --- | --- |
-| a warm request produces the same tokens as a cold one (greedy) | the whole point |
-| hit length is block-aligned and never exceeds the true common prefix | §3 |
-| **the chained hash**: two prompts sharing an interior run do **not** share a block, asserted **at `Publish`** | §3's chain. The collision does its damage at publish, not at acquire: a match loop stops at the first miss, so an interior block is never looked up, and the second prompt instead *adopts* the first's physical block when it publishes. A test written against "they do not share" without publishing passes under an unchained hash |
-| **a freed block's hash entry is gone**: force eviction, then request the evicted prefix, and assert a miss rather than a hit | §5's invariant, tested directly |
-| refcount: a block shared by two sequences survives one of them finishing | §5 |
-| eviction never frees a block at refcount > 0 | §5 |
-| a seeded completion is identical cold and warm | §6 |
-| `session` scope: two sessions with the same prefix do not share | §7 |
-| a partial hit's attention **output** matches the host oracle, not merely its `base` value | §9 — asserting the base is what let C13 pass |
-| concurrent identical-prefix inserts keep one block, under `-race` | §10.4 |
-| **the identical prompt submitted twice** returns the same completion, and the second prefills exactly one token | §3.1 — the case the chat path cannot produce |
+**The uncovered row is the one that would catch the failure §9 records.** The
+only `oracle.Attention` call in the tree is `model/graph_rig_test.go:360` at
+causal base 0, and `internal/conformance/parity_test.go:334` binds base 0 and
+asserts only that the graph compiled — which is the failure mode the row exists
+to warn about. The Outcome names it as open.
 
 ## 9. What accel gives, verified by value
 
@@ -475,13 +464,17 @@ correctness**, and tgo serving concurrent requests puts it on their side.
 layers, which span a node's edge exactly, from *whole-state* layers — recurrent
 and rotating (sliding-window) — which keep entries only at node ends. tgo's
 design assumes every layer is sliceable KV, which is true for Qwen3 dense and
-**false for the hybrid-attention successors** ([011 §3](011-sequencing.md)
-lists them as out of scope). A recurrent state has no meaning at an arbitrary
-position, so it cannot be resumed mid-edge.
+**false for the hybrid-attention successors**. [011 §2.1](011-sequencing.md)
+names Qwen3.8-27B as a target and [018](018-hybrid-models.md) designs its graph:
+48 gated-delta layers beside 16 softmax ones. A recurrent state has no meaning
+at an arbitrary position, so it cannot be resumed mid-edge, and this spec's
+block design does not extend to those 48 layers as written.
 
 That is worth recording now: [004-D2](004-model-graph.md) says a new
 architecture is additive at the registry, and for a hybrid model **that is not
-true of the cache**. ollama had to generalise its trie; tgo would too.
+true of the cache**. ollama had to generalise its trie; tgo does the same in
+[025](025-recurrent-snapshot.md), which reuses such a state by copying a
+snapshot back rather than by addressing it.
 
 ### 10.2 Dialect translation: three positions
 
@@ -509,8 +502,9 @@ not ask for it.
 
 ### 10.4 Concurrency, which neither reference will warn you about
 
-[§7](#7-isolation-sharing-kv-across-tenants-is-a-side-channel)'s default scope is
-the **process**, so every session's goroutine reaches one pool — while
+Under `CacheProcess`
+([§7](#7-isolation-sharing-kv-across-tenants-is-a-side-channel)) every session's
+goroutine reaches one pool — while
 [007-D1](007-engine.md) deliberately leaves a `Session` unlocked. The pool is
 therefore internally locked, and **lookup → allocate → insert is atomic**: two
 concurrent misses on the same prefix must keep one block and drop the other's
@@ -535,6 +529,85 @@ skipped. A response cache would change what the model does, and
 [006 §4](006-sampling.md)'s seeded stream is the mechanism for a caller who
 wants determinism.
 
+## Outcome
+
+Prefix caching ships. `internal/prefix` is the pool — chained SHA-256 block
+hashes, a hash map with refcounts and LRU, a scope and a salt — and `blocks.go`
+gives it device memory, reached from
+`WithPrefixCache(CacheSession|CacheProcess, n)` and from
+`tgo serve --prefix-cache`. The session scope landed on 2026-08-26 with
+[019](019-session-affinity.md)'s session pool ([011](011-sequencing.md) Wave 7);
+the process scope followed on 2026-08-27, once accel's paged prefill and tgo's
+`PortPages` made a block addressable from more than one sequence (Wave 8). About
+a hundred tests cover it across `internal/prefix`, `prefixcache_test.go`,
+`blocks_test.go`, `batch_test.go` and `server/pool_test.go`, green under
+`-race`.
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 2 | the key is the encoded token ids, taken after tokenization | `internal/prefix/prefix.go:119`, `session.go:510` |
+| 3 | 32-position blocks, and only a complete block is hashed | `blocks.go:28`, `internal/prefix/hash.go:70` |
+| 3.1 | the hit is capped at $T-1$, so a full hit still prefills one token | `internal/prefix/prefix.go:310` |
+| 3.2 | SHA-256, chained, seeded from scope, domain and salt | `internal/prefix/hash.go:28,54` |
+| 4 | a hash map with a refcount per block; no trie anywhere in the package | `internal/prefix/prefix.go:187` |
+| 5 | a refcount-0 block stays cached; LRU frees it and its hash entry in one step | `internal/prefix/prefix.go:384,410` |
+| 6 | warm equals cold in distribution, checked greedily | `prefixcache_test.go:153` |
+| 7.1 | `cache_salt` on the request and a scope on the server, composed in one seed | `options.go:199`, `server/extras.go:98` |
+| 7.2 | `off`, `session` and `process` all reach `tgo serve` | `options.go:302`, `cmd/tgo/scope.go:43,47` |
+| 9 | the graph binds a page table, and the shared pool is f16 | `model/graph.go:49`, `blocks.go:88` |
+| 10.4 | lookup, allocate and insert under one mutex | `internal/prefix/prefix.go:185,298` |
+| 11 | `cache_control` stays advisory-loss | `server/loss.go:67` |
+
+**What diverged** from the design, and why the code is right:
+
+- **The default scope is `off`, not `process`** (`options.go:117`). §7's
+  isolation argument permits `process` and does not require it as a default, and
+  two other costs decide it: any scope changes an answer's last decimal places
+  ([016-D6](#decision-record)), and `process` allocates a block pool at startup
+  sized from `--sessions`. A framework that changes what an answer says and
+  takes device memory without being asked has made the operator's decision.
+  §7, §7.2, §10.4 and [016-D7](#decision-record) are corrected to match.
+- **§6's divergence is asserted, not reported.** `prefixcache_test.go:153` fails
+  on a mismatch and names the first differing token index, which is stricter
+  than a number in a table and cheaper to keep green — but
+  [010 §3](010-conformance.md) has no cold-against-warm row, so the measurement
+  §6 promised does not exist.
+- **Four mechanisms carry the design and no section names them.**
+  `Request.Reserve` holds blocks for the answer at admission and rounds once
+  over prompt plus reserve (`internal/prefix/prefix.go:131,274`), which is what
+  stops [008 §3](008-scheduler.md)'s deadlock. The `Grow`/`Commit`/
+  `Publish(written)` split bounds publication by what a step actually wrote
+  (`internal/prefix/lease.go:77,110,162`), without which a chunked prefill
+  offers another sequence blocks holding nothing. `Batch` lets several sequences
+  lease and publish independently inside one forward pass
+  (`batch.go:45,233,263`), which is [016-D11](#decision-record)'s consumer.
+  The hash seed is length-prefixed under the version label `tgo/prefix/v1`
+  (`internal/prefix/hash.go:14,28`), which is what makes the scope boundary
+  real: an unprefixed concatenation would let session "a" with salt "b" collide
+  with session "ab" and no salt. Each is built and tested; each is undocumented
+  here.
+
+**Not built.** Three things, and none of them is the pool. First, the missing
+test: a partial hit's attention **output** at a nonzero causal base compared
+against `internal/oracle.Attention`, which is §8's one uncovered row and the row
+[C13](010-conformance.md) was recorded as passing without — the only
+`oracle.Attention` call in the tree is `model/graph_rig_test.go:360` at base 0,
+and `internal/conformance/parity_test.go:334` binds base 0 and asserts only that
+the graph compiled. Second, §6's cold-against-warm divergence measurement, which
+is still an open decision: either a new row in [010 §3](010-conformance.md), or
+an amendment to §6 saying the property is asserted in `prefixcache_test.go`
+rather than reported. Third, sections in this spec for the four undocumented
+mechanisms above — `Reserve`, the `Grow`/`Commit`/`Publish(written)` split,
+`Batch`, and the hash encoding — which is what stands between this status and
+`complete`. Owned elsewhere: [025](025-recurrent-snapshot.md) extends this
+design to a state that has no positions, which the hybrid model of
+[018](018-hybrid-models.md) needs — a gated delta layer's state is identified by
+how many tokens it absorbed rather than by an address, so it is snapshotted and
+copied back rather than paged, and without it 016 covers 16 of Qwen3.8-27B's 64
+layers.
+
 ## Decision record
 
 | id | decision | rejected | consequence |
@@ -545,8 +618,8 @@ wants determinism.
 | 016-D4 | block-aligned sharing only | share partial blocks | two sequences writing one block at different offsets is a correctness problem; the cost is ≤ 31 tokens |
 | 016-D5 | a refcount-0 block is cached, not freed; freed LRU under pressure, hash entry removed in the same step | free at refcount 0 | the cache *is* the retained blocks. The paired removal is the invariant §8 tests directly |
 | 016-D6 | measure cold-vs-warm divergence; do not claim bit-exactness | assert transparency | a reused prefix was computed under a different prefill shape, and floating point is not associative |
-| 016-D7 | **both** a server-side scope (default `process`) and a request `cache_salt` | share globally and silently; a salt alone, as vLLM and sglang do | a salt is precise but fails open when omitted; a scope makes the default safe but cannot say "same customer". They compose ([§7.1](#71-two-mechanisms-and-tgo-takes-both)) |
-| 016-D9 | $H$ is SHA-256; a fast hash needs a per-process random seed | any fast hash | a collision hands one request another's KV. vLLM shipped a predictable non-crypto hash and had to fix it ([§3.1](#31-the-hash-is-a-security-boundary-so-h-is-not-free-choice)) |
+| 016-D7 | **both** a server-side scope and a request `cache_salt`; the shipped default is `off`, with `session` and `process` opt-in | share globally and silently; a salt alone, as vLLM and sglang do; a `process` default, which the first draft of §7 chose | a salt is precise but fails open when omitted; a scope makes the default safe but cannot say "same customer". They compose ([§7.1](#71-two-mechanisms-and-tgo-takes-both)). `process` was dropped as the default not for isolation — §7 argues one tgo process has no tenant boundary — but because any scope changes an answer's last decimal places ([016-D6](#decision-record)) and `process` allocates a block pool at startup, and neither is a change to make on the operator's behalf (`options.go:117`) |
+| 016-D9 | $H$ is SHA-256; a fast hash needs a per-process random seed | any fast hash | a collision hands one request another's KV. vLLM shipped a predictable non-crypto hash and had to fix it ([§3.1](#32-the-hash-is-a-security-boundary-so-h-is-not-free-choice)) |
 | 016-D8 | tgo owns the block pool | ask accel to export `pagetable` | accel 030 declines to evict because eviction is policy, and it is right; the policy is §5 |
 | 016-D10 | reuse at most $T-1$ positions; a full hit still prefills one token | reuse the whole match | the cache holds KV, not logits, so a full reuse has nothing to sample from. Taken from ollama; the chat path hides it because the rendered prompt always ends with a fresh assistant opener ([§3.1](#31-a-full-hit-must-still-prefill-one-token)) |
 | 016-D11 | many sequences share blocks concurrently; reclaim by recompute | ollama's single active path with snapshots paged to host | ollama's shape is right for one user and inverts under concurrency, which is what tgo serves. Recorded because the difference is workload, not correctness |

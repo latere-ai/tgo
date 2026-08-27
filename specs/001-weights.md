@@ -1,6 +1,6 @@
 ---
 title: "Weights: reading safetensors, and the four conversions between the file and the device"
-status: drafted
+status: implemented
 layer: load
 depends_on:
   - 000-decisions.md
@@ -50,7 +50,7 @@ it as one fails on every real checkpoint.
 ```go
 package safetensors
 
-// Open maps a file and parses its header. It reads no tensor data.
+// Open opens a file and parses its header. It reads no tensor data.
 func Open(path string) (*File, error)
 
 type File struct{ /* ... */ }
@@ -81,6 +81,12 @@ loader, which knows the target precision and the transpose flag, and keeping
 them apart means the reader is testable against a synthesised header with no
 model and no accel.
 
+The reader holds a descriptor, not a mapping. `Bytes` reads its plane with
+`ReadAt` at the entry's offset, so there is no shared file offset to race on and
+several tensors may be read at once. `Config` returns nil, not an error, when
+`config.json` is absent: the caller that needs it reports its absence better
+than the reader can.
+
 ## 2. What accel wants
 
 A `tensor.Weight` port bound to an `accel.BufferView` of a specific dtype, in
@@ -90,14 +96,22 @@ the shape the operator declared. Four things differ from the file:
 flowchart LR
   A["safetensors plane<br/>bf16, [out, in]"] --> B["dtype conversion<br/>bf16 -> f32"]
   B --> C["transpose<br/>[out, in] -> [in, out]"]
-  C --> D{"policy"}
+  C --> P["permute<br/>RoPE channel pairs"]
+  P --> D{"policy"}
   D -->|f16| E["round to f16<br/>one i16 plane"]
   D -->|int8| F["quant.Int8Quantize<br/>i8 plane + f16 scales"]
   E --> G["accel.Buffer"]
   F --> G
 ```
 
-Each edge is a decision, and each is below.
+Four conversions, not three. §3, §4 and §5 state the dtype, the transpose and
+the precision step. The rotary channel permutation between them applies
+[004-D9](004-model-graph.md)'s convention to the weight, and it runs **after the
+transpose and before quantization**: `quant.Int8Quantize` blocks over the
+flattened matrix, so permuting afterwards moves every weight away from the scale
+computed for it. A norm gain takes none of these edges. `nn.Graph.Gain` reads
+f32, which the loader has no output for, so `gains.go` widens and permutes gains
+itself and uploads them f32.
 
 ## 3. dtype: bf16 to f32, exactly; f32 to f16, with a rule
 
@@ -163,17 +177,22 @@ from the name. Norm gains and the embedding table do not transpose.
 
 ## 5. Precision: the policy, and proving it
 
-The policy is `f16`, `int8`, `int4`, or `auto`. `auto` picks by decision 5 of
-[000](000-decisions.md): **the widest form that fits** the device's usable
-memory, and the choice is **printed**, never silent.
+The policy is `f16`, `int8`, `int4`, or `auto`. `auto` takes **the widest form
+that fits**, one step at a time: f16; int8 only where f16 misses the budget;
+int4 only where int8 misses it as well; and the load fails where int4 misses it
+too. [000 §5](000-decisions.md) states the rule for f16 and int8 only, so the
+int4 step of the ladder is this spec's. The budget is `Options.Budget`, which
+defaults to the device's `MaxPoolBytes` — a cap on one allocation rather than a
+report of free memory, because accel exposes no such report. The choice is
+**printed**, never silent.
 
 ### 5.1 Three forms, and what each costs
 
 | form | planes | bytes/weight | 27B resident |
 | --- | --- | ---: | ---: |
 | f16 | the matrix | 2.0 | 50.3 GiB |
-| int8 | i8 codes at `[K, N]`, one f16 scale per 32 | 1.0625 | 26.7 GiB |
-| int4 | u32 codes (eight per word), an f16 scale **and an f16 zero** per 128 | 0.53125 | 13.4 GiB |
+| int8 | i8 codes at `[K, N]`, one f16 scale per 32 (`quant.Int8Block`) | 1.0625 | 26.7 GiB |
+| int4 | u32 codes (eight per word), an f16 scale **and an f16 zero** per 128 (`quant.Int4Group`) | 0.53125 | 13.4 GiB |
 
 **The zero point is what makes four bits usable**, and it is why int4 is three
 planes rather than two. int8 is symmetric: a scale spends 255 levels over a
@@ -236,13 +255,16 @@ down — rounding to nearest gives at most half a step, and the step is a group'
 rather than returning a constant, because a per-group figure bounds a dot
 product only where the caller says which group each term came from.
 
-The load-time check runs it over sampled blocks of the real tensors:
+Nothing calls either bound during a load. The assertion
 
 $$\left|\hat{y} - y\right| \le \texttt{Int8ErrorBound}(x, s)$$
 
-and the conformance suite ([010](010-conformance.md)) asserts one layer's output
-against the f16 path within that bound. Asserting against a hand-tuned tolerance
-would pass for the wrong reason.
+is made at test time, over a synthesised plane put through the loader's own conversion, and by
+the conformance suite ([010](010-conformance.md)), which asserts one layer's
+output against the f16 path within that bound and owns the tolerance. Asserting
+against a hand-tuned tolerance would pass for the wrong reason. Whether the
+loader should sample blocks and check the bound itself is open work, and the
+Outcome names it.
 
 **What a green bound does not say.** [010 §3](010-conformance.md) asks for
 quantization error on *real* blocks, and a tier-1 fixture's weights are
@@ -277,7 +299,7 @@ the whole model. The device holds the whole model, which is the number in
 
 ```mermaid
 flowchart LR
-  A["shard k<br/>mapped"] --> B["tensor t<br/>bf16 bytes"]
+  A["shard k<br/>open"] --> B["tensor t<br/>bf16 bytes"]
   B --> C["f32 scratch<br/>[N,K]"]
   C --> D["transpose<br/>[K,N]"]
   D --> E["f16 or i8+scales"]
@@ -316,16 +338,29 @@ for each tensor t:
     })
 ```
 
-The f16 or int8 output buffer is gone from host memory entirely, and only the
-f32 working scratch for the transpose remains. **This is a better answer than
-the one asked for**, and it is the kind of thing worth recording: the request
-named a mechanism, and the mechanism it named was the one with the hard problem
-in it.
+At f16 and int8, on a host-visible pool, the output buffer is gone from host
+memory entirely and only the f32 working scratch for the transpose remains.
+**This is a better answer than the one asked for**, and it is the kind of thing
+worth recording: the request named a mechanism, and the mechanism it named was
+the one with the hard problem in it.
+
+Two cases still hold a host copy. At int4, `quant.Int4Quantize` returns the
+codes, the scales and the zeros together, so all three exist as host slices
+before they are written — one eighth of the plane plus 6.2% metadata, held once,
+which is cheaper than calling the quantizer three times. On the staging path
+below, the whole plane is built on the host and then re-read at the buffer's
+dtype, which is exactly the copy this section removes on unified memory.
 
 `Access` refuses on a device-local pool — reported rather than discovered — so
 the loader allocates weight buffers from a shared pool and falls back to
 `Queue.WriteBuffer` where it cannot, which is the honest shape on a discrete
 GPU.
+
+**The fallback carries f16 and i8 only.** An int4 load allocates its codes as
+`accel.U32`, and the staging path has no case for that dtype, so an int4 load on
+a device without shared memory fails at the first tensor with "no staging path
+for U32". Nothing in the policy step stops `auto` from choosing int4 there. That
+is a defect rather than a design, and the Outcome names it.
 
 Remaining: the transpose still needs somewhere to put its output, since it is
 not an in-place permutation for a non-square matrix. Tiling it would bound that
@@ -345,6 +380,93 @@ Downloading. `tgo pull` is a Hugging Face client, and it is
 `.gitattributes`-shaped LFS pointers that a naive fetch returns instead of
 weights. The loader here takes a local directory and nothing else.
 
+## Outcome
+
+Both packages this spec owns are built and tested, and every model load goes
+through them (`model.go:406`). `safetensors` reads a local model directory, single-shard or index-plus-shards,
+and refuses a malformed header by name; `weights` turns each plane into an accel
+buffer at f16, int8, int4 or `auto`. The reader and the f16 and int8 loader
+landed with Wave 2 on 2026-08-24, and int4 with Wave 10 on 2026-08-27
+([011](011-sequencing.md)).
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 1 | both directory layouts open, and the index resolves a name to a shard | `safetensors/repo.go:48` |
+| 1.1 | the ten dtypes, `__metadata__` as a string map, half-open offsets past the header | `safetensors/safetensors.go:37`, `:133` |
+| 1.2 | every listed signature, plus `File.Path` | `safetensors/safetensors.go:114`, `safetensors/repo.go:198` |
+| 2 | the pipeline, as four conversions rather than three | `weights/weights.go:4` |
+| 3 | the bf16 shift, round-ties-to-even, saturation counted per tensor, subnormals flushed, the load failed past a fraction | `weights/convert.go:40`, `:152`; `weights/weights.go:204` |
+| 4 | the transpose on the host, declared per tensor and never inferred | `weights/convert.go:78`; `weights/weights.go:128` |
+| 5 | the f16-int8-int4 ladder against a budget, and the choice printed | `weights/weights.go:445`, `:409` |
+| 5.1 | three forms at 2.0, 1.0625 and 0.53125 bytes per weight | `weights/weights.go:268` |
+| 5.2 | int4 only where int8 misses the budget | `weights/weights.go:505` |
+| 5.3 | a gathered tensor caps at int8, declared in the loader and mirrored by `tgo info` | `weights/weights.go:154`, `:542`; `cmd/tgo/info.go:202` |
+| 5.4 | the bound asserted by tests and by conformance, not by the loader | `weights/convert_test.go:515`; `internal/conformance/tolerance.go:101` |
+| 6 | all six rows refuse by name, and eight more the table does not list | `safetensors/safetensors.go:147`, `:245`; `safetensors/repo.go:159`, `:188` |
+| 7 | one tensor at a time, the raw plane dead before the transpose allocates | `weights/weights.go:551`, `:616` |
+| 7.1 | `Buffer.Access` on a shared pool, `Queue.WriteBuffer` otherwise | `weights/device.go:137`, `:152` |
+| 8 | the loader takes a local directory; nothing here imports `net/http` | `safetensors/repo.go:48` |
+
+**What diverged** from the design, and why the code is right:
+
+- §1.2 said `Open` maps a file. It opens one and reads each plane with `ReadAt`.
+  Positional reads carry no shared file offset, so several tensors may be read
+  at once, and a mapping would have bought nothing the reader needs.
+- §2 counted three conversions. There are four. The rotary channel permutation
+  runs between the transpose and quantization, because quantizing first would
+  scatter each weight away from its scale.
+- §5's budget is the device's `MaxPoolBytes`, which caps one allocation rather
+  than reporting free memory. accel exposes no free-memory report, so "the
+  widest form that fits" is stated against the largest single allocation the
+  device admits, and `Options.Budget` exists for a caller who knows better.
+- §5.4 described a load-time sampled check. It was never written. The bound is
+  asserted over a round trip in `weights/convert_test.go:515` and by
+  `internal/conformance`, which is where a derived tolerance belongs.
+- §7's peak-host-bytes figure is an argument, not a measurement. The
+  shard-by-shard discipline is real and the arithmetic holds, but no test reads
+  peak host memory back.
+- §7.1 said the converted plane never exists on the host. True at f16 and int8
+  on a host-visible pool. At int4 the codes, scales and zeros are host slices
+  first, because `quant.Int4Quantize` returns all three together.
+- Norm gains never enter §2's pipeline. `nn.Graph.Gain` reads f32 and the loader
+  has no f32 output, so `gains.go:40` uploads them itself.
+
+**Not built.** Open work, in the order it costs something:
+
+- Give `arena.stage` a `U32` case, or refuse `Int4` in `planLoad` where the
+  arena is not mapped. Today an int4 load on a device without shared memory
+  fails at the first tensor with "no staging path for U32"
+  (`weights/device.go:167`), and `forceStaging` covers f16 and i8 only (001).
+- Test that `auto` resolves to `Int4` **and loads**, with a budget between the
+  int4 and the int8 footprint. Only the refusal branch is covered (001).
+- Decide §5.4: either the loader samples blocks and checks
+  `quant.Int8ErrorBound` at load time, or the bound stays an assertion that
+  `internal/conformance` owns and §5.4 says so outright (001, tolerance in 010).
+- Take the tier-3 measurement §5.4 asks for, against a real checkpoint rather
+  than a synthetic fixture (010).
+- Write §1.3, the `weights` surface: `Load`, `Options`, `Tensor`, `Precision`,
+  `Report`, `Set`, `Value`, `DefaultMaxSaturation` and `RefuseAnySaturation`.
+  §5.3 already cites `weights.Tensor.Gathered` as though it were described (001).
+- Write the permutation up as §2's fourth conversion: `Tensor.HeadDim`, the head
+  count derived rather than passed, and that nothing in accel refuses a
+  mismatch. The argument exists only in the package doc (001, convention in
+  004-D9).
+- Write §6's missing rows: the header size cap, the shape-product and
+  byte-count overflow guards, the malformed-entry cases, and the `weight_map`
+  path escape whose own test says §6 does not list it (001).
+- Write the f32 gain path up: `gains.go` carries a second copy of the widening
+  and the permutation, and its bytes are absent from `Report.Bytes` (001).
+- State §3's NaN rule: the pseudocode has no NaN branch, and every comparison
+  against a NaN is false, so `weights/convert.go:159` returns a canonical quiet
+  NaN early and does not count it against `MaxSaturation` (001).
+- Measure peak host bytes across a load, or say in §7 that $8 \cdot \max_t |t|$
+  is an argument and not an assertion (001).
+- Write §7's device side up: the arena's 64 MiB pool chunks, the 256-byte
+  granularity, the headroom, that a pool never grows, and that `tgo info`
+  restates the footprint rule in a second place pinned only by one test (001).
+
 ## Decision record
 
 | id | decision | rejected | consequence |
@@ -356,5 +478,5 @@ weights. The loader here takes a local directory and nothing else.
 | 001-D5 | the int8 error bound is measured on real blocks, post-transpose | a hand-tuned tolerance | the assertion is derived and cannot be quietly raised |
 | 001-D6 | the reader treats the file as hostile and refuses by name | trust the header | every §6 row is a unit test needing no model |
 | 001-D7 | convert and upload shard by shard | load the model into host memory first | peak host memory is one shard plus one tensor |
-| 001-D8 | convert **into** device memory via `Buffer.Access` | convert to a host slice, then upload | the converted plane never exists on the host. accel declined the buffer-over-caller-memory shape tgo asked for and offered this, which needs no lifetime promise ([§7.1](#71-the-final-copy-no-longer-exists)) |
-| 001-D9 | allocate weight buffers from a host-visible pool, falling back to `Queue.WriteBuffer` | assume `Access` always works | `Access` refuses a device-local pool by design, so the fallback is the honest shape on a discrete GPU |
+| 001-D8 | convert **into** device memory via `Buffer.Access` | convert to a host slice, then upload | the converted plane never exists on the host at f16 or int8 on a host-visible pool; int4 holds its three planes once, and the staging fallback holds the whole plane. accel declined the buffer-over-caller-memory shape tgo asked for and offered this, which needs no lifetime promise ([§7.1](#71-the-final-copy-no-longer-exists)) |
+| 001-D9 | allocate weight buffers from a host-visible pool, falling back to `Queue.WriteBuffer` | assume `Access` always works | `Access` refuses a device-local pool by design, so the fallback is the honest shape on a discrete GPU. It carries f16 and i8 only, so an int4 load on such a device fails today ([§7.1](#71-the-final-copy-no-longer-exists)) |

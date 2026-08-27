@@ -1,6 +1,6 @@
 ---
 title: "Tokenizer: byte-level BPE, the merge order, and the regex Go cannot compile"
-status: drafted
+status: implemented
 layer: text
 depends_on:
   - 000-decisions.md
@@ -187,25 +187,37 @@ stateDiagram-v2
   Partial --> [*]: Flush / emit held bytes as U+FFFD
 ```
 
-The rule: emit the longest prefix of the buffer that is valid UTF-8, hold the
-rest. `Flush` at end of stream emits what is left, which is where a genuinely
-malformed byte becomes `U+FFFD` — correctly, because at that point it is.
+The rule: hold back only a trailing byte sequence that is a **valid but
+incomplete** prefix of a code point, and emit everything in front of it. A byte
+that can begin no code point at all — `0xFF`, or a continuation byte with
+nothing before it — is emitted at once. Holding it can never pay off: no later
+byte makes it valid, so it is one `U+FFFD` either way, and waiting stalls a
+stream that may send nothing more. The predicate is
+`utf8.FullRune` applied along the buffer, not `utf8.Valid`, so **the emitted
+prefix is not necessarily valid UTF-8** — it is the prefix that nothing later
+can change.
+
+`Flush` at end of stream emits what is left, which is where a truncated sequence
+becomes `U+FFFD` — correctly, because at that point it is genuinely malformed.
 
 **Stop-string matching happens on the decoder's output, not on ids**
-([006 §4](006-sampling.md)), so the decoder must also hold back enough emitted
-text for the longest stop string. That is a second, separate buffer, and
-conflating them is a bug: the UTF-8 buffer is about byte validity and the stop
-buffer is about text.
+([006 §4](006-sampling.md)), so something must also hold back enough emitted
+text for the longest stop string. That is a second, separate buffer, and it
+belongs to the **stream**, not to the `Decoder`: the stream is where the stop
+policy is and where text not yet handed to the caller can still be retracted.
+The `Decoder` keeps no notion of text matching. Conflating the two into one
+buffer mis-holds for both, because the UTF-8 buffer is about byte validity and
+the stop buffer is about text.
 
 ## 7. Tests
 
 | test | what it catches |
 | --- | --- |
-| **fixed vectors**: known strings → known id sequences, checked in as testdata | a merge-order bug, which a round trip does not catch |
+| **fixed vectors**: known strings → known id sequences, checked in as testdata — *not built; the test skips, see the Outcome* | a merge-order bug, which a round trip does not catch |
 | round trip `decode(encode(s)) == s` over **NFC-stable** input: CJK, emoji with ZWJ and skin tones, invalid UTF-8, empty string | the §3 bijection |
 | **NFC-unstable** input round-trips to its normal form: `decode(encode(s)) == NFC(s)` | §1's normalizer. `e` + combining acute becomes `é`, and an implementation that makes the *first* row pass on this input has dropped NFC |
 | a fixed vector that distinguishes leftmost from rightmost tie-breaking | §5 |
-| the pre-tokenizer splitter against the reference pattern's behaviour on a corpus | §4 |
+| the pre-tokenizer splitter against an **oracle**, a second in-tree implementation of the same pattern, over a corpus and a fuzz target | §4 |
 | an unknown pattern checksum is **refused**, naming the pattern | §4's decision |
 | specials round-trip as single ids, and only when `allowSpecial` | §8 / [003 §4](003-chat-template.md) |
 | streaming equals batch: pushing tokens one at a time gives the same string | §6 |
@@ -213,12 +225,102 @@ buffer is about text.
 | fuzz: `Encode` never panics, never emits an out-of-range id, on arbitrary bytes | robustness |
 
 All of it runs on a **small checked-in tokenizer** built from a synthetic
-vocabulary, plus the fixed vectors from the real one. Neither needs a model.
+vocabulary, which needs no model. The fixed vectors from the real tokenizer are
+**not** checked in: that row is open work, and the Outcome says what closing it
+costs.
+
+The oracle is not the reference implementation — there is none in the tree, and
+[000 D8](000-decisions.md) keeps one out of CI. It is the same pattern written a
+second way, out of Go `regexp` alternatives instead of by hand, so a mistake has
+to be made twice to pass. Two things Go's `regexp` cannot speak for are excluded
+rather than papered over: its `\s` is ASCII only, so the whitespace class is
+generated from `unicode.White_Space`; and it decodes invalid bytes to `U+FFFD`,
+so the oracle runs only on valid UTF-8 and a separate test covers the rest. A
+negative test proves the oracle disagrees with a splitter that mis-reads the
+lookahead, because an oracle that agrees with everything catches nothing.
 
 > The fixed vectors are the decisive test and the one that costs something
 > to produce: they must come from the reference implementation, not from tgo.
 > Generating them from tgo's own output would make the test assert that the code
 > does what it does.
+
+## Outcome
+
+The tokenizer is built and every layer above it reads through it: `Encode` for
+prompts, `Decoder` for streaming output, `TextBytes` for the structured-output
+vocabulary. It landed in Wave 1 on 2026-08-24 at 99.1% statement coverage. The
+review pass on it changed the design rather than confirming it: `post_processor`
+and `decoder` were never read, so a Llama-3 file would have loaded and encoded
+every prompt without its BOS token, and both are now refused by name; and NFC
+was a declared normalizer running as the identity, which is what 002-D9 and
+002-D10 below record.
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 1 | the four parts read into one struct, verified against the real Qwen3 checkpoint: NFC normalizer, `Sequence[Split(Regex), ByteLevel]` pre-tokenizer, 26 added tokens, `("Ġ","Ġ")` at rank 0 | `tokenizer/jsonfile.go:16`, `tokenizer/tokenizer.go:83` |
+| 2 | every signature the section lists, unchanged | `tokenizer/tokenizer.go:65`, `:83`, `:322`, `:347`, `:361`, `:420`; `tokenizer/decoder.go:31`, `:40`, `:56` |
+| 3 | the GPT-2 alphabet built once at init as a bijection over all 256 byte values; `mapBytes` walks bytes and never runes, so the round trip survives invalid UTF-8, and load refuses a file missing any single-byte symbol | `tokenizer/bytelevel.go:21`, `:40`, `:47`, `:57`; `tokenizer/tokenizer.go:246` |
+| 4 | the hand-written splitter of 002-D6, keyed on the SHA-256 of the pattern string, with the `\s+(?!\S)` lookahead done by hand; an unknown digest is refused at load, naming digest and pattern | `tokenizer/pretokenize.go:50`, `:69`, `:245`; `tokenizer/tokenizer.go:167` |
+| 5 | NFC, split, byte map, merge, vocab lookup, in that order; the merge scan compares `rank < best`, strictly, which is the leftmost tie-break | `tokenizer/tokenizer.go:361`; `tokenizer/normalize.go:44`; `tokenizer/bpe.go:26` |
+| 5.1 | the naive O(n²) scan, no heap, with the long repeated run as a fuzz seed | `tokenizer/bpe.go:26` |
+| 6 | the streaming decoder of 002-D4, holding partial UTF-8 and nothing else; the stop-string buffer is the sampler's | `tokenizer/decoder.go:19`, `:71`; `stream.go:384`, `:493` |
+| 7 | nine of the eleven rows, on the synthetic fixture a checked-in generator produces | `tokenizer/tokenizer_test.go`, `tokenizer/decoder_test.go`, `tokenizer/pretokenize_test.go`, `tokenizer/testdata/gen/main.go` |
+
+**What diverged** from the design, and why the code is right:
+
+- **§6's emit rule.** The section said "the longest prefix that is valid UTF-8".
+  `emitLen` (`tokenizer/decoder.go:71`) uses `utf8.FullRune`, which holds back
+  only a truncated *well-formed* sequence, so an outright-invalid byte is
+  emitted at once and the emitted prefix need not be valid UTF-8. Holding
+  `0xFF` could only delay a `U+FFFD` the caller sees anyway, and would stall a
+  stream that sends nothing more. `TestDecoderDoesNotHoldAnImpossibleByte`
+  (`tokenizer/decoder_test.go:87`) pins the behaviour. §6 now states the real
+  rule.
+- **§6's placement of the second buffer.** 002-D8's intent — two buffers, never
+  one — shipped, but the stop-string buffer is not in the `Decoder`. It lives
+  with the sampler (`stream.go:384`, `holdBack` at `:493`), which is where the
+  stop policy is and the only place emitted text can still be retracted. A
+  `Decoder` that knew about stop strings would need the policy passed into a
+  type whose whole subject is byte validity.
+- **§4's "one function per tokenizer family".** What shipped is one splitter
+  parameterised over two families, `qwen2/qwen3` and `cl100k (gpt-4)`, which
+  differ only in `\p{N}` against `\p{N}{1,3}` (`tokenizer/pretokenize.go:26`,
+  `:40`, `:50`). A parameter set behind a digest is what a third family extends;
+  a function per family is what it copies.
+- **§7's splitter row.** It named the reference pattern's behaviour as the thing
+  to check against, and no reference engine is in the tree. The check is against
+  an in-tree oracle built a different way, with the two exclusions §7 now
+  records and a negative test that proves it catches a mis-read lookahead.
+
+**Not built.**
+
+- Generate the reference id vectors — for the synthetic fixture and for the real
+  Qwen3 checkpoint — on a machine that has huggingface `tokenizers`, check them
+  in under `tokenizer/testdata`, and unskip `TestReferenceVectors`
+  (`tokenizer/tokenizer_test.go:142`). This closes 002-D5, the one decision here
+  with no code behind it. It cannot be done in CI: [000 D8](000-decisions.md)
+  keeps the reference out, so the vectors are produced once offline and
+  committed, the way `chat/testdata/qwen3_chat_template.jinja` was.
+- Decide where `add_prefix_space` applies. The loader reads it and applies it
+  once to the whole normalized string (`tokenizer/tokenizer.go:365`); the
+  reference applies it per pre-tokenizer span, after added tokens are extracted.
+  The two agree for Qwen3, whose file sets it false, so nothing tests the
+  difference. Either move the application to match the reference, or record why
+  the placements are equivalent for every file this package accepts.
+- Document the shipped surface §1 and §2 never mention: `TextBytes` and its
+  nil-on-added-token rule, the `post_processor`/`decoder` and seven
+  BPE-model-option refusals, the load-time vocabulary invariants that make
+  `Encode` total, both merge-list serialisations, the cl100k pattern family,
+  `add_prefix_space`, `VocabSize` as the id space rather than the embedding row
+  count, and the concurrency contract — one `Tokenizer` shared, one `Decoder`
+  per stream.
+- Correct the package comments the above left stale: `tokenizer/tokenizer.go:10`
+  still claims no dependency beyond the standard library, `:19` still says NFC
+  is not implemented, `:419` still claims `Decoder` output is always well-formed
+  UTF-8, and `tokenizer/tokenizer_test.go:197` still calls the normalizer seam
+  unimplemented.
 
 ## Decision record
 

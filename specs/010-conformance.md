@@ -1,6 +1,6 @@
 ---
 title: "Conformance: the register of what accel cannot do, and the oracle that proves what it can"
-status: drafted
+status: implemented
 layer: all
 depends_on:
   - 000-decisions.md
@@ -58,10 +58,12 @@ suite prints them as a table. **The table is the deliverable**, and §2 is it.
 | C26 | a **depthwise causal convolution** over rows the graph computed | 025 | — | won't fix, correctly | **none, and the refusal was the right one.** The composition [018 §4.1](018-hybrid-models.md) records needs a left-padded input and `tensor` joins no two tensors along an axis, so the padded input cannot be built — but a `Concat` was never the ask: a convolution running a token at a time needs the K−1 inputs of the *previous step*, not zeros, and a decode step has no earlier rows in its own tensor at all. `nn.DepthwiseCausalConv` runs over a rolling `[slots, K−1+T, C]` state built from `ScatterRows`, `GatherRows` and `Slice`, all of which exist. It costs ~3K+5 dispatches and K−1 copies of a `[T, C]` tensor per layer, which over 48 layers is one kernel to *want* and none to be blocked on |
 | C20 | a decode step whose submit cost is amortised | 021 | [#21](https://github.com/golang-design/accel/issues/21) | **closed** | none needed, and this row closes on a **measurement** rather than a probe because that is what it asked for. Submit went from 15.61% of a decode step to **3.34%**, throughput +43%, and p99 fell 84% — device is 94.62% of a step, which is the shape a decode step should have ([017 §4.1](017-benchmarks.md), Qwen3-0.6B f16 on Metal, 2026-08-25). The row's cost cell quoted the *before* number for two days after the spec it cites recorded the after |
 
-**This table is a dated snapshot and accel is moving under it fast.** Within a
-day of filing, four rows closed: `RoPE` took a positions tensor, `Attention`
+**accel moves under this table fast.** Within a day of the first filing on
+2026-08-24, four rows closed: `RoPE` took a positions tensor, `Attention`
 accepted an f16 cache and a page table, and `Buffer.Access` removed the host
-copy. As of **2026-08-24**.
+copy. The table carries no snapshot date of its own, because it is
+`Register()`'s output ([010-D10](#decision-record)) and the commit that holds it
+is the date.
 
 ### How a row's state is decided
 
@@ -82,8 +84,10 @@ An operator that accepts and computes the wrong thing is not a new register
 state. It is [§1](#1-two-directions)'s **downward** direction — accel not doing
 what it says — and it goes to the oracle, not to a fifth column.
 
-The re-derivation also changed three verdicts that reading commits had got
-wrong:
+**The four verdicts below are the 2026-08-24 re-derivation, kept because the
+lesson stands.** All four rows have since closed or been reclassified, and the
+generated table above is the current state. What they show is that reading
+commits had got each of them wrong:
 
 - **C8 looked closed and is not.** `MatMul` gained f32 operands, but it requires
   the two operands to *share* a dtype. A transformer's activations are f32 and
@@ -105,14 +109,15 @@ wrong:
   invisible from the issue title.
 
 This is [010-D1](#decision-record) in miniature, and it is why
-[010-D6](#decision-record) generates the table at M10.
+[010-D6](#decision-record) generates the table, which
+[010-D10](#decision-record) delivered on 2026-08-25.
 
-**States.** `closed` — accel's exported surface does the thing, verified by the
-probe. `open` — it does not. `won't fix, correctly` — see below.
-`designed` — accel
-[043](https://github.com/golang-design/accel/blob/main/specs/043-per-row-values.md)
-specifies it and the code does not do it yet. `open` — filed, not yet designed.
-`won't fix, correctly` — see below.
+**States.** Three, and not four (`internal/conformance/register.go:20`).
+`closed` — accel's exported surface does the thing, verified by the probe.
+`open` — it does not, and the row cites the issue or the named upstream artifact
+that records the gap. `won't fix, correctly` — see below. A fourth state for a
+gap accel has *designed* and not built would record accel's intent rather than
+its behaviour, which is the reading [010-D7](#decision-record) removed.
 
 C9 is not filed and should not be. accel refusing a strided view into `MatMul`
 is the **correct** refusal: silently copying one would hide a real cost behind an
@@ -126,16 +131,19 @@ capped at 128 positions, shorter than a system prompt. accel
 shipped the tiling loop and a 4096-position cache is verified working. Nothing
 in tgo is blocked on cache size any more.
 
-**C13 replaces it as the blocking row, and it is worse in kind.** Every other
-row in this table is a *refusal*: tgo asks for something and is told no. C13 is
-an **acceptance**. `Attention` takes `Pages` on a prefill, drops it, reads the
-cache contiguously, and returns a fluent wrong answer — measured at a worst
-absolute difference of 0.74 between an identity and a reversed page table, with
-`Selections()` naming the contiguous kernel both times.
+**C13 replaced it as the blocking row on 2026-08-24, and it was worse in
+kind.** Every other row in this table is a *refusal*: tgo asks for something and
+is told no. C13 was an **acceptance**. `Attention` took `Pages` on a prefill,
+dropped it, read the cache contiguously, and returned a fluent wrong answer —
+measured at a worst absolute difference of 0.74 between an identity and a
+reversed page table, with `Selections()` naming the contiguous kernel both
+times. That is the row [010-D7](#decision-record) was written for.
 
-Since a paged decode is only useful over blocks a paged prefill wrote, this
-makes cross-request prefix sharing inexpressible, so it blocks
-[016](016-prefix-cache.md) and [011 M10b](011-sequencing.md).
+**C13 has since closed**, verified by reversing the page table and watching the
+output move ([§2.2.1](#221-the-earlier-audit-kept-because-the-lesson-stands)),
+and [016](016-prefix-cache.md)'s prefix cache is built in `internal/prefix`.
+Cross-request prefix sharing is expressible and nothing is blocked on this
+row.
 
 **A row leaves this table only when its test stops skipping.** Not when an issue
 closes, not when a spec is written, and never because it was worked around.
@@ -174,15 +182,22 @@ earlier. [010-D6](#decision-record)'s generator guarantees the *table* matches
 `Register()`; it cannot guarantee that `Register()`'s prose matches the
 measurement it names, and nothing else was checking.
 
-### 2.2 Sixteen rows closed, four open, and what that took
+### 2.2 The 2026-08-25 audit: sixteen rows closed, four open, and what that took
 
 Re-audited on 2026-08-25 against accel HEAD `05ff997` by recording graphs and
 reading `Selections()`, never by reading a commit message.
 
-**Open: C7** (a bf16 GEMM), **C16** (a batched step takes one token per
-sequence, so a prefill cannot batch), **C17** (GGUF, not scheduled), and
-**C20** (submit is 15.6% of a decode step). C9 is a refusal that should stay.
-Everything else is closed.
+**Open on that date: C7** (a bf16 GEMM), **C16** (a batched step takes one
+token per sequence, so a prefill cannot batch), **C17** (GGUF, not scheduled),
+and **C20** (submit is 15.6% of a decode step). C9 is a refusal that should
+stay. Everything else was closed.
+
+**Three of those four have moved since.** C16 closed on the segmented extent
+`AttentionOptions.QueryExtents` gives a step, C20 closed on a measurement, and
+C7 was reclassified as a correct refusal by
+[§2.2.0](#220-the-re-audit-when-the-tracker-went-to-zero)'s re-audit. **Open
+today: C17 alone**, out of twenty-six rows; the correct refusals are C7, C9 and
+C26.
 
 **The two that closed most recently are the ones tgo had carried longest.**
 `tensor.Sample` now composes the entire policy on the device — penalties,
@@ -270,8 +285,15 @@ adding a kernel reads and an issue is what someone opening the tracker reads.
 tgo accepted the closure and widened the rule. See
 [012 §3](012-gguf.md).
 
-`speclint` enforces (3), which is the one a linter can see. (1) and (2) are
-enforced by the re-audit in §2.2, which is where the gap surfaced.
+`speclint` enforces (3) over the spec text, which is the one a linter can see
+there. `conformance.Validate` (`internal/conformance/register.go:451`) enforces
+the half of (1) a program can see over the register itself — an open row cites
+an issue or a named upstream artifact, and a correct refusal cites neither — and
+`TestTheRegisterObeysItsOwnRules` runs it on every test run. Whether the
+citation is still *open*, and (2), are enforced by the re-audits in
+[§2.2.0](#220-the-re-audit-when-the-tracker-went-to-zero) and
+[§2.2](#22-the-2026-08-25-audit-sixteen-rows-closed-four-open-and-what-that-took),
+which is where the gap surfaced.
 
 > **And the generator stopped being aspirational on 2026-08-25.** 010-D6 was
 > written when the register was maintained by hand, and `internal/conformance`
@@ -300,7 +322,8 @@ enforced by the re-audit in §2.2, which is where the gap surfaced.
 
 ### 2.1 What the register is worth so far
 
-Nine reports so far. Seven produced one upstream design decision — accel 043's *a scalar is a
+Twenty-one distinct accel issues so far, cited by the register's twenty-six
+rows. They produced one upstream design decision — accel 043's *a scalar is a
 value every row shares; a value that differs per row is a tensor* — which
 removes surface rather than adding it, and which was reached by five of the
 rows above being **the same mistake seen five times**. That is the argument for
@@ -464,6 +487,92 @@ document, so the table in this spec is produced from the tests rather than
 maintained beside them. A hand-maintained register drifts within one milestone;
 that is the same failure this project exists to catch in accel.
 
+## Outcome
+
+The register and the oracle are built and running. `internal/conformance` is
+the machinery this spec designs — the tier rule every parity test runs under,
+the derived tolerance every comparison is judged by, the probe rig, the register
+and its generator — and `internal/oracle` is the float64 reference it judges
+against. They landed across eighteen commits between 2026-08-24 and 2026-08-27,
+from Wave 2's first oracle to Wave 11's gated delta probe. The register holds
+twenty-six rows: twenty-two closed, one open (C17), and three correct refusals
+(C7, C9, C26). §2's table is generated output and a test refuses a document
+whose table has drifted from `Register()` or has anything spliced inside it.
+§3's five numbers have types, renderers and tests, and none of them has been
+measured.
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 1 | both directions: a device result compared against the oracle, and every place tgo cannot express something as a register row | `internal/conformance/conformance.go:4`, `internal/conformance/parity_test.go:52` |
+| 2 | `Register()` and `Document()`, and the drift test that pins §2's table to them line by line | `internal/conformance/register.go:112`, `:429`, `internal/conformance/register_test.go:127` |
+| 2 (010-D1) | one skipping subtest per open row, generated from the register, each naming the row, the capability, the owning accel spec and what the workaround costs | `internal/conformance/register_test.go:177` |
+| 2, how a row's state is decided (010-D7) | `Rig.Parity`: bind real buffers, compare the output against the float64 reference under a `Terms` budget, read `Plan.Selections()`, and vary the optional binding to require the output to move | `internal/conformance/rig.go:222`, `internal/conformance/ragged_test.go:343` |
+| 2.2.0 | the re-audited rows are standing probes rather than a one-time check; six run on every test run | `internal/conformance/reaudit_test.go:36` |
+| 2.3 | `Validate`: an open row cites something upstream, a correct refusal cites no issue, every row names an accel spec and fills both prose cells. Rule 3 is `speclint`'s | `internal/conformance/register.go:451`, `internal/speclint/speclint.go:231` |
+| 3 | `Measurements` and its five types, each with a `Value()` renderer and a JSON form, and a nil pointer meaning *not measured* rather than zero | `internal/conformance/measure.go:31` |
+| 4 (010-D4) | `decide` over the three tiers, every branch tested as data including the two unreachable on one machine, `TGO_REQUIRE_METAL` in CI, and `ModelPath` for tier 3 | `internal/conformance/tier.go:74`, `internal/conformance/tier_test.go:19`, `.github/workflows/ci-metal.yml:19` |
+| 5 (010-D2, 010-D5) | `internal/oracle`, float64 throughout, depending on `math` and nothing of tgo's; the whole forward pass composed from it | `internal/oracle/oracle.go:27`, `model/graph_rig_test.go:332` |
+| 5.1 (010-D3) | `Terms` with nine constructors, `And` composing them, `Explain()` printing the derivation, and no way to write a tolerance down as a number | `internal/conformance/tolerance.go:62`, `internal/conformance/tolerance_test.go:20` |
+| 6 | `Publish` emits the register and the numbers as one Markdown document; a verbose run logs it and `TGO_EMIT_TABLE` writes it to a file | `internal/conformance/measure.go:402`, `internal/conformance/emit_test.go:11` |
+
+**What diverged** from the design, and why the code is right:
+
+- §2's generated block has an extent this spec never stated: the header to the
+  next blank line, and nothing but table rows inside it. The obvious reading —
+  stop at the first line that is not a row — let three runs of `go test` output
+  sit between the last row and the paragraph under it with every gate green
+  (`internal/conformance/register_test.go:44`, `:83`). A generated block's
+  extent is decided by the document, not by how far the generated part reaches.
+- §5's "the whole forward pass" is true across two packages: the primitives in
+  `internal/oracle`, the composition in `model/graph_rig_test.go:332`. Keeping
+  the composition out of the package is what lets any package import the oracle
+  without pulling a model in behind it.
+- §2 says a row leaves the register when its test stops skipping, which
+  describes open rows only. Closed rows keep probes too
+  (`internal/conformance/reaudit_test.go`), because twenty-two of the
+  twenty-six rows are closed and a closure nobody re-runs is a claim about an
+  accel HEAD that has moved.
+- §3.1's measurements moved to [017 §3](017-benchmarks.md), which owns the
+  comparison table. The honesty rule stayed here and `tgo record` honours it: a
+  record with no vLLM row names the missing row rather than omitting it
+  (`cmd/tgo/record.go:138`).
+- §2.3 attributed rules 1 and 2 to the manual re-audit alone. `Validate` turns
+  the half of rule 1 a program can see into a lint, which is cheaper than an
+  audit and runs more often.
+
+**Not built.** §3's five measurements are named and none of them has been run:
+CPU/Metal divergence, the readback share of a decode step, quantization error
+against `Int8ErrorBound` on real blocks, plan compile time per bucket with the
+session cache hit rate, and transient bytes from `Plan.Memory()` against the
+hand-computed working set. Every `Measurements` outside `measure_test.go`'s
+fixtures is the empty struct, so every document `Publish` emits today prints
+five "not measured" lines. Taking them needs three things that do not exist
+yet: a tier-3 checkpoint under `TGO_MODEL`, a Metal device in the same loop as
+a CPU run for the divergence number, and a §4 in [011](011-sequencing.md) to
+record the dated result in, which [§4](#4-how-the-suite-runs) already points
+at. The quantization
+number additionally needs `measure_test.go:133`'s `outlierWeights` doc comment
+corrected: it claims to be what §3 asks for and it is synthetic, which is the
+one thing §3 says the number cannot be measured on. §5.1's table is four rows
+short of the whitelist its own escape clause points at — f32 roundings
+(`RoundF32`), the softmax weight (`SoftmaxWeight`), int4 (`QuantInt4`), and
+accel's ULP and absolute primitive ceilings (`PrimitiveULP`, `PrimitiveAbs`) —
+and the softmax row wants splitting, because "benign" is true of the
+max-subtraction against overflow and false of the weight, which carries the
+score's accumulated error scaled by the exponential. The gated delta oracle
+(`internal/conformance/linear_test.go:78`) needs a home: either move it into
+`internal/oracle` under §5's four rules, or amend §5 to permit a reference
+beside the probe it judges and say what keeps it independent. `Rig` and the
+generated block's extent are the machinery a contributor writing the next probe
+reads, and no section describes either. And seven call sites in four packages
+read `TGO_MODEL` with `os.Getenv` directly (`cmd/tgo/engine_test.go:28`,
+`nn/checkpoint_test.go:31`, `weights/model_test.go:68`,
+`model/qwen3_real_test.go:24`) instead of `conformance.ModelPath`, which
+`e2e_test.go:55` uses, so §4's tier rule — a path that cannot be read is a
+failure, not a skip — is bypassed wherever the package is not imported.
+
 ## Decision record
 
 | id | decision | rejected | consequence |
@@ -473,8 +582,8 @@ that is the same failure this project exists to catch in accel.
 | 010-D3 | tolerances are derived and commented with their term; a raised tolerance is a finding | tune until green | a numerics regression cannot be absorbed |
 | 010-D4 | tier 3 never runs in CI | a nightly with a download | CI stays offline and under a minute |
 | 010-D5 | the oracle is float64 and presumed right on disagreement | float32, matching the device | it is the simpler program; matching the device would import the device's bugs |
-| 010-D9 | performance against vLLM is a measured table per axis, losses included | a headline throughput claim | tgo will lose raw NVIDIA kernel throughput for a long time and should win host overhead first; one number hides both ([§3.1](#31-performance-against-vllm-and-which-axes-are-winnable)) |
-| 010-D8 | an open row cites an open issue; a blocked spec names a durable upstream record, issue **or** named artifact; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread; demand an open issue for every blocker | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
+| 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing. **Superseded 2026-08-25 by [010-D10](#decision-record):** `internal/conformance` emits the table from `Register()` and a drift test fails when the two disagree, so the interim ended at Wave 4 rather than at M10. `speclint` keeps the numbering and citation checks, which read the spec text and are not what the generator does |
 | 010-D7 | a probe asserts a value against the oracle and varies optional bindings | record the graph and read the refusal | the refusal-based rule was blind to C13 and reported a false green in its own spec |
+| 010-D8 | an open row cites an open issue; a blocked spec names a durable upstream record, issue **or** named artifact; a closed issue with an absent capability is **re-filed**, not commented on | comment on the closed thread; demand an open issue for every blocker | a comment creates no work item, and the register read as tracked while one issue was open ([§2.3](#23-commenting-on-a-closed-issue-is-not-reporting)) |
+| 010-D9 | performance against vLLM is a measured table per axis, losses included | a headline throughput claim | tgo will lose raw NVIDIA kernel throughput for a long time and should win host overhead first; one number hides both ([§3.1](#31-performance-against-vllm-and-which-axes-are-winnable)) |
 | 010-D10 | the generator is the source of truth; §2's table is its output | edit the table and reconcile the code later | **Demonstrated 2026-08-25.** A hand-edit adding two rows to §2 was caught by the drift test within one CI run, including a row-order difference nobody would have noticed by eye. Adding a row means editing `Register()`, which is one place rather than two |
-| 010-D6 | the register is generated from the tests **at M10** | maintained by hand forever | it is the exact drift tgo exists to catch upstream. **Amended 2026-08-24:** generation needs tests, so until M10 `speclint` stands in — it checks the rows are numbered without gaps and that nothing in the tree cites a row that does not exist. A decision nothing enforces, in the spec about decisions nothing enforces, was the wrong thing to leave standing |

@@ -1,6 +1,6 @@
 ---
 title: "The model graph: nn blocks, the registry, Qwen3, and every shape between them"
-status: drafted
+status: complete
 layer: graph
 depends_on:
   - 000-decisions.md
@@ -42,17 +42,23 @@ type Graph struct {
     B      *tensor.Builder
     Eps    float32   // rms_norm_eps
     Prefix string    // weight-name prefix for the block being recorded
+
+    // Stored reports how the loader stored the weight of this full name. A nil
+    // func means every weight is f16.
+    Stored func(name string) Form
 }
 
-// Weight declares a f16 or quantized weight port by name, resolving which of
-// the two from how the loader stored it.
+// Weight declares a weight port by name, resolving which of the three forms
+// from Stored.
 func (g *Graph) Weight(name string, shape tensor.Shape) Operand
 
-// Operand is a weight that is either f16 or int8+scales. It exists so a block
-// writes one call rather than branching on precision at every projection.
+// Operand is a weight in one of three forms, and exactly one of them. It
+// exists so a block writes one call rather than branching on precision at
+// every projection.
 type Operand struct {
-    Dense *tensor.Tensor   // f16, [K, N]
-    Quant tensor.Quantized // i8 quants + f16 scales
+    Dense  *tensor.Tensor   // f16, [K, N]
+    Quant  tensor.Quantized // i8 quants + f16 scales
+    Packed tensor.Int4      // u32 codes + f16 scales + f16 zeros
 }
 
 func Linear(g *Graph, x *tensor.Tensor, w Operand) *tensor.Tensor
@@ -67,11 +73,24 @@ type AttentionConfig struct {
     QKNorm                   bool
 }
 
-// posQ and posK are separate because under GQA the q and k row counts differ
-// (T*QHeads against T*KVHeads), so one positions tensor cannot serve both.
+// Step is the per-step tensors one attention node binds, as opposed to the
+// model constants AttentionConfig carries. A struct rather than more
+// parameters: a positional list of same-typed pointers is one a caller can
+// permute silently, and PosQ against PosK is a model that rotates every key at
+// the wrong angle and still emits plausible text.
+type Step struct {
+    // PosQ and PosK are separate because under GQA the q and k row counts
+    // differ (T*QHeads against T*KVHeads), so one positions tensor cannot
+    // serve both.
+    PosQ, PosK *tensor.Tensor
+    Slots      *tensor.Tensor // the cache row each token is written to
+    Lengths    *tensor.Tensor // real tokens per sequence after this step
+    Pages      *tensor.Tensor // the page table, nil for a contiguous cache
+    Extents    *tensor.Tensor // q tokens per sequence, nil for one sequence
+}
+
 func Attention(g *Graph, x *tensor.Tensor, w AttentionWeights,
-    k, v *tensor.State, posQ, posK, lengths *tensor.Tensor,
-    cfg AttentionConfig) *tensor.Tensor
+    k, v *tensor.State, st Step, cfg AttentionConfig) *tensor.Tensor
 ```
 
 Each block below is stated with the accel operators it lowers to. That is what
@@ -89,11 +108,15 @@ $$y = x W, \quad x \in \mathbb{R}^{M \times K},\ W \in \mathbb{R}^{K \times N}$$
 f32 in, f32 out, **and no cast**: accel accepts f32 activations against narrow
 weights directly ([C8](010-conformance.md) closed 2026-08-24). The weight stays
 f16 or int8 for memory; the activation stays f32 for accuracy; the accumulator
-was always f32. `MatMul` selects the
-matrix-vector kernel at $M = 1$, which is every decode step, and
-`Plan.Selections()` reports which and why. **`QuantMatMul` selects one too**, as
-of [C15](010-conformance.md) — so the int8 path, which is what `auto` picks for
-a large model, is no longer the one without a decode specialisation.
+was always f32.
+
+At $M = 1$, which is every decode step, **the matrix-vector kernel is reached on
+the int8 path and not on the f16 one.** accel's matrix-vector kernel reads f16
+on *both* operands and tgo's activations are f32, so an f16 weight takes the
+tile and most of its rows are idle. `QuantMatMul` has an $M = 1$ specialisation
+that takes an f32 activation ([C15](010-conformance.md)), so the int8 path —
+what `auto` picks for a large model — is the one with a decode kernel.
+`Plan.Selections()` reports which and why.
 
 Qwen3 has no biases on its projections, so `tensor.Linear`'s fused epilogue is
 unused here. It stays specified because [000 §4](000-decisions.md)'s table lists
@@ -259,7 +282,10 @@ node:
 | `Input` | `posq` | `[T·H]` u32 | RoPE positions for q, each token repeated $H$ times |
 | `Input` | `posk` | `[T·H_kv]` u32 | **a separate tensor**: under GQA $H \ne H_{kv}$, so one positions tensor cannot serve both |
 | `Input` | `slots` | `[T]` u32 | scatter destinations |
-| `Input` | `lengths` | `[1]` u32 | `AttentionOptions.Lengths` |
+| `Input` | `lengths` | `[B]` u32 | real tokens per sequence after this step; one entry per sequence, not one per graph |
+| `Input` | `pages` | `[B, C/block]` u32 | the page table; declared only when the cache is paged |
+| `Input` | `extents` | `[B]` u32 | q tokens per sequence; declared only when $B > 1$ |
+| `Input` | `last` | `[B]` u32 | the flat row each sequence's logits are taken from; declared only when $B > 1$ |
 | `Scalar` | `rope_base` | f32 | $10^6$ for Qwen3 |
 | `Scalar` | `scale` | f32 | $1/\sqrt{d_h}$ |
 | `Scalar` | `base` | u32 | the prefill's first position |
@@ -302,10 +328,7 @@ node:
 
 Roughly $21L$ nodes. Measured on the real Qwen3-4B graph — 36 layers,
 $V=151936$, a 4096-position cache — **760 kernel selections** for prefill and
-759 for decode, at both f16 and int8 weights. **Four** of the
-per-layer nodes are `Cast` — rows 5, 17, 20 and 23 — which is
-[010 C8](010-conformance.md): **144 dispatches per forward pass** that exist only
-to satisfy a dtype check.
+759 for decode, at both f16 and int8 weights.
 
 > An earlier draft said seven casts and 252 dispatches. It was wrong three ways:
 > the enumeration summed to six, "the two inside `Linear`'s quantized form" had
@@ -315,23 +338,29 @@ to satisfy a dtype check.
 > which is why it is four and not seven. `nn.Linear` therefore must **not** cast
 > per call; §2.1's description is the shared form.
 
-> **The casts are gone.** An earlier draft of this table had four `Cast` nodes
-> per layer — rows 5, 17, 20 and 23 — because `MatMul` required its two operands
-> to share a dtype, and a transformer's activations are f32 while its weights are
-> f16 or int8. tgo reported the cost; accel relaxed the rule
+> **The dtype-check casts are gone.** An earlier draft of this table had four
+> `Cast` nodes per layer — rows 5, 17, 20 and 23 — because `MatMul` required its
+> two operands to share a dtype, and a transformer's activations are f32 while
+> its weights are f16 or int8. tgo reported the cost; accel relaxed the rule
 > ([C8](010-conformance.md)). Measured on the real graph: **1013 kernel
 > selections became 760.**
 >
 > Rows 5, 17, 20 and 23 are struck from the table above. They are recorded here
 > rather than deleted because the arithmetic that produced them is what closed
 > the gap.
+>
+> An **f16 key/value cache buys two `Cast` nodes per layer back**, deliberately.
+> `ScatterRows` reads the rows and writes the state with one kernel, so the two
+> share a dtype and the projections that produce the rows are f32. That is a
+> narrowing the caller asked for, not a dtype check.
 
 ## 3.1 Decode is the same graph at $T = 1$
 
 Every shape above with a leading $T$ becomes 1. Two things change beyond that:
 
-- `MatMul` at $M = 1$ selects the matrix-vector kernel rather than the tiled
-  GEMM, reported by `Plan.Selections()`.
+- At $M = 1$ the int8 path selects a matrix-vector kernel and the f16 path stays
+  on the tiled GEMM, for [§2.1](#21-linear--a-projection)'s reason.
+  `Plan.Selections()` reports which and why.
 - `Attention` takes rank-2 `q` (`[H, d_h]`) rather than rank-3, which is how
   accel distinguishes decode from prefill — *"a rank is not a hint, it is the
   shape of the computation"*. So the builder passes `[H, d_h]` at $T=1$ and
@@ -451,7 +480,7 @@ because accel checks shapes.
 package model
 
 type Builder interface {
-    Config() any                                   // the parsed config.json
+    Config() *Config                               // the parsed config.json
     Weights() []WeightSpec                         // §4's map
     Forward(g *nn.Graph, in Inputs) *tensor.Tensor // §3
     Template() chat.Renderer                       // 003
@@ -480,25 +509,115 @@ named:
 | `head_dim` odd, or not positive | accel's `RoPE` refuses an odd `rotaryDim`; it rotates pairs |
 | $H \bmod H_{kv} \ne 0$ | accel refuses it too; catching it here names the config field |
 | `vocab_size` ≠ the embedding table's rows | the config and the weights are from different models |
-| capacity $C > 128$ | [010 C11](010-conformance.md); refuse with accel's message and the issue |
+
+This table carried a sixth row, a refusal of a cache capacity above 128
+positions. [010 C11](010-conformance.md) **closed**, so the row was deleted
+rather than built: there is no capacity limit to name, and a refusal that
+outlives its cause refuses a working configuration.
 
 ## 8. Tests
 
-Every one runs on a **synthetic 2-layer, $d=64$, $V=128$** config with seeded
-weights, on both backends, against the [010 §5](010-conformance.md) oracle:
+Every one runs on a synthetic 2-layer config with seeded weights, against the
+[010 §5](010-conformance.md) oracle **on the CPU backend**: $d=80$, $L=2$,
+$H=8$, $H_{kv}=2$, $d_h=48$, $f=176$, $V=112$. Those numbers are chosen so that
+no two extents collide — $H \cdot d_h = 384$ and $H_{kv} \cdot d_h = 96$ are
+distinct from every other extent — so a weight map that confused two of them
+does not compile. The backend check is a separate test,
+`TestMetalRunsTheForwardPass`: an end-to-end generation on Metal, gated on
+[010 §4](010-conformance.md)'s tier 2.
 
 | test | what it catches |
 | --- | --- |
 | each block against the f64 oracle within a derived tolerance | any numerics error |
 | **QK-norm placement**: fails if the norm moves after RoPE | the Qwen3-specific ordering |
-| **rotary pairing**: q after RoPE matches an HF reference vector | [§2.5.1](#251-which-pairs-rotate-which-nothing-in-this-tree-used-to-say) — the permutation, which nothing else catches |
+| **rotary pairing**: `interleavedRoPE(permute(x))` equals `permute(halfSplitRoPE(x))` per head, each convention derived independently | [§2.5.1](#251-which-pairs-rotate-which-nothing-in-this-tree-used-to-say) — the permutation, which nothing else catches |
 | the permutation runs before quantization, not after | [§2.5.2](#252-the-fix-is-a-load-time-permutation-and-its-order-is-forced)'s ordering constraint |
 | **QK-norm axis**: fails if it normalises over `H·d_h` instead of `d_h` | the reshape in row 9–11 |
 | RoPE positions repeat per head (row 12's formula) | a positions tensor built per token instead of per row |
-| prefill transient memory does not scale with $V \times T$ | §3.2's slice |
-| a tied head uploads two planes and refuses a checkpoint with both | §4's tie handling |
+| the declared logits port is `[1, V]` at every $T$ | §3.2's slice. Transient memory does *not* catch it: an output port's buffer is the caller's |
+| a tied head uploads two planes, accepts a checkpoint whose two planes hash identically, and refuses one whose planes differ | §4's tie handling, as [004-D10](#decision-record) narrowed it |
 | decode at $T=1$ equals prefill's last row | §3.1's rank-2/rank-3 split |
 | every §7 refusal | each names its config field |
+
+## Outcome
+
+The Qwen3 forward pass and everything this spec designs around it are built and
+running: the `nn` blocks, the ports and scalars a step declares, the weight map
+with its transposes and its rotary permutation, the config parser and the
+architecture registry. They landed in Wave 3 on 2026-08-25, when the forward
+pass first agreed with the oracle, and generated text from the real Qwen3-0.6B
+checkpoint in Wave 4 the same day. Every block is checked against the f64 oracle on the CPU backend, the whole
+graph runs on Metal at conformance tier 2, and every number the graph is sized
+from comes from the checkpoint's own `config.json` rather than from this file
+(004-D8).
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 1 | `nn` and `model` import `accel` for its dtype constants and `accel/tensor` for the builder, and nothing else | `nn/nn.go:20`, `model/graph.go:9` |
+| 2 | `Graph` with `Stored`, `Operand` with its three forms, and `Weight` resolving between them | `nn/nn.go:87`, `nn/nn.go:156`, `nn/nn.go:206` |
+| 2.1 | `Linear`, one operator per form and no cast | `nn/blocks.go:19` |
+| 2.2 | `RMSNorm` over the last axis, with a gain one feature wide | `nn/blocks.go:50` |
+| 2.3 | `SwiGLUMLP` as `Linear`, `Linear`, `SwiGLU`, `Linear` | `nn/blocks.go:59` |
+| 2.4 | GQA with QK-norm per head *before* RoPE, and a refusal of a non-integer head ratio | `nn/attention.go:128`, `model/config.go:186` |
+| 2.5 | `RoPE` over the whole head, positions one entry per row | `nn/attention.go:207` |
+| 2.5.2 | the load-time channel permutation, after the transpose and before quantization, applied to the q/k projections and to the QK-norm gains | `weights/convert.go:105`, `weights/weights.go:9` |
+| 3 | the forward pass, one node per row of the table, over the ports `Declare` records | `model/qwen3_graph.go:32`, `model/graph.go:198` |
+| 3.1 | the rank-2/rank-3 split that tells a decode from a prefill | `nn/attention.go:233` |
+| 3.2 | `Slice` then `Contiguous` before the LM head | `model/qwen3_graph.go:119` |
+| 4 | the weight map, with the transpose, permute and head columns | `model/qwen3.go:76`, `model/weights.go:158` |
+| 5 | `ParseConfig`: every field, every default, and `head_dim` from the file wherever the file speaks | `model/config.go:120` |
+| 6 | `Register`, `Open`, and the refusal that prints the sorted known list | `model/model.go:95`, `model/model.go:131` |
+| 7 | five refusals, each naming its config field | `model/config.go:176`, `:186`, `:212`, `:246`, `model/weights.go:268` |
+| 8 | the oracle rig and the tests the table lists | `model/graph_rig_test.go:19`, `nn/rig_test.go:34` |
+
+**What diverged** from the design, and why the code is right:
+
+- `Attention` takes one `nn.Step` struct rather than `posQ, posK, lengths` as
+  positional arguments (`nn/attention.go:28`). The per-step tensors arrived one
+  at a time and a positional list of same-typed pointers can be permuted
+  silently, which for `PosQ` against `PosK` is a model that rotates every key at
+  the wrong angle and still emits plausible text.
+- `Operand` carries three forms, not two: int4 packs eight codes into a u32
+  word, so its code plane is `[(K·N+7)/8]` and nothing about that port says
+  `[K, N]` (`nn/nn.go:34`). Which form a port takes is answered per weight name
+  by `Graph.Stored`, because a checkpoint may quantize the projections and leave
+  the embedding dense.
+- `lengths` is `[B]`, not `[1]` (`model/graph.go:216`). Sequences that step
+  together have different cache lengths, so the value is per sequence; a single
+  sequence is the same port with one row rather than a different port.
+- `Builder.Config` returns `*Config`, not `any` (`model/model.go:57`). Every
+  caller wants §5's fields, and an `any` made each of them assert.
+- §7's capacity refusal was never built. [C11](010-conformance.md) closed before
+  the graph needed it, and a refusal whose cause is gone refuses a working
+  configuration.
+- The matrix-vector kernel at $M=1$ is the int8 path's, not the f16 path's.
+  accel's matvec reads f16 on both operands and tgo's activations are f32
+  (`nn/blocks_test.go:93`), which is the one numeric claim in this spec that the
+  code contradicted rather than extended.
+- §8's oracle tier is the CPU backend only. Metal is covered by an end-to-end
+  generation gated on tier 2 (`metal_test.go:28`), not by an oracle comparison.
+
+**Not built.** Nothing in this spec's scope. What this spec does not yet
+*describe* is description debt rather than build debt, and each area is owned
+elsewhere: the batched, ragged step — `extents`, `last`, `GraphSpec.Batch` and
+the padding rule — belongs to [008](008-scheduler.md); the paged cache ports and
+`GraphSpec.Block` belong to [005](005-kv-cache.md); the int4 form and its three
+planes belong to [001](001-weights.md); the f16 key/value cache, which is what
+puts two `Cast` nodes back into each layer, belongs to
+[005 §3](005-kv-cache.md); the f32 gain path — `nn.Graph.Gain`, gains that are
+never quantized and load outside `weights.Load` — belongs to
+[001](001-weights.md); and the hybrid blocks now living in `nn`
+(`LinearAttention`, `DepthwiseCausalConv`, `ConvState`) belong to
+[018](018-hybrid-models.md), with the cache kinds in
+[023](023-cache-kinds.md) and the Qwen3.5 architecture in 024. Two more belong
+to this spec and are undescribed rather than unbuilt: `model.Declare`,
+`model.Record`, `Inputs`, `Inputs.Validate` and `GraphSpec` — the ports and
+scalars half of §6's package, and the rule that the `base` scalar is declared
+only when $T > 1$ and $B = 1$ — and `model.poison`, which is how a §7 refusal
+raised at `Forward` time rather than at parse time reaches the caller, as a
+zero-extent port name in accel's diagnostics.
 
 ## Decision record
 

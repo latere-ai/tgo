@@ -10,8 +10,9 @@ depends_on:
 
 # Structured output
 
-Not blocked on accel. It is real work, and [011 §3](011-sequencing.md) places it
-after batching.
+Not blocked on accel. It shipped in Wave 6 on 2026-08-26, before
+[008](008-scheduler.md)'s continuous batching in Wave 9 on 2026-08-27; the wave
+log is [011](011-sequencing.md).
 
 ## 1. The idea
 
@@ -112,6 +113,60 @@ The public surface is one field. `Policy.Schema` carries the schema body;
 before it allocates a session, and it keeps what it compiled so the request that
 follows finds it.
 
+## Outcome
+
+Structured output is the JSON Schema front end of `internal/grammar`, compiled
+once per schema body and applied as a per-step token mask on the host. It landed
+in Wave 6 on 2026-08-26: the compiler, the three engine joins, both refusal
+sites, and the wire mapping for three dialects.
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 1 | the indicator of the formula, as an in-place mask on the logits row, with a property test that every document the machine generates validates against its schema | `internal/grammar/grammar.go:244`, `internal/grammar/property_test.go:27` |
+| 2 | a token is admissible only if every intermediate byte is, and the per-state admissible set is built on first visit and kept; `Builds` makes 015-D1 measurable | `internal/grammar/dfa.go:109`, `internal/grammar/grammar.go:196`, `internal/grammar/grammar_test.go:649` |
+| 3 | additive $-\infty$ before the penalties and the temperature, host-side, with no conformance entry opened for a device-side mask | `stream.go:274`, `internal/grammar/grammar.go:244`, `schema_test.go:483` |
+| 4 | JSON Schema first, and refusal by construct: every refused keyword names its obstruction, and a keyword on no allowlist is an error rather than a silent drop | `internal/grammar/schema.go:56`, `internal/grammar/schema.go:296`, `internal/grammar/schema_test.go:17` |
+| 5 | all three joins plus the two refusals: the model's vocabulary width and the tokenizer's text bytes, the decode loop's stop ids, mask-draw-advance, and `Schema` with `Stop` refused at the wire and again in the policy | `schema.go:47`, `schema.go:68`, `session.go:473`, `stream.go:274`, `policy.go:182`, `server/adapt.go:86`, `server/e2e_test.go:340` |
+
+**What diverged** from the design, and why the code is right:
+
+- Two hard bounds the spec did not name: `maxRepeat` = 1024 on
+  `minLength`/`maxLength`/`minItems`/`maxItems`, and `maxStates` = `1<<16` on the
+  whole automaton, checked at the single recursion point
+  (`internal/grammar/schema.go:22`, `:38`, enforced at `:191`). The schema body
+  arrives over HTTP, so an unbounded compilation is an out-of-memory a caller
+  can ask for in a few hundred bytes. Recorded as 015-D10.
+- Three narrowings of JSON Schema, each of which shrinks the admitted language
+  rather than widening it, so a produced document still validates against the
+  caller's schema (`internal/grammar/doc.go:71-83`): object properties appear in
+  the schema's declared order, because admitting every permutation needs a state
+  per subset already emitted; objects are closed, and an explicit
+  `"additionalProperties": true` is refused rather than narrowed
+  (`internal/grammar/schema.go:466`); and `"integer"` admits only the plain
+  spelling, so `1e2` is not admitted (`internal/grammar/schema.go:281`).
+- A number's magnitude is deliberately not bounded
+  (`internal/grammar/doc.go:84-92`). RFC 8259 bounds none, and JSON Schema
+  spells the bound as `minimum` or `maximum`, which the compiler refuses as
+  arithmetic on the value (`internal/grammar/schema.go:59`). So `1e999` is
+  admissible: valid JSON that a Go consumer decoding into a `float64` cannot
+  hold. It is the one hole in §1's "parses by construction", and a caller who
+  needs the bound checks it after decoding.
+
+**Not built.** `json_object` mode: `response_format: {"type":"json_object"}` is
+accepted, reaches no grammar, and is reported as a subtraction through the
+`X-Tgo-Loss` header rather than refused (`server/adapt.go:87`,
+`server/schema_test.go:140`). It is the one `response_format` path §5 draws
+straight to a compiled grammar and that enforces nothing, and
+[029 §7](029-grammar-front-ends.md) owns the answer. §4's EBNF front end, and
+regex as a special case of it, is 015-D3's second half, deliberately sequenced
+after the JSON Schema path and now owned by
+[029](029-grammar-front-ends.md). The documentation of the four behaviours above
+is also open: §4 still says only "JSON Schema first" and names no narrowing, and
+§1 carries no magnitude caveat, so the narrowings and the unbounded magnitude
+live only in `internal/grammar/doc.go`.
+
 ## Decision record
 
 | id | decision | rejected | consequence |
@@ -125,3 +180,4 @@ follows finds it.
 | 015-D7 | `Options.Stop` is exactly what `Stream.isStop` ends on | leave it empty and read `Accepting` in the loop | an empty stop set makes the last step of every constrained request a dead end |
 | 015-D8 | compiled grammars are cached on the `Model`, bounded and dropped whole on overflow | an unbounded map; no cache | 015-D1's per-state sets pay only if a later request finds them, and the key is a body that arrived over HTTP |
 | 015-D9 | `Schema` with `Stop` is refused | ignore `Stop`; let the stop win | a stop string cuts the text where it matched, so it ends a constrained request on half a document with a nil error, and a stop dropped in silence is a different request answered |
+| 015-D10 | `maxRepeat` bounds a declared length or item count at 1024, and `maxStates` bounds the whole automaton at `1<<16`, checked on the state count at the single recursion point `value` goes through | counting alone, which cannot see `$ref` fan-out because there is no count to read: `c.seen` is a cycle detector and not a memo, so a `$defs` entry two siblings reference compiles twice and a chain doubles per level, 315,333 states at depth 12 | the schema body arrives over HTTP, and every construct that nests -- `$ref`, arrays, `anyOf`, and any not yet written -- is bounded without the bound knowing it exists |
