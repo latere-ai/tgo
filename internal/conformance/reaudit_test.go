@@ -96,31 +96,50 @@ func TestC21Int4IsRepresentableAndComputes(t *testing.T) {
 		kernel, k*n, len(codes), len(scales))
 }
 
-// TestC21TgoCannotStoreInt4Weights is the half of C21 that is tgo's, and it is
-// the reason the row does not close on the probe above.
+// TestC21TgoStoresInt4Weights is what the re-audit's finding turned into.
 //
-// [C8](#2-the-register) is the precedent and the whole argument of §2.1: accel
+// The row closed on accel's half while tgo's loader still named only f16 and
+// int8, so this asserted the gap. It asserts the capability now, and the
+// arithmetic that made the gap worth naming: a form at 0.53125 bytes per weight
+// rather than 1.0625 is what decides whether a 27B-class model fits hardware
+// people own.
+//
+// [C8](#2-the-register) is why the two halves were tracked separately. accel
 // answered "MatMul is f16-only" with an f32 GEMM, the report was accepted, and
-// the 252 casts stayed, because the report named the symptom rather than the
-// cost. C21's issue named "no 4-bit *representation*", accel shipped one, and
-// what the row is about — a 27B model that fits a 24 GiB device — needs a
-// loader that stores int4 and a graph that binds it.
-//
-// This asserts the gap rather than describing it, so the row closes when the
-// assertion stops holding.
-func TestC21TgoCannotStoreInt4Weights(t *testing.T) {
-	// weights.Precision is what a checkpoint is stored as, and int8 is the
-	// narrowest it names. Walked rather than compared against a constant, so
-	// the assertion is about what the type offers and not about a number that
-	// happens to be its length.
-	for p := weights.Precision(0); p < 16; p++ {
-		if strings.Contains(strings.ToLower(p.String()), "int4") {
-			t.Fatalf("weights.Precision names %v; C21's tgo half is built and the "+
-				"register should say so", p)
-		}
+// the casts stayed — because a fix that matches an issue's title need not
+// remove the cost the row is about.
+func TestC21TgoStoresInt4Weights(t *testing.T) {
+	if got := weights.Int4.String(); got != "int4" {
+		t.Fatalf("weights.Int4 names itself %q", got)
 	}
-	t.Log("C21: accel represents int4 and tgo's loader stores f16 or int8, so a " +
-		"27B checkpoint is still 25.1 GiB in this process")
+	// The footprint specs/001-weights.md §5.1 states, checked against the
+	// loader rather than restated: eight codes to a u32 word, and an f16 scale
+	// and an f16 zero per group.
+	const n = 8 * quant.Int4Group
+	words, groups := (n+7)/8, (n+quant.Int4Group-1)/quant.Int4Group
+	want := int64(words*4 + groups*2*2)
+	got := weights.Value{Precision: weights.Int4, Elements: n}.Bytes()
+	if got != want {
+		t.Fatalf("%d weights at int4 cost %d bytes, want %d", n, got, want)
+	}
+	if per := float64(got) / n; per != 0.53125 {
+		t.Fatalf("int4 costs %.6f bytes per weight, want 0.53125", per)
+	}
+	// And it is **exactly** half of int8, which is not a coincidence and is the
+	// point of accel grouping 128 rather than 32.
+	//
+	// The payload halves, 1 byte per weight to 0.5. The metadata would double
+	// as a *share* of a payload half the size -- 6.2% becoming 12.5% -- so the
+	// group doubles too, and 2 bytes per 32 becomes 4 bytes per 128: 0.0625 to
+	// 0.03125. Both terms halve, so the total does.
+	i8 := weights.Value{Precision: weights.Int8, Elements: n}.Bytes()
+	if got*2 != i8 {
+		t.Fatalf("int4 costs %d bytes and int8 costs %d; the payload halves and the "+
+			"group doubles so the metadata halves with it, which makes the total "+
+			"exactly half", got, i8)
+	}
+	t.Logf("C21: %.5f bytes per weight against int8's %.5f, so a 27B checkpoint is "+
+		"13.4 GiB rather than 26.7", float64(got)/n, float64(i8)/n)
 }
 
 // TestC7ABf16GemmIsStillAbsent re-audits C7.

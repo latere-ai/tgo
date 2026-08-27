@@ -163,9 +163,58 @@ from the name. Norm gains and the embedding table do not transpose.
 
 ## 5. Precision: the policy, and proving it
 
-The policy is `f16`, `int8`, or `auto`. `auto` picks by decision 5 of
-[000](000-decisions.md): int8 when the f16 footprint exceeds the device's usable
-memory, f16 otherwise, and the choice is **printed**, never silent.
+The policy is `f16`, `int8`, `int4`, or `auto`. `auto` picks by decision 5 of
+[000](000-decisions.md): **the widest form that fits** the device's usable
+memory, and the choice is **printed**, never silent.
+
+### 5.1 Three forms, and what each costs
+
+| form | planes | bytes/weight | 27B resident |
+| --- | --- | ---: | ---: |
+| f16 | the matrix | 2.0 | 50.3 GiB |
+| int8 | i8 codes at `[K, N]`, one f16 scale per 32 | 1.0625 | 26.7 GiB |
+| int4 | u32 codes (eight per word), an f16 scale **and an f16 zero** per 128 | 0.53125 | 13.4 GiB |
+
+**The zero point is what makes four bits usable**, and it is why int4 is three
+planes rather than two. int8 is symmetric: a scale spends 255 levels over a
+block's peak and that is close enough. At four bits there are fifteen, and they
+have to be spent where the weights actually *are* rather than symmetrically
+about zero — so a group carries its minimum as well
+(accel [048](https://github.com/golang-design/accel/blob/main/specs/048-int4.md) §1).
+
+The group is 128 and not 32 for a reason that only appears at four bits, and it
+is why the third row of that table is **exactly** half the second rather than
+merely smaller.
+
+Halving the payload doubles the metadata's *share* of it: a scale per 32 is 6.2%
+at int8 and would be 12.5% at int4. So the group doubles as the payload halves,
+and 2 bytes per 32 becomes 4 bytes per 128 — $0.0625 \to 0.03125$. Both terms
+halve, so the total does:
+
+$$1 + \tfrac{2}{32} = 1.0625 \quad\longrightarrow\quad \tfrac{1}{2} + \tfrac{4}{128} = 0.53125$$
+
+### 5.2 Narrowing is a last resort, and int4 especially
+
+`auto` reaches for int4 **only when int8 does not fit.** accel's own tests show
+int4 beating int8 on a group of weights clustered away from zero and losing on
+one centred on it, so it is not uniformly better: a rule that preferred it would
+trade accuracy for memory nobody asked to save. The case it exists for is the
+one where the alternative is not loading at all.
+
+### 5.3 The embedding table cannot pack
+
+It is **gathered**, a row at a time, rather than contracted against — and accel
+registers no int4 gather: `QuantGatherRows` reads a quant plane and a scale
+plane and has no three-plane form. So a load at int4 caps the embedding at int8.
+
+That is declared per tensor (`weights.Tensor.Gathered`) rather than discovered
+as a refusal at record time, and it is declared in the **loader** rather than by
+each caller: the footprint `tgo info` prints and the load itself are computed by
+two different pieces of code, and a cap applied in one of them prints a number
+the device never has.
+
+A tied checkpoint still packs its LM head, which is the same file tensor in the
+other layout ([004-D7](004-model-graph.md)) and is a `MatMul`.
 
 Per-tensor override exists for the case that matters: the embedding table and
 the LM head are the largest tensors in a small model and the most sensitive to
@@ -178,15 +227,30 @@ common and defensible point.
 > of [accel#11](https://github.com/golang-design/accel/issues/11) and it landed
 > ([C14](010-conformance.md)). The middle width now exists.
 
-**The bound is measured, not assumed.** `quant.Int8ErrorBound` gives, for a dot
-product, the distance from the unquantized result. The load-time check runs it
-over sampled blocks of the real tensors:
+### 5.4 The bound is measured, not assumed
+
+`quant.Int8ErrorBound` gives, for a dot product, the distance from the
+unquantized result, and `quant.Int4ErrorBound` is the same statement one width
+down — rounding to nearest gives at most half a step, and the step is a group's
+*range* over fifteen where int8's is a peak over 127. Both take the inputs
+rather than returning a constant, because a per-group figure bounds a dot
+product only where the caller says which group each term came from.
+
+The load-time check runs it over sampled blocks of the real tensors:
 
 $$\left|\hat{y} - y\right| \le \texttt{Int8ErrorBound}(x, s)$$
 
 and the conformance suite ([010](010-conformance.md)) asserts one layer's output
 against the f16 path within that bound. Asserting against a hand-tuned tolerance
 would pass for the wrong reason.
+
+**What a green bound does not say.** [010 §3](010-conformance.md) asks for
+quantization error on *real* blocks, and a tier-1 fixture's weights are
+synthetic. `Int4Quantize` spends a group's codes over that group's range, so
+weights drawn from one distribution — with no outlier channel to stretch it —
+flatter the scheme, and trained transformer weights have outliers. The number
+that decides whether int4 is usable *for a model* is a tier-3 measurement
+against a checkpoint, and it has not been taken.
 
 ## 6. Refusals
 

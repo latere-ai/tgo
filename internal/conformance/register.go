@@ -275,11 +275,12 @@ func Register() []Row {
 		Issue:  22,
 		State:  Closed,
 		Cost: "none needed. `quant.Int4Quantize` and `Int4MatMul` landed against " +
-			"this report, verified against a reconstruction reference at a " +
-			"transformer's shape. **What remains is tgo's**: `weights.Precision` " +
-			"names f16 and int8, so a 27B checkpoint is still 25.1 GiB in this " +
-			"process. That is [001](001-weights.md)'s work and not an accel gap, " +
-			"which is why the row closes rather than narrowing",
+			"this report, verified twice — against a reconstruction reference, " +
+			"and against the weights the checkpoint held within " +
+			"`quant.Int4ErrorBound`. tgo stores them since 2026-08-27, so a 27B " +
+			"checkpoint resolves to **13.4 GiB** rather than 26.7 " +
+			"([001 §5.1](001-weights.md)). The embedding table is capped at int8, " +
+			"because it is gathered and there is no int4 gather",
 	}, {
 		ID:     "C22",
 		Cannot: "a **ragged step over an f16 cache**",

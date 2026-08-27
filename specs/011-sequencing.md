@@ -36,7 +36,7 @@ was discovered by reading its config rather than assuming.
 | named | actual | status |
 | --- | --- | --- |
 | "Qwen3 3B" | **Qwen3-4B**. There is no 3B; the dense line is 0.6B, 1.7B, 4B, 8B, 14B, 32B | **buildable now** |
-| "Qwen3.8 27B" | **Qwen3.8-27B**, Apache 2.0, released August 2026 | **buildable, not built.** Both upstream blockers closed on 2026-08-27: `tensor.LinearAttention` for its 48 gated-delta layers ([018](018-hybrid-models.md)) and `Int4MatMul` for its footprint ([C21](010-conformance.md)). What is left is tgo's — the graph, and a loader that stores int4 |
+| "Qwen3.8 27B" | **Qwen3.8-27B**, Apache 2.0, released August 2026 | **one thing left, and it is the graph.** Both upstream blockers closed on 2026-08-27 and one of the two tgo halves shipped the same day: int4 storage, so the footprint is 13.4 GiB. What remains is [018](018-hybrid-models.md)'s hybrid graph — 48 gated-delta layers beside 16 softmax ones |
 
 ### 2.1.1 What "well tested" means for each, and what it cannot mean
 
@@ -157,10 +157,15 @@ the idealised one this section used to quote:
 | **int8, what tgo stores** | 1.0625 | **26.7 GiB** | not a 24 GiB card |
 | int4, scale + zero per 128 | 0.53125 | **13.4 GiB** | hardware people own |
 
-**What is left is tgo's.** `weights.Precision` names `F16` and `Int8`, so this
-process still resolves a 27B checkpoint to 26.7 GiB whatever accel can compute
-with. That is [001](001-weights.md)'s work: a third stored form, a graph that
-binds three planes rather than two, and `auto` learning when to reach for it.
+**Built on 2026-08-27.** `weights.Int4` is the third stored form, `nn.Form` is
+the signal that names a representation rather than a dtype, and `auto` narrows
+to it only where int8 does not fit. A 27B checkpoint resolves to **13.4 GiB**.
+
+One thing does not pack: the embedding table is gathered rather than contracted
+against, and accel registers no int4 gather, so it is capped at int8 — declared
+per tensor in the loader rather than discovered as a refusal at record time,
+because the footprint `tgo info` prints and the load itself are computed by two
+different pieces of code ([001 §5.3](001-weights.md)).
 
 The download is the other half and is unchanged: [001](001-weights.md) reads
 full-precision safetensors and quantizes at load, so running a 27B still means
@@ -462,8 +467,37 @@ sequence does.
 **Remaining**: [008 §9](008-scheduler.md)'s three — sampling on the batched
 path, a queue in front of admission, and the server actually using it — an f16
 block pool now that [C22](010-conformance.md) closed, which halves the largest
-allocation a serving process has and is [005 §3](005-kv-cache.md)'s, and
+allocation a serving process has and is [005 §3](005-kv-cache.md)'s,
+[018](018-hybrid-models.md)'s graph, and
 [§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
+
+### 2026-08-27 — Wave 10: four-bit weights
+
+[C21](010-conformance.md)'s tgo half, built the day the re-audit named it.
+`weights.Int4` stores eight codes to a u32 word with an f16 scale and an f16
+zero per 128, and a 27B checkpoint resolves to 13.4 GiB rather than 26.7.
+
+**The signal was the expensive decision and it came first.** `nn.Graph.Stored`
+returned an `accel.DType`, which has no int4 — so the only way to say it was to
+overload `u32`, the code plane's dtype, and at that point the `shape` argument
+stops describing the port: codes are $(K\cdot N+7)/8$ words and nothing about
+them says $[K, N]$. `nn.Form` names the *representation*. Changing it touched
+four files and would have touched the loader too if it had been written first.
+
+**Two defects the tests caught, and neither was about int4.** `Set.Close` named
+`Data` and `Scales` one at a time, so the third plane was allocated and closed
+by nothing — surfacing as accel refusing to close a device under fifteen live
+children, on a test about something else. And the weight binding used
+`v.Elements` as the view count, which stops being the buffer's count at int4 by
+a factor of eight.
+
+**Two claims withdrawn.** A first test compared int4's tokens against f16's and
+required them to match; the fixture's weights are multiples of $1/8$ over a
+range of 4, so a 4-bit step is $4/15$ and they diverge for a *correct*
+implementation. What is checkable without a bound is that swapping the scale and
+zero planes changes the answer — if it did not, neither would be read. And the
+claim that int4 is *under* half of int8 is wrong: it is exactly half, because
+the group doubles as the payload halves and both terms halve with it.
 
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
 
