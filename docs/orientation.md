@@ -257,8 +257,10 @@ directly from a Hugging Face safetensors checkpoint.
 
 The newer Qwen3.5 and Qwen3.8 models are a different shape: three of every four
 layers use linear attention rather than the softmax attention everything else
-uses, so they need a piece the compute layer does not have yet. They are a
-target and they are not close, and this page will say so until they run.
+uses. The compute layer has both of the pieces those layers need, and tgo can
+now build each one and check it against a reference. What it cannot yet do is
+assemble them into a whole model, so these do not run. This page will say so
+until they do.
 
 ## What tgo will not do
 

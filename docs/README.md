@@ -5,19 +5,20 @@ contributors live in [`../specs/`](../specs/) and are written for a different
 reader — they argue about tradeoffs, and this does not.
 
 > [!NOTE]
-> **tgo does not run yet.** The pages that would tell you how to install it,
-> pull a model and serve it are missing because the commands they describe do
-> not exist. Writing them now would give you instructions nobody could check.
->
-> [Orientation](orientation.md) is here today, because what tgo is and what it
-> costs to run are true regardless of how much of it is built.
+> **tgo runs, and most of these pages are not written yet.** `tgo pull`,
+> `tgo run` and `tgo serve` all work — the [README](../README.md) shows each one
+> as a command you can run. Until the guides below arrive, that page and
+> [Orientation](orientation.md) are what exist, and `tgo <command> --help` is
+> accurate because it comes from the code.
 
 ## Now
 
-- **[Orientation](orientation.md)** — what tgo is, what runs where, and how it
-  relates to accel.
+- **[Orientation](orientation.md)** — what tgo is, what runs where, what it
+  costs in memory, and how it relates to accel.
+- **[README](../README.md)** — installing it, pulling a model, generating, and
+  serving.
 
-## With the code
+## Still to write
 
 | page | what it will cover |
 | --- | --- |
@@ -27,4 +28,5 @@ reader — they argue about tradeoffs, and this does not.
 | Performance | what to expect, and how to measure it on your own machine |
 | Troubleshooting | when a model will not load, or the output looks wrong |
 
-Each arrives with the code it describes.
+Each describes behaviour that already exists, so each can be checked against the
+code as it is written.
