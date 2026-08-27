@@ -465,11 +465,11 @@ wrong answer. That closure simplified tgo's padding back to what a single
 sequence does.
 
 **Remaining**: [008 §9](008-scheduler.md)'s three — sampling on the batched
-path, a queue in front of admission, and the server actually using it — an f16
-block pool now that [C22](010-conformance.md) closed, which halves the largest
-allocation a serving process has and is [005 §3](005-kv-cache.md)'s,
+path, a queue in front of admission, and the server actually using it —
 [018](018-hybrid-models.md)'s graph, and
-[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps. The f16 block
+pool is **blocked upstream** on [C24](010-conformance.md); tgo's half of it is
+built.
 
 ### 2026-08-27 — Wave 10: four-bit weights
 
@@ -490,6 +490,18 @@ by nothing — surfacing as accel refusing to close a device under fifteen live
 children, on a test about something else. And the weight binding used
 `v.Elements` as the view count, which stops being the buffer's count at int4 by
 a factor of eight.
+
+**And one thing built to the point of being blocked.** [005 §3](005-kv-cache.md)
+wants a narrow key/value cache and the refusal was tgo's: `nn.Attention`
+recorded no `Cast` on the scattered rows, so an f16 state could not be written.
+It records one now, `model.GraphSpec` stopped refusing f16, and the pool is one
+line from narrow — and stays f32, because
+[C24](010-conformance.md) found that accel selects the f16 prefill kernel and
+then overwrites the selection whenever a page table is supplied. A pool is paged
+by construction, so the narrow cache is reachable for a contiguous single
+sequence and for nobody who shares blocks. [accel#25](https://github.com/golang-design/accel/issues/25),
+and it is [C5](010-conformance.md)'s pattern a third time: each of "ScatterRows,
+prefill and paged decode all take f16" is true and the combination is not.
 
 **Two claims withdrawn.** A first test compared int4's tokens against f16's and
 required them to match; the fixture's weights are multiples of $1/8$ over a
