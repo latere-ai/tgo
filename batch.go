@@ -391,7 +391,26 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 		return nil, fmt.Errorf("tgo: submitting a %d-slot step of %d tokens: %w",
 			len(work), total, err)
 	}
-	if err := q.ReadBuffer(b.logits, 0, b.hLogits); err != nil {
+	// Only the rows this step produced, as one read.
+	//
+	// A batched readback is V floats per slot and V is 151936, so a step is
+	// 593.5 KiB per slot against 4 bytes of useful output. Reading the whole
+	// buffer charged every step for every *idle* slot as well: an eight-slot
+	// scheduler with one live decoder moved 4.86 MB to learn one token.
+	//
+	// The span rather than a read per slot, because the measurement that would
+	// justify N calls does not exist yet -- specs/017-benchmarks.md §4.1 puts
+	// the readback at 807 MB/s off a mapped buffer, which is far enough below
+	// memcpy bandwidth that most of it may be fixed per-call cost. One call
+	// over [lo, hi] is never more bytes than needed and never more calls than
+	// before, which is the choice that does not depend on the number.
+	lo, hi := len(b.slots), 0
+	for _, w := range work {
+		lo, hi = min(lo, w.Slot), max(hi, w.Slot)
+	}
+	v := b.m.cfg.VocabSize
+	span := b.hLogits[lo*v : (hi+1)*v]
+	if err := q.ReadBuffer(b.logits, lo*v, span); err != nil {
 		return nil, fmt.Errorf("tgo: reading a batched step's logits back: %w", err)
 	}
 
@@ -400,7 +419,6 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	// is immutable and another sequence may attend to it before the call
 	// returns (016 §5).
 	out := make([][]float32, len(work))
-	v := b.m.cfg.VocabSize
 	for i, w := range work {
 		s := b.slots[w.Slot]
 		if err := s.commit(w.Tokens); err != nil {

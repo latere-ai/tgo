@@ -552,3 +552,60 @@ func TestStepReturnsResultsInTheOrderTheWorkNamed(t *testing.T) {
 		compareLogits(t, "work order", i, got, want[0])
 	}
 }
+
+// TestAStepReadsBackOnlyTheRowsItProduced.
+//
+// A readback is VocabSize floats per slot, which for Qwen3 is 593.5 KiB
+// against four bytes of useful output. Reading the whole buffer charged every
+// step for every idle slot too, so an eight-slot scheduler with one live
+// decoder moved 4.86 MB to learn one token.
+//
+// The assertion is on the values rather than on the byte count, because the
+// byte count is not observable from here and the thing that would break is:
+// a slot outside the span read must keep what it had, and a slot inside it
+// must get what the device computed.
+func TestAStepReadsBackOnlyTheRowsItProduced(t *testing.T) {
+	t.Parallel()
+	m := batchModel(t)
+	b := newBatch(t, m, 3)
+
+	prompts := [][]int{promptIDs(1, 8), promptIDs(2, 9), promptIDs(3, 10)}
+	for i, p := range prompts {
+		if _, err := b.Admit(i, p, "", 0); err != nil {
+			t.Fatalf("Admit(%d): %v", i, err)
+		}
+	}
+	// Slot 1 alone: the span is one row in the middle, so a read that started
+	// at zero or ran to the end would still produce it and a read of the wrong
+	// row would not.
+	one, err := b.Step([]Work{{Slot: 1, Tokens: prompts[1]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid := append([]float32(nil), one[0]...)
+
+	// The same sequence in a batch of its own, to say what row 1 should hold.
+	solo := newBatch(t, m, 3)
+	if _, err := solo.Admit(1, prompts[1], "solo", 0); err != nil {
+		t.Fatal(err)
+	}
+	want, err := solo.Step([]Work{{Slot: 1, Tokens: prompts[1]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareLogits(t, "a one-slot span in the middle", 1, mid, want[0])
+
+	// Now slots 0 and 2, which spans all three rows, and slot 1's buffer must
+	// still hold what its own step produced.
+	if _, err := b.Step([]Work{
+		{Slot: 0, Tokens: prompts[0]}, {Slot: 2, Tokens: prompts[2]},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range mid {
+		if b.slots[1].out[i] != mid[i] {
+			t.Fatalf("slot 1's logit %d changed from %v to %v while slots 0 and 2 "+
+				"stepped over it", i, mid[i], b.slots[1].out[i])
+		}
+	}
+}
