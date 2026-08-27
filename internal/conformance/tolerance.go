@@ -148,6 +148,32 @@ func PrimitiveAbs(name string, bound float64, count int) Terms {
 		count, name, bound, e)}}
 }
 
+// QuantInt4 is the quantization term of a dot product against a 4-bit matrix,
+// over the inputs it used.
+//
+// accel's [quant.Int4ErrorBound], and the whole reason it takes the inputs
+// rather than returning a constant: rounding to nearest gives at most half a
+// step, and the step is a *group's range* over fifteen where int8's is a peak
+// over 127. So the bound is a property of which weights landed in a group, not
+// of the format.
+//
+//	|Σ (q−z)s·x − Σ w·x| ≤ (1/30) Σ |xᵢ| (maxᵍ⁽ⁱ⁾ − minᵍ⁽ⁱ⁾)
+//
+// # What a green test with this bound does and does not say
+//
+// It says the device computes what the representation defines. It does **not**
+// say int4 is accurate enough for a model: [§3](../../specs/010-conformance.md)
+// asks for quantization error on *real* blocks, because trained weights have
+// outlier channels and synthetic ones drawn from one distribution have none and
+// therefore flatter the scheme. That measurement is tier 3.
+func QuantInt4(bound float64) Terms {
+	if bound < 0 {
+		panic("conformance: QuantInt4 with a negative bound")
+	}
+	return Terms{abs: bound, why: []string{fmt.Sprintf(
+		"quant.Int4ErrorBound over the actual inputs: %.3g absolute", bound)}}
+}
+
 // Magnitude declares the size the relative terms apply to.
 //
 // For a dot product it is sum|x_i·w_i| and not the result: a sum whose terms

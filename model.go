@@ -19,6 +19,7 @@ import (
 	"github.com/latere-ai/tgo/internal/grammar"
 	"github.com/latere-ai/tgo/internal/prefix"
 	"github.com/latere-ai/tgo/model"
+	"github.com/latere-ai/tgo/nn"
 	"github.com/latere-ai/tgo/safetensors"
 	"github.com/latere-ai/tgo/tokenizer"
 	"github.com/latere-ai/tgo/weights"
@@ -103,7 +104,7 @@ type Model struct {
 	weightBind map[string]accel.BufferView
 
 	// stored answers nn.Graph.Stored: how the loader stored one weight port.
-	stored func(string) accel.DType
+	stored func(string) nn.Form
 
 	info    Info
 	context int
@@ -386,6 +387,22 @@ func (m *Model) load(repo *safetensors.Repo, specs []model.WeightSpec, p Precisi
 		if s.Permute {
 			d.HeadDim = m.cfg.HeadDim
 		}
+		if s.Kind == model.KindEmbedding && toLoader(p) == weights.Int4 {
+			// The embedding table is *gathered*, not multiplied, and accel
+			// registers no int4 gather: `QuantGatherRows` reads a quant plane
+			// and a scale plane, and there is no three-plane form of it.
+			//
+			// So the table stays int8 while everything else packs. That is a
+			// pin and not a fallback -- it is stated here, per tensor, rather
+			// than discovered as a refusal at record time -- and it is what
+			// every quantizer in the ecosystem does anyway: an embedding row is
+			// read once per token and never contracted, so the width it is
+			// stored at buys latency rather than arithmetic.
+			//
+			// A tied checkpoint still packs its *LM head*, which is the same
+			// file tensor in the other layout (004-D7) and is a MatMul.
+			d.Precision = weights.Int8
+		}
 		decls = append(decls, d)
 	}
 	// The log is stderr when the policy is Auto and silent when it is not.
@@ -409,15 +426,23 @@ func (m *Model) load(repo *safetensors.Repo, specs []model.WeightSpec, p Precisi
 		return err
 	}
 
-	m.stored = func(name string) accel.DType {
+	// The loader's resolved precision, in the graph's terms.
+	//
+	// A translation and not a pass-through: weights.Precision carries Inherit
+	// and Auto, which are policies a load resolves and a graph must never see,
+	// and nn.Form carries only the three forms a port can actually take.
+	m.stored = func(name string) nn.Form {
 		v, ok := set.Get(name)
 		if !ok {
-			return accel.F16
+			return nn.FormF16
 		}
-		if v.Precision == weights.Int8 {
-			return accel.I8
+		switch v.Precision {
+		case weights.Int8:
+			return nn.FormInt8
+		case weights.Int4:
+			return nn.FormInt4
 		}
-		return accel.F16
+		return nn.FormF16
 	}
 
 	// Every weight port, bound once. specs/007-engine.md §6: every model
@@ -427,15 +452,30 @@ func (m *Model) load(repo *safetensors.Repo, specs []model.WeightSpec, p Precisi
 	for _, name := range set.Names() {
 		v, _ := set.Get(name)
 		dt := accel.F16
-		if v.Precision == weights.Int8 {
+		switch v.Precision {
+		case weights.Int8:
 			dt = accel.I8
+		case weights.Int4:
+			// The code plane is u32 words, eight weights each, so the element
+			// count is the word count and not the matrix's.
+			dt = accel.U32
 		}
-		if err := bindBuffer(m.weightBind, name, v.Data, dt, v.Elements); err != nil {
+		// The count is the buffer's own and not the matrix's, which they stop
+		// agreeing on at int4: the code plane holds (n+7)/8 words for n
+		// weights, so binding v.Elements there would ask for a view eight
+		// times the buffer.
+		if err := bindBuffer(m.weightBind, name, v.Data, dt, v.Data.Count()); err != nil {
 			return err
 		}
-		if v.Scales != nil {
-			n := v.Scales.Count()
-			if err := bindBuffer(m.weightBind, name+scaleSuffix, v.Scales, accel.F16, n); err != nil {
+		for _, p := range []struct {
+			suffix string
+			buf    *accel.Buffer
+		}{{nn.ScaleSuffix, v.Scales}, {nn.ZeroSuffix, v.Zeros}} {
+			if p.buf == nil {
+				continue
+			}
+			if err := bindBuffer(m.weightBind, name+p.suffix, p.buf,
+				accel.F16, p.buf.Count()); err != nil {
 				return err
 			}
 		}
@@ -496,6 +536,8 @@ func toLoader(p Precision) weights.Precision {
 		return weights.F16
 	case Int8:
 		return weights.Int8
+	case Int4:
+		return weights.Int4
 	}
 	return weights.Auto
 }
@@ -506,6 +548,8 @@ func fromLoader(p weights.Precision) Precision {
 		return F16
 	case weights.Int8:
 		return Int8
+	case weights.Int4:
+		return Int4
 	}
 	return AutoPrecision
 }
@@ -535,11 +579,6 @@ func resolveSpecials(t *tokenizer.Tokenizer) specials {
 		toolEnd:   id("</tool_call>"),
 	}
 }
-
-// scaleSuffix is the name nn gives a quantized weight's scale plane. It is
-// spelled here rather than imported so that this package does not depend on nn
-// for one string; a test asserts the two agree.
-const scaleSuffix = ".scales"
 
 // renderer is the model's chat template.
 func (m *Model) renderer() chat.Renderer { return m.builder.Template() }

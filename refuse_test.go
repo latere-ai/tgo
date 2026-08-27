@@ -17,6 +17,7 @@ import (
 
 	"github.com/latere-ai/tgo/chat"
 	"github.com/latere-ai/tgo/model"
+	"github.com/latere-ai/tgo/nn"
 	"github.com/latere-ai/tgo/safetensors"
 	"github.com/latere-ai/tgo/weights"
 )
@@ -518,8 +519,12 @@ func TestPlainValueHelpers(t *testing.T) {
 	}
 	// The scale-plane suffix is nn's, and the two must agree or a quantized
 	// weight binds its quants and not its scales.
-	if scaleSuffix != ".scales" {
-		t.Errorf("scaleSuffix = %q; it is the name tgo/nn declares", scaleSuffix)
+	// The plane names are nn's and are used from there rather than respelled.
+	// They were duplicated here so this package did not import nn for one
+	// string; it imports nn for [nn.Form] now, so the copy lost its reason and
+	// the agreement is by construction instead of by assertion.
+	if nn.ScaleSuffix != ".scales" || nn.ZeroSuffix != ".zeros" {
+		t.Errorf("the plane suffixes are %q and %q", nn.ScaleSuffix, nn.ZeroSuffix)
 	}
 }
 
@@ -708,11 +713,11 @@ func TestInt8WeightsRunTheSameLoop(t *testing.T) {
 	if got := m.Info().Precision; got != Int8 {
 		t.Fatalf("Precision = %v, want int8", got)
 	}
-	if m.stored("embed") != accel.I8 {
+	if m.stored("embed") != nn.FormInt8 {
 		t.Errorf("the embedding was not stored as int8")
 	}
-	if _, ok := m.weightBind["embed"+scaleSuffix]; !ok {
-		t.Errorf("the embedding's scale plane is not bound under %q", "embed"+scaleSuffix)
+	if _, ok := m.weightBind["embed"+nn.ScaleSuffix]; !ok {
+		t.Errorf("the embedding's scale plane is not bound under %q", "embed"+nn.ScaleSuffix)
 	}
 	// The gains stay f32 whatever the policy: a gain is one value per feature,
 	// and its rounding would reach every row it scales.

@@ -49,8 +49,13 @@ type Precision int
 // [github.com/latere-ai/tgo/weights] resolves, restated here so the public
 // surface does not export the loader (007-D7).
 const (
-	// AutoPrecision is the zero value: f16 where the weights fit the device's
-	// budget and int8 where they do not, printed either way.
+	// AutoPrecision is the zero value: the widest form that fits the device's
+	// budget -- f16, then int8, then int4 -- printed either way.
+	//
+	// Narrowing is a last resort at every step. int4 in particular is not
+	// uniformly more accurate or less than int8: it beats int8 on a group of
+	// weights clustered away from zero and loses on one centred on it, so auto
+	// reaches for it only where the alternative is not loading at all.
 	AutoPrecision Precision = iota
 
 	// F16 stores one 16-bit float per weight.
@@ -58,6 +63,15 @@ const (
 
 	// Int8 stores one int8 quant per weight plus one f16 scale per block.
 	Int8
+
+	// Int4 stores eight 4-bit codes per 32-bit word, with an f16 scale and an
+	// f16 zero point per group of 128.
+	//
+	// Half of int8 and a little less: 0.53125 bytes per weight, which is what
+	// decides whether a 27B-class model fits a device people own. Ask for it
+	// deliberately; [AutoPrecision] will not choose it over int8 unless int8
+	// does not fit.
+	Int4
 )
 
 // String names a Precision for [Info] and for error text.
@@ -69,6 +83,8 @@ func (p Precision) String() string {
 		return "f16"
 	case Int8:
 		return "int8"
+	case Int4:
+		return "int4"
 	}
 	return fmt.Sprintf("Precision(%d)", int(p))
 }

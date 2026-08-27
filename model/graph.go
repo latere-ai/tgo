@@ -150,8 +150,8 @@ type GraphSpec struct {
 	Block int
 
 	// Stored reports how the loader stored the weight of a given full port
-	// name, [accel.F16] or [accel.I8]. A nil func means every weight is f16.
-	Stored func(name string) accel.DType
+	// name. A nil func means every weight is f16.
+	Stored func(name string) nn.Form
 }
 
 // Inputs is the set of ports one forward pass reads, as [Declare] recorded

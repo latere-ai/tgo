@@ -18,10 +18,25 @@ import (
 // is unused (004-D5).
 func Linear(g *Graph, x *tensor.Tensor, w Operand) *tensor.Tensor {
 	if !w.ok() {
-		return g.fail("Linear", "the weight carries neither a dense plane nor a complete "+
-			"quantized pair; an operand is one of the two (004-D6)")
+		return g.fail("Linear", "the weight carries no complete form; an operand is a "+
+			"dense plane, an int8 pair, or an int4 triple, and exactly one of them "+
+			"(004-D6)")
 	}
-	if w.IsQuant() {
+	switch w.Form() {
+	case FormInt4:
+		// Int4MatMul at every row count, including one.
+		//
+		// accel registers a matvec beside it and says a decode "would work and
+		// would be slower" through the GEMM, because a tiled kernel amortises
+		// the unpacking over a tile of tokens and a one-row step has no tile.
+		// Reaching it costs two reshapes -- the matvec takes a rank-1 [K] and
+		// returns [N], where every other projection here is [rows, K] -- and
+		// this tree does not add nodes to the hot path on an argument. It is a
+		// *performance* selection, unlike the int8 path where accel picks
+		// internally, so what would justify it is the measurement
+		// specs/017-benchmarks.md §3 takes and nobody has taken yet.
+		return tensor.Int4MatMul(g.B, x, w.Packed)
+	case FormInt8:
 		return tensor.QuantMatMul(g.B, x, w.Quant)
 	}
 	return tensor.MatMul(g.B, x, w.Dense)

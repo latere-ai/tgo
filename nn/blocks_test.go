@@ -111,7 +111,7 @@ func TestLinearAtOneRowTakesTheTileForF16Weights(t *testing.T) {
 // specialization: specs/010-conformance.md C15.
 func TestLinearAtOneRowTakesTheMatrixVectorKernelForInt8Weights(t *testing.T) {
 	r := newRig(t, 1e-6)
-	r.g.Stored = func(string) accel.DType { return accel.I8 }
+	r.g.Stored = func(string) nn.Form { return nn.FormInt8 }
 	x := r.input("x", accel.F32, tensor.Shape{1, 3})
 	r.f32("x", linX[:3])
 	w := r.g.Weight("wq", tensor.Shape{3, 4})
@@ -224,7 +224,7 @@ func TestAWeightPortNeedsAPositiveExtent(t *testing.T) {
 
 func TestAWeightStoredAsSomethingElseIsRefused(t *testing.T) {
 	r := newRig(t, 1e-6)
-	r.g.Stored = func(string) accel.DType { return accel.F32 }
+	r.g.Stored = func(string) nn.Form { return nn.Form(99) }
 	r.g.Weight("wq", tensor.Shape{3, 4})
 	if err := r.g.Err(); err == nil || !strings.Contains(err.Error(), "block.wq") {
 		t.Fatalf("the diagnostic is %v; it should name the port", err)
@@ -266,7 +266,7 @@ func TestAnOperandKnowsWhichFormItCarries(t *testing.T) {
 	if dense.IsQuant() {
 		t.Fatal("an f16 operand reports itself quantized")
 	}
-	r.g.Stored = func(string) accel.DType { return accel.I8 }
+	r.g.Stored = func(string) nn.Form { return nn.FormInt8 }
 	if !r.g.Weight("wk", tensor.Shape{3, 4}).IsQuant() {
 		t.Fatal("an int8 operand reports itself dense")
 	}
@@ -348,7 +348,7 @@ func TestTheScalePlaneIsDeclaredUnderTheWeightsNameAndSuffix(t *testing.T) {
 		t.Fatalf("ScaleSuffix is %q; the loader writes %q", nn.ScaleSuffix, ".scales")
 	}
 	r := newRig(t, 1e-6)
-	r.g.Stored = func(string) accel.DType { return accel.I8 }
+	r.g.Stored = func(string) nn.Form { return nn.FormInt8 }
 	x := r.input("x", accel.F32, tensor.Shape{1, 3})
 	r.f32("x", linX[:3])
 	w := r.g.Weight("wq", tensor.Shape{3, 4})

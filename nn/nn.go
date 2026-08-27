@@ -22,6 +22,48 @@ import (
 	"golang.design/x/accel/tensor"
 )
 
+// Form is how the loader stored a weight, and therefore how many planes the
+// graph declares for it.
+//
+// A representation and not a dtype. The three forms carry one, two and three
+// planes, and only the first has the matrix's own shape: int4 packs eight codes
+// into a u32 word, so its code plane is [(K*N+7)/8] and nothing about that port
+// says [K, N] any more. A signal that named a dtype would have to overload u32
+// to mean int4 -- a value deciding a reading, which is the shape this tree has
+// refused before.
+type Form int
+
+const (
+	// FormF16 is one plane, the matrix at [K, N].
+	FormF16 Form = iota
+
+	// FormInt8 is two: i8 codes at [K, N] and one f16 scale per
+	// [quant.Int8Block] weights. Symmetric, so no zero point.
+	FormInt8
+
+	// FormInt4 is three: u32 codes packing eight weights per word, and an f16
+	// scale and an f16 *zero* per [quant.Int4Group].
+	//
+	// The zero is what makes four bits usable rather than a third plane
+	// somebody added. At eight bits the codes reach far enough that a scale
+	// alone spends them well; at four they have to be spent where the weights
+	// actually are (accel specs/048-int4.md §1).
+	FormInt4
+)
+
+// String names a Form.
+func (f Form) String() string {
+	switch f {
+	case FormF16:
+		return "f16"
+	case FormInt8:
+		return "int8"
+	case FormInt4:
+		return "int4"
+	}
+	return fmt.Sprintf("Form(%d)", int(f))
+}
+
 // ScaleSuffix names the scale plane of a quantized weight port.
 //
 // A quantized matrix is two device buffers -- i8 quants and f16 scales -- and
@@ -29,6 +71,14 @@ import (
 // loader and the graph agree by construction rather than by convention: the
 // quants keep the weight's own name and the scales append this.
 const ScaleSuffix = ".scales"
+
+// ZeroSuffix names the zero-point plane of an int4 weight port.
+//
+// A third suffix rather than two f16 planes packed under one name, for
+// [ScaleSuffix]'s reason one width down: same length and same dtype is a pair a
+// caller can bind backwards, and the result is a matrix of noise rather than an
+// error.
+const ZeroSuffix = ".zeros"
 
 // Graph is what every block records into.
 //
@@ -56,7 +106,7 @@ type Graph struct {
 	// entry per port to say the same thing about all of them, and per name
 	// rather than per graph because a checkpoint may quantize the projections
 	// and leave the embedding dense.
-	Stored func(name string) accel.DType
+	Stored func(name string) Form
 
 	errs []error
 }
@@ -109,14 +159,38 @@ type Operand struct {
 
 	// Quant is the same matrix as i8 quants and f16 scales.
 	Quant tensor.Quantized
+
+	// Packed is the same matrix as u32 codes, f16 scales and f16 zeros.
+	Packed tensor.Int4
 }
 
-// IsQuant reports whether this operand carries the quantized form.
-func (o Operand) IsQuant() bool { return o.Quant.Quants != nil || o.Quant.Scales != nil }
+// Form reports which of the three this operand carries.
+func (o Operand) Form() Form {
+	switch {
+	case o.Packed.Codes != nil || o.Packed.Scales != nil || o.Packed.Zeros != nil:
+		return FormInt4
+	case o.Quant.Quants != nil || o.Quant.Scales != nil:
+		return FormInt8
+	}
+	return FormF16
+}
 
-// ok reports whether exactly one of the two forms is present.
+// IsQuant reports whether this operand carries a quantized form, of either
+// width.
+func (o Operand) IsQuant() bool { return o.Form() != FormF16 }
+
+// ok reports whether exactly one of the three forms is present, and completely.
+//
+// Every plane of the chosen form and none of another's. A half-built operand is
+// how one matrix's codes come to be multiplied against another matrix's scales,
+// which compiles, runs, and produces noise.
 func (o Operand) ok() bool {
-	if o.IsQuant() {
+	switch o.Form() {
+	case FormInt4:
+		return o.Dense == nil && o.Quant.Quants == nil && o.Quant.Scales == nil &&
+			o.Packed.Codes != nil && o.Packed.Scales != nil && o.Packed.Zeros != nil &&
+			o.Packed.Weights > 0
+	case FormInt8:
 		return o.Dense == nil && o.Quant.Quants != nil && o.Quant.Scales != nil
 	}
 	return o.Dense != nil
@@ -135,16 +209,16 @@ func (g *Graph) Weight(name string, shape tensor.Shape) Operand {
 		g.fail("Weight", "%q is %v; a weight port has a positive extent", full, shape)
 		return Operand{}
 	}
-	dtype := accel.F16
+	form := FormF16
 	if g.Stored != nil {
-		dtype = g.Stored(full)
+		form = g.Stored(full)
 	}
-	switch dtype {
-	case accel.F16:
+	switch form {
+	case FormF16:
 		return Operand{Dense: tensor.Weight(g.B, tensor.ValueDesc{
 			Name: full, DType: accel.F16, Shape: shape,
 		})}
-	case accel.I8:
+	case FormInt8:
 		blocks := (shape.Elements() + quant.Int8Block - 1) / quant.Int8Block
 		return Operand{Quant: tensor.Quantized{
 			Quants: tensor.Weight(g.B, tensor.ValueDesc{
@@ -154,9 +228,29 @@ func (g *Graph) Weight(name string, shape tensor.Shape) Operand {
 				Name: full + ScaleSuffix, DType: accel.F16, Shape: tensor.Shape{blocks},
 			}),
 		}}
+	case FormInt4:
+		// The code plane's shape is words and not the matrix: eight weights per
+		// u32, so [K, N] does not survive the packing, and Weights is what
+		// carries the count accel cannot derive from a word count.
+		n := shape.Elements()
+		words := (n + 7) / 8
+		groups := (n + quant.Int4Group - 1) / quant.Int4Group
+		return Operand{Packed: tensor.Int4{
+			Codes: tensor.Weight(g.B, tensor.ValueDesc{
+				Name: full, DType: accel.U32, Shape: tensor.Shape{words},
+			}),
+			Scales: tensor.Weight(g.B, tensor.ValueDesc{
+				Name: full + ScaleSuffix, DType: accel.F16, Shape: tensor.Shape{groups},
+			}),
+			Zeros: tensor.Weight(g.B, tensor.ValueDesc{
+				Name: full + ZeroSuffix, DType: accel.F16, Shape: tensor.Shape{groups},
+			}),
+			Weights: n,
+		}}
 	default:
-		g.fail("Weight", "%q is stored as %v; a weight is f16 or int8 quants with f16 "+
-			"scales (specs/001-weights.md section 2)", full, dtype)
+		g.fail("Weight", "%q is stored as %v; a weight is f16, int8 codes with f16 "+
+			"scales, or int4 codes with f16 scales and zeros "+
+			"(specs/001-weights.md section 2)", full, form)
 		return Operand{}
 	}
 }

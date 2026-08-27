@@ -77,6 +77,9 @@ func TestC21Int4IsRepresentableAndComputes(t *testing.T) {
 			want[i*n+j] = acc
 		}
 	}
+	// The accumulation only: the reference multiplies the *reconstructed*
+	// weights, so what the kernel reads is what this computes from and the
+	// storage error is not charged twice.
 	Compare(t, got, want, AccumF32(k).And(Magnitude(mag/float64(m*n))),
 		"a 4-bit matrix multiply")
 
@@ -203,4 +206,133 @@ func TestC17NoSuperBlockRepresentation(t *testing.T) {
 	t.Logf("C17: quant registers int8 (one scale per block) and int4 (a scale and "+
 		"a zero per %d), and a Q4_K super-block is two levels of scale over eight "+
 		"sub-blocks with a minimum each; nothing reads one", quant.Int4Group)
+}
+
+// TestInt4MatMulIsInsideAccelsOwnBound is the other half of C21's numerics, and
+// the one that says the representation is good enough rather than that the
+// kernel implements it.
+//
+// The comparison above reconstructs the weights and charges only the f32
+// accumulation, which asks "does the device compute what the format defines".
+// This compares against the **original** weights and charges
+// [quant.Int4ErrorBound], which asks "is what the format defines close enough
+// to what was quantized".
+//
+// # What a green result here does not say
+//
+// [§3](../../specs/010-conformance.md) asks for quantization error on *real*
+// blocks, and these are synthetic. `quant.Int4Quantize` spends a group's codes
+// over that group's range, so weights drawn from one distribution — with no
+// outlier channel to stretch the range — flatter the scheme. Trained
+// transformer weights have outliers, which is the entire reason mixed-precision
+// schemes exist. The number that decides whether int4 is usable for a model is
+// a tier-3 measurement against a checkpoint, and it has not been taken.
+func TestInt4MatMulIsInsideAccelsOwnBound(t *testing.T) {
+	const m, k, n = 3, 2 * quant.Int4Group, 5
+
+	w := spread(k*n, 17)
+	codes, scales, zeros := quant.Int4Quantize(w)
+	a := spread(m*k, 23)
+
+	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c21-int4-bound"})
+	at := r.Input("a", accel.F32, tensor.Shape{m, k})
+	r.F32("a", a)
+	ct := r.Input("codes", accel.U32, tensor.Shape{len(codes)})
+	r.bind("codes", accel.U32, len(codes), codes)
+	st := r.Input("scales", accel.F16, tensor.Shape{len(scales)})
+	r.bind("scales", accel.F16, len(scales), bits16(scales))
+	zt := r.Input("zeros", accel.F16, tensor.Shape{len(zeros)})
+	r.bind("zeros", accel.F16, len(zeros), bits16(zeros))
+
+	got, _ := r.Run(tensor.Int4MatMul(r.G.B, at, tensor.Int4{
+		Codes: ct, Scales: st, Zeros: zt, Weights: k * n,
+	}))
+
+	// The reference multiplies the weights the checkpoint held, so the whole
+	// quantization error is in the comparison and the bound has to cover it.
+	want := make([]float64, m*n)
+	worst := 0.0
+	for i := range m {
+		for j := range n {
+			acc := 0.0
+			// One group range per term, because a per-group figure bounds a dot
+			// product only where the caller says which group each term came
+			// from -- accel's own precondition, and the reason the bound takes
+			// the inputs rather than being a constant.
+			x := make([]float32, k)
+			ranges := make([]float32, k)
+			for p := range k {
+				acc += float64(a[i*k+p]) * float64(w[p*n+j])
+				x[p] = a[i*k+p]
+				ranges[p] = groupRange(w, (p*n+j)/quant.Int4Group)
+			}
+			want[i*n+j] = acc
+			if b := quant.Int4ErrorBound(x, ranges); b > worst {
+				worst = b
+			}
+		}
+	}
+	Compare(t, got, want, AccumF32(k).And(QuantInt4(worst)),
+		"a 4-bit matrix against the weights it was quantized from")
+
+	// The margin, reported rather than asserted.
+	//
+	// A derived bound is an upper bound and is expected to be loose; what a
+	// reader needs to know is *how* loose, because a bound the result sits far
+	// under is one that would also admit a wrong answer. Asserting a ratio
+	// would be 010-D3's tuned tolerance wearing a different hat, so this
+	// prints the number and the swap below is what makes the test able to
+	// fail.
+	seen := 0.0
+	for i := range want {
+		if d := math.Abs(float64(got[i]) - want[i]); d > seen {
+			seen = d
+		}
+	}
+	t.Logf("C21: worst %.3g against a bound of %.3g, a margin of %.1fx, over %d groups",
+		seen, worst, worst/seen, (k*n+quant.Int4Group-1)/quant.Int4Group)
+
+	// The control: the scales and the zeros are the same dtype and the same
+	// length, so binding them the wrong way round is a mistake the shapes
+	// cannot catch. It has to leave the bound.
+	r2 := New(t, Tier1, Options{Eps: 1e-6, Label: "c21-int4-swapped"})
+	a2 := r2.Input("a", accel.F32, tensor.Shape{m, k})
+	r2.F32("a", a)
+	c2 := r2.Input("codes", accel.U32, tensor.Shape{len(codes)})
+	r2.bind("codes", accel.U32, len(codes), codes)
+	s2 := r2.Input("scales", accel.F16, tensor.Shape{len(scales)})
+	r2.bind("scales", accel.F16, len(scales), bits16(zeros))
+	z2 := r2.Input("zeros", accel.F16, tensor.Shape{len(zeros)})
+	r2.bind("zeros", accel.F16, len(zeros), bits16(scales))
+	crossed, _ := r2.Run(tensor.Int4MatMul(r2.G.B, a2, tensor.Int4{
+		Codes: c2, Scales: s2, Zeros: z2, Weights: k * n,
+	}))
+	over := 0
+	for i := range want {
+		if math.Abs(float64(crossed[i])-want[i]) > worst {
+			over++
+		}
+	}
+	if over == 0 {
+		t.Fatalf("multiplying with the scale and zero planes swapped stayed inside "+
+			"the bound at every one of %d elements; a bound nothing violates is a "+
+			"bound this test cannot fail", len(want))
+	}
+}
+
+// groupRange is max-min over the group a weight index falls in, which is what
+// [quant.Int4ErrorBound] means by a term's range.
+func groupRange(w []float32, group int) float32 {
+	lo, hi := group*quant.Int4Group, (group+1)*quant.Int4Group
+	if hi > len(w) {
+		hi = len(w)
+	}
+	if lo >= hi {
+		return 0
+	}
+	mn, mx := w[lo], w[lo]
+	for _, x := range w[lo:hi] {
+		mn, mx = min(mn, x), max(mx, x)
+	}
+	return mx - mn
 }

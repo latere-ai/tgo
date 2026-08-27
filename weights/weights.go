@@ -40,6 +40,7 @@
 package weights
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -47,6 +48,7 @@ import (
 
 	"github.com/latere-ai/tgo/safetensors"
 	"golang.design/x/accel"
+	"golang.design/x/accel/quant"
 )
 
 // Precision is the form a weight takes on the device.
@@ -70,6 +72,19 @@ const (
 	// quant.Int8Block of them: half of F16's bytes, at a bounded accuracy cost
 	// that quant.Int8ErrorBound states.
 	Int8
+
+	// Int4 stores eight 4-bit codes per u32 word, with an f16 scale and an f16
+	// zero per quant.Int4Group.
+	//
+	// 0.53125 bytes per weight against Int8's 1.0625, which is what decides
+	// whether a 27B-class model fits hardware people own (specs/001-weights.md
+	// §2.1).
+	//
+	// **Never chosen as a preference.** accel's own tests show int4 beating
+	// int8 on a group of weights clustered away from zero and losing on one
+	// centred on it, so it is not uniformly better, and a budget rule that
+	// reached for it early would quietly degrade a model that fits at int8.
+	Int4
 )
 
 func (p Precision) String() string {
@@ -82,6 +97,8 @@ func (p Precision) String() string {
 		return "f16"
 	case Int8:
 		return "int8"
+	case Int4:
+		return "int4"
 	}
 	return fmt.Sprintf("Precision(%d)", int(p))
 }
@@ -197,14 +214,19 @@ type Value struct {
 	// Shape is what accel sees: the file's shape, reversed if Transpose was set.
 	Shape []int
 
-	// Precision is F16 or Int8, resolved. Never Inherit or Auto.
+	// Precision is F16, Int8 or Int4, resolved. Never Inherit or Auto.
 	Precision Precision
 
-	// Data is the f16 plane, or the i8 quants when Precision is Int8.
+	// Data is the f16 plane, the i8 quants at Int8, or the packed u32 codes at
+	// Int4.
 	Data *accel.Buffer
 
-	// Scales is the f16 block scales, and is nil unless Precision is Int8.
+	// Scales is the f16 block scales, and is nil at F16.
 	Scales *accel.Buffer
+
+	// Zeros is the f16 zero point per group, and is nil unless Precision is
+	// Int4: int8 is symmetric and needs none.
+	Zeros *accel.Buffer
 
 	// Saturated is how many elements hit ±65504 on the way to f16, and is zero
 	// on the Int8 path, which has no f16 range to overflow. A nonzero value is
@@ -217,8 +239,11 @@ type Value struct {
 
 // Bytes is what this value occupies on the device.
 func (v Value) Bytes() int64 {
-	if v.Precision == Int8 {
+	switch v.Precision {
+	case Int8:
 		return int8Bytes(v.Elements)
+	case Int4:
+		return int4Bytes(v.Elements)
 	}
 	return f16Bytes(v.Elements)
 }
@@ -229,11 +254,28 @@ func (v Value) Bytes() int64 {
 func f16Bytes(n int) int64  { return int64(n) * 2 }
 func int8Bytes(n int) int64 { return int64(n) + int64(blocks(n))*2 }
 
+// int4Bytes is the same arithmetic one width down: eight codes to a u32 word,
+// and an f16 scale *and* an f16 zero per accel's group.
+//
+// 0.53125 bytes per weight at a group of 128, against int8's 1.0625. The
+// metadata's share is what the group size buys: halving the payload doubles
+// what a scale per 32 would cost as a fraction of it, so int4 groups 128 and
+// pays 6.2% rather than 12.5% (accel specs/048-int4.md §2).
+func int4Bytes(n int) int64 {
+	words := (n + 7) / 8
+	groups := (n + quant.Int4Group - 1) / quant.Int4Group
+	return int64(words)*4 + int64(groups)*2*2
+}
+
 // Report describes the load as a whole.
 type Report struct {
 	// Chosen is the precision the policy resolved to, before any per-tensor
 	// override.
 	Chosen Precision
+
+	// Int4Bytes is what the declared tensors would occupy at int4, which
+	// [Auto] reaches for only when int8 does not fit.
+	Int4Bytes int64
 
 	// F16Bytes and Int8Bytes are what the declared tensors would occupy at each
 	// precision, honouring per-tensor overrides. They are what Auto compared.
@@ -293,11 +335,16 @@ func (s *Set) Close() error {
 	var errs []error
 	for _, name := range s.order {
 		v := s.values[name]
-		if v.Data != nil {
-			errs = append(errs, v.Data.Close())
-		}
-		if v.Scales != nil {
-			errs = append(errs, v.Scales.Close())
+		// Every plane the value carries, walked rather than named one at a
+		// time. Naming them is how the third one came to be allocated by the
+		// int4 path and closed by nothing: accel counts live children and
+		// refuses to close a device under them, so the leak surfaced as a
+		// close error on an unrelated test rather than as anything about
+		// int4.
+		for _, b := range []*accel.Buffer{v.Data, v.Scales, v.Zeros} {
+			if b != nil {
+				errs = append(errs, b.Close())
+			}
 		}
 	}
 	s.values, s.order = nil, nil
@@ -382,7 +429,7 @@ type loadPlan struct {
 // implies. It runs before the first byte is read so that a model too large for
 // its budget is refused rather than discovered part way through.
 func planLoad(repo *safetensors.Repo, decls []Tensor, policy Precision, budget int64) (loadPlan, error) {
-	var fixedF16, fixedInt8, flexF16, flexInt8 int64
+	var fixedF16, fixedInt8, fixedInt4, flexF16, flexInt8, flexInt4 int64
 	seen := make(map[string]bool, len(decls))
 	for _, d := range decls {
 		if seen[d.key()] {
@@ -405,15 +452,22 @@ func planLoad(repo *safetensors.Repo, decls []Tensor, policy Precision, budget i
 		case F16:
 			fixedF16 += f16Bytes(n)
 			fixedInt8 += f16Bytes(n)
+			fixedInt4 += f16Bytes(n)
 		case Int8:
 			fixedF16 += int8Bytes(n)
 			fixedInt8 += int8Bytes(n)
+			fixedInt4 += int8Bytes(n)
+		case Int4:
+			fixedF16 += int4Bytes(n)
+			fixedInt8 += int4Bytes(n)
+			fixedInt4 += int4Bytes(n)
 		case Inherit, Auto:
 			flexF16 += f16Bytes(n)
 			flexInt8 += int8Bytes(n)
+			flexInt4 += int4Bytes(n)
 		default:
 			return loadPlan{}, fmt.Errorf("weights: %q declares precision %v, which is not "+
-				"F16, Int8 or the zero value", d.Name, d.Precision)
+				"F16, Int8, Int4 or the zero value", d.Name, d.Precision)
 		}
 	}
 
@@ -421,27 +475,41 @@ func planLoad(repo *safetensors.Repo, decls []Tensor, policy Precision, budget i
 		Budget:    budget,
 		F16Bytes:  fixedF16 + flexF16,
 		Int8Bytes: fixedInt8 + flexInt8,
+		Int4Bytes: fixedInt4 + flexInt4,
 	}
 
 	switch policy {
-	case F16, Int8:
+	case F16, Int8, Int4:
 		rep.Chosen = policy
 	case Inherit, Auto:
-		// Decision 5 of specs/000-decisions.md: int8 when the f16 footprint
-		// exceeds what the device can hold, f16 otherwise. Above roughly 8 GB of
-		// weights int8 is not an optimisation, it is the only way the model
-		// loads.
+		// Decision 5 of specs/000-decisions.md: the widest form that fits.
+		// Above roughly 8 GB of weights int8 is not an optimisation, it is the
+		// only way the model loads, and int4 is the same statement one width
+		// down for a 27B-class model on hardware people own.
+		//
+		// **Narrowing is a last resort at every step and int4 especially.**
+		// accel's own tests show int4 beating int8 on a group of weights
+		// clustered away from zero and losing on one centred on it, so it is
+		// not uniformly better: a rule that preferred it would trade accuracy
+		// for memory nobody asked to save. Auto reaches for it only when int8
+		// does not fit, which is the case where the alternative is not loading.
 		rep.Chosen = F16
 		if rep.F16Bytes > budget {
 			rep.Chosen = Int8
 		}
+		if rep.Chosen == Int8 && rep.Int8Bytes > budget {
+			rep.Chosen = Int4
+		}
 	default:
-		return loadPlan{}, fmt.Errorf("weights: policy %v is not F16, Int8 or Auto", policy)
+		return loadPlan{}, fmt.Errorf("weights: policy %v is not F16, Int8, Int4 or Auto",
+			policy)
 	}
-	if rep.Chosen == Int8 && rep.Int8Bytes > budget {
-		return loadPlan{}, fmt.Errorf("weights: the model needs %s at int8, which is more "+
-			"than the %s budget; no supported precision fits",
-			humanBytes(rep.Int8Bytes), humanBytes(budget))
+	if want := rep.Chosen; want != F16 {
+		if got := map[Precision]int64{Int8: rep.Int8Bytes, Int4: rep.Int4Bytes}[want]; got > budget {
+			return loadPlan{}, fmt.Errorf("weights: the model needs %s at %v, which is more "+
+				"than the %s budget; no supported precision fits",
+				humanBytes(got), want, humanBytes(budget))
+		}
 	}
 
 	plan := loadPlan{precision: make([]Precision, len(decls)), report: rep}
@@ -494,8 +562,14 @@ func convertOne(a *arena, repo *safetensors.Repo, d Tensor, p Precision, maxSat 
 	}
 
 	v := Value{Name: d.key(), Source: d.Name, Shape: shape, Precision: p, Elements: n}
-	if p == Int8 {
+	switch p {
+	case Int8:
 		if err := uploadInt8(a, &v, plane); err != nil {
+			return Value{}, err
+		}
+		return v, nil
+	case Int4:
+		if err := uploadInt4(a, &v, plane); err != nil {
 			return Value{}, err
 		}
 		return v, nil
@@ -579,14 +653,76 @@ func uploadInt8(a *arena, v *Value, plane []float32) error {
 	return nil
 }
 
-func (v *Value) close() {
-	if v.Data != nil {
-		v.Data.Close()
-		v.Data = nil
+// uploadInt4 packs a plane into codes, scales and zeros and writes all three.
+//
+// Three buffers where int8 has two, and the third is not optional: at eight bits
+// the codes reach far enough that a scale alone spends them well, and at four
+// they have to be spent where the weights actually are. A code plane bound
+// against another matrix's scales compiles and produces noise, which is why
+// accel bundles the triple and why this writes all of it or none.
+//
+// Unlike [uploadInt8], the packing is done once into host slices rather than
+// recomputed per pass. quant.Int4Quantize returns the three planes together and
+// there is no way to ask it for one of them, so the choice is between holding
+// all three and calling it three times; the codes are an eighth of the input
+// and the metadata is 6.2% of that, so holding them is the cheap side.
+func uploadInt4(a *arena, v *Value, plane []float32) error {
+	codes, scales, zeros := quant.Int4Quantize(plane)
+
+	for _, p := range []struct {
+		dst   **accel.Buffer
+		dt    accel.DType
+		n     int
+		label string
+	}{
+		{&v.Data, accel.U32, len(codes), v.Name},
+		{&v.Scales, accel.F16, len(scales), v.Name + ".scales"},
+		{&v.Zeros, accel.F16, len(zeros), v.Name + ".zeros"},
+	} {
+		buf, err := a.alloc(p.dt, p.n, p.label)
+		if err != nil {
+			v.close()
+			return err
+		}
+		*p.dst = buf
 	}
-	if v.Scales != nil {
-		v.Scales.Close()
-		v.Scales = nil
+
+	if err := a.fill(v.Data, func(dst []byte) error {
+		for i, w := range codes {
+			binary.LittleEndian.PutUint32(dst[i*4:], w)
+		}
+		return nil
+	}); err != nil {
+		v.close()
+		return fmt.Errorf("weights: %q: writing the int4 codes: %w", v.Name, err)
+	}
+	for _, p := range []struct {
+		buf  *accel.Buffer
+		from []accel.Float16
+		what string
+	}{
+		{v.Scales, scales, "group scales"},
+		{v.Zeros, zeros, "group zero points"},
+	} {
+		if err := a.fill(p.buf, func(dst []byte) error {
+			for i, h := range p.from {
+				binary.LittleEndian.PutUint16(dst[i*2:], h.Bits())
+			}
+			return nil
+		}); err != nil {
+			v.close()
+			return fmt.Errorf("weights: %q: writing the %s: %w", v.Name, p.what, err)
+		}
+	}
+	return nil
+}
+
+func (v *Value) close() {
+	for _, b := range []**accel.Buffer{&v.Data, &v.Scales, &v.Zeros} {
+		if *b != nil {
+			(*b).Close()
+			*b = nil
+		}
 	}
 }
 
