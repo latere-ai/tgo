@@ -137,6 +137,7 @@ actually been:
 | --- | --- | --- | --- |
 | Wave 7 | 1297s | 10m, then 30m | the ten-minute default was never raised from `go test`'s |
 | Wave 8 | 2547s | 45m | one shared block pool exercised by real forward passes in two packages |
+| Wave 9 | 3055s | 45m | a batched step runs B forward passes, and the regressions for four cache defects run several |
 
 **The budget is 3500s.** Past it, the answer is to make the suite cheaper and
 not the ceiling higher: no single test above is large — the heaviest is 22s and
@@ -147,14 +148,22 @@ what was convenient.
 What 2547s of CPU came to on CI, measured on the run that set the budget
 (`d0e27c6`, whole `test` job including build, vet and the plain test pass):
 
-| runner | job |
-| --- | --- |
-| ubuntu-latest | 18m 33s |
-| macos-latest | 10m 53s |
-| windows-latest | **27m** |
+| runner | Wave 8 | Wave 9 |
+| --- | --- | --- |
+| ubuntu-latest | 18m 33s | 14m 12s |
+| macos-latest | 10m 53s | 14m 21s |
+| windows-latest | **27m** | **16m 46s** |
 
 Windows is the one to watch, and it is the reason the ceiling is 45m rather than
 35m.
+
+**One thing measured rather than assumed.** Wave 9 shrank three regression
+fixtures from 33s to 3.1s, re-checking each against a faithful revert of its own
+fix so the smaller fixture still reached the bug. The suite's CPU moved from
+3041s to 3055s — that is, **not at all**. The growth is the suite doing more,
+spread over everything, and not any one test being large. So the lever when the
+budget binds is the shape of what the suite exercises, not a search for the
+slowest test.
 
 This has cost a red build once: the suite passed locally at 362s wall and timed
 out on ubuntu and windows on no single test, because `go test` reports whichever
