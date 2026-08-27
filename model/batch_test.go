@@ -178,15 +178,13 @@ func TestABatchProducesWhatTheSameStepsProduceApart(t *testing.T) {
 	})
 }
 
-// TestABatchPadsByInflatingARealExtent is C23's consequence, asserted rather
-// than only commented.
+// TestABatchPadsWithRowsNoSequenceClaims is C23 after accel closed it.
 //
-// A bucketed batch has more plan rows than member tokens. A single-sequence step
-// pads with rows whose slot is the cache capacity, which ScatterRows drops. Here
-// those rows would belong to no sequence, and accel's ragged kernel would index
-// past its offsets array -- so the padding is charged to a real sequence's
-// extent instead, and the sum still equals the plan's rows.
-func TestABatchPadsByInflatingARealExtent(t *testing.T) {
+// A bucketed batch has more plan rows than member tokens. Those rows belong to
+// no sequence and the ragged kernel reads them as padding, so no real
+// sequence's extent or length moves -- which is what the earlier version of
+// this had to do, and which was one more thing to get right.
+func TestABatchPadsWithRowsNoSequenceClaims(t *testing.T) {
 	c := synthetic(t).Config()
 	members := []Member{
 		{Tokens: []int{3, 17}, First: 0, Pages: []int{0, 1}},
@@ -202,22 +200,19 @@ func TestABatchPadsByInflatingARealExtent(t *testing.T) {
 	for _, e := range s.Extents {
 		sum += e
 	}
-	if int(sum) != rows {
-		t.Fatalf("the extents sum to %d over a %d-row plan; accel#24 makes an "+
-			"unclaimed row an out-of-bounds read that a GPU does not report",
-			sum, rows)
+	if int(sum) != 3 {
+		t.Fatalf("the extents sum to %d and the members contribute 3; a pad row is "+
+			"claimed by nobody and reaches nothing", sum)
 	}
 
-	// The padding went to the last contributing sequence, and its real tokens
-	// did not move: token i of an n-token extent sits at length-n+i, so
-	// inflating both by the same amount leaves length-n where it was.
-	if s.Extents[1] != 1+uint32(rows-3) {
-		t.Fatalf("the second member's extent is %d; the padding is charged to the "+
-			"last sequence that contributed", s.Extents[1])
+	// No real sequence moved.
+	if s.Extents[1] != 1 {
+		t.Fatalf("the second member's extent is %d, want its own 1: the padding is "+
+			"not charged to it", s.Extents[1])
 	}
-	if s.Lengths[1] != uint32(5+1+(rows-3)) {
-		t.Fatalf("the second member's length is %d; it grows with the extent so the "+
-			"real tokens keep their positions", s.Lengths[1])
+	if s.Lengths[1] != 6 {
+		t.Fatalf("the second member's length is %d, want 6: five cached positions "+
+			"and the one it contributes", s.Lengths[1])
 	}
 	// Its logits still come from the real last token, not from a pad row.
 	if s.Last[1] != 2 {

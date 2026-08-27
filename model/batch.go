@@ -38,21 +38,28 @@ type BatchStep struct {
 
 // NewBatchStep builds the port data for a step over several sequences.
 //
-// # The invariant this function exists to hold
+// # The padding, and the upstream fix that simplified it
 //
-// The extents must sum to exactly the rows of q, and nothing below can check
-// it. accel's ragged kernel finds a token's sequence by counting the rows that
-// end at or before it, so a row past the last segment counts every one of them
-// and indexes one past the offsets array -- reaching another sequence's cache
-// on a GPU and returning a fluent wrong answer. And the extents are device
-// data, so [tensor.Attention] cannot check the sum at record time either
-// ([C23](../specs/010-conformance.md), accel#24).
+// A bucketed step has more plan rows than member tokens. The rows past the
+// extents belong to no sequence, and accel's ragged kernel treats them as
+// padding: they contribute nothing and read nothing
+// ([C23](../specs/010-conformance.md)).
 //
-// So the padding trick a single-sequence step uses does not carry over. A
-// bucketed prefill pads q with rows whose slot is the cache capacity, which
-// [tensor.ScatterRows] drops; here those rows would belong to no sequence. A
-// batched step pads by inflating a *real* sequence's extent instead, so every
-// row is claimed, and the pad rows' writes are still dropped by their slots.
+// It did not, and the difference is worth keeping. The kernel found a token's
+// sequence by counting the rows that end at or before it, so a row past the
+// last segment counted every one of them and indexed one past the offsets
+// array -- another sequence's cache on a GPU, read back as a fluent answer.
+// The extents are device data, so [tensor.Attention] could not check the sum
+// at record time either. tgo reported it as accel#24 and argued for "a row
+// past the last extent contributes nothing" over clamping it into the last
+// sequence, because clamping makes the read in-range and the answer wrong.
+// accel took that shape.
+//
+// So the padding is what a single-sequence step does: the pad rows carry the
+// last real token at its position with a slot at the capacity, which
+// [tensor.ScatterRows] drops. Before the fix they had to be charged to a real
+// sequence's extent, which moved that sequence's length and was one more thing
+// to get right.
 //
 // rows is the plan's row count, which is at or above the total the members
 // contribute.
@@ -124,24 +131,16 @@ func NewBatchStep(c *Config, rows int, members []Member, block, capacity int) (B
 		}
 	}
 
-	// The padding, charged to the last sequence that contributed anything.
+	// The padding: rows no extent claims, which the kernel reads as padding
+	// and which write nothing because their slot is the cache capacity.
 	//
-	// Its extent grows to cover the pad rows so the sum still equals the plan's
-	// rows, and the pad rows carry that sequence's last token at its last
-	// position with a slot at the capacity, so their writes are dropped and
-	// their logits are never read -- Last still points at the real last token.
-	//
-	// The one thing this changes is what the pad rows *attend* to: the ragged
-	// kernel puts token i of an n-token extent at length-n+i, so inflating n
-	// moves the whole sequence's tokens back. That is why Lengths grows with
-	// the extent rather than staying at the real length.
+	// No sequence's extent or length moves. The pad rows carry the last real
+	// token at its position rather than a pad token, so nothing about them is
+	// unusual if a later kernel ever does look at them.
 	if at < rows && pad >= 0 {
 		m := members[pad]
 		last := uint32(m.Tokens[len(m.Tokens)-1])
 		lastPos := uint32(m.First + len(m.Tokens) - 1)
-		grew := uint32(rows - at)
-		s.Extents[pad] += grew
-		s.Lengths[pad] += grew
 		for ; at < rows; at++ {
 			s.IDs[at] = last
 			s.Slots[at] = uint32(capacity)
