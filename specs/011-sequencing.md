@@ -45,11 +45,11 @@ than restating the goal.
 
 | | Qwen3 dense | Qwen3.8-27B |
 | --- | --- | --- |
-| architecture expressible | **yes** — the graph compiles at 36 layers and $V=151936$ | **yes, upstream** — `tensor.LinearAttention` covers the 48 gated-delta layers, verified against a float64 reference. tgo records no such graph yet |
+| architecture expressible | **yes** — the graph compiles at 36 layers and $V=151936$ | **the layer, yes; the graph, not yet.** `nn.LinearAttention` and `nn.DepthwiseCausalConv` are tgo's own blocks over accel's scan, each verified against a float64 reference (Wave 11). Nothing in `model/` reads `layer_types` or `full_attention_interval`, so there is no model-level graph to run them from ([024](024-qwen3-5-architecture.md)) |
 | numerics verified | **yes** — against the f64 oracle, per block and end to end | not yet: no graph to check |
-| real weights loaded | **yes** — Qwen3-0.6B, 311 tensors, 1.40 GiB at f16 | not yet: `weights.Precision` names f16 and int8, so it would be 25.1 GiB |
+| real weights loaded | **yes** — Qwen3-0.6B, 311 tensors, 1.40 GiB at f16 | not yet, and no longer for want of a stored form: `weights.Precision` names `Int4` since Wave 10, so a 27B resolves to **13.4 GiB** |
 | generation verified | **Wave 4** | not yet |
-| blocked by | nothing | **nothing upstream.** [018](018-hybrid-models.md)'s graph and an int4 loader, both tgo's |
+| blocked by | nothing | **nothing upstream, and nothing unowned.** [018](018-hybrid-models.md)'s remaining rows are [023](023-cache-kinds.md), [024](024-qwen3-5-architecture.md), [025](025-recurrent-snapshot.md) and [026](026-image-tokens.md), all tgo's |
 
 **Two honest qualifications on the dense side.** The checkpoint on hand is
 **0.6B**, not 4B — same architecture, same code path, one twelfth the
@@ -58,12 +58,16 @@ does not prove is behaviour at 4B's memory footprint. And the 4B graph is
 verified to *compile and to agree with the oracle*, not to have generated text,
 until Wave 4 lands.
 
-**On the 27B, the position is not "not yet" but "not by tgo".** 018 states it,
-accel has [scoped the operator](https://github.com/golang-design/accel/issues/17)
-as in-scope-not-scheduled, and [000 D1](000-decisions.md) forbids tgo from
-writing the kernel itself. Testing it is downstream of an upstream decision this
-project deliberately does not control. Claiming otherwise would be the
-overclaiming this tree exists to prevent.
+**On the 27B, the position is now "not yet" rather than "not by tgo".** It read
+the other way while the operator was only scoped, and
+[accel#17](https://github.com/golang-design/accel/issues/17) closed: accel
+scheduled the kernel and shipped it, which [018-D2](018-hybrid-models.md)'s
+outcome note records. [000 D1](000-decisions.md) still forbids tgo from writing
+a kernel, and it no longer decides anything here. Every remaining piece is
+tgo's, and each has a spec — [023](023-cache-kinds.md) for the per-layer cache
+kinds, [024](024-qwen3-5-architecture.md) for the `qwen3_5` registry entry,
+[025](025-recurrent-snapshot.md) for snapshot and restore, and
+[026](026-image-tokens.md) for image-token tolerance.
 
 Qwen3-4B: `Qwen3ForCausalLM`, $d=2560$, $L=36$, 32 query heads over 8 KV heads,
 $d_h=128$, $f=9728$, $V=151936$, `rope_theta` $10^6$, tied embeddings. This is
@@ -83,20 +87,23 @@ Qwen3.8-27B is a **different architecture family**:
 ```
 
 **Three of every four layers are linear attention** — a gated-delta recurrence,
-not softmax attention — and it carries vision tokens. accel has no
-linear-attention operator, so 48 of its 64 layers are inexpressible. Filed as
-[accel#17](https://github.com/golang-design/accel/issues/17), and
-[018](018-hybrid-models.md) is the design.
+not softmax attention — and it carries vision tokens. Filed as
+[accel#17](https://github.com/golang-design/accel/issues/17), which closed:
+`tensor.LinearAttention` shipped, and Wave 11 composed it as `nn.LinearAttention`
+with the depthwise causal convolution in front of it. The 48 gated-delta layers
+are expressible. What does not exist is the model-level graph that schedules
+them beside the 16 softmax ones — [018](018-hybrid-models.md) is the design and
+[024](024-qwen3-5-architecture.md) is the registry entry that builds it.
 
 Two things about it that *do* work, checked rather than assumed:
 `partial_rotary_factor: 0.25` is `RoPE(x, 64, …)` because `rotaryDim` was always
 a parameter, and `attn_output_gate` is an elementwise multiply.
 
-> **This is why the answer is "build now" rather than "spec more".** The dense
-> path is fully specified and unblocked; the hybrid path is blocked on a kernel
-> nobody has written, and no amount of tgo spec work moves it. Building the
-> dense path is also what produces the evidence that makes the hybrid ask
-> concrete.
+> **This is why the answer was "build now" rather than "spec more".** The dense
+> path was fully specified and unblocked; the hybrid path waited on a kernel
+> nobody had written. Building the dense path is what produced the evidence that
+> made the hybrid ask concrete, and the ask was answered: the kernel shipped, so
+> the hybrid path is now tgo's own work rather than an upstream decision.
 
 ### 2.2 Waves
 
@@ -143,7 +150,7 @@ for, so the absent things are absent from the accounting too.
 
 **Ranked by what decides whether tgo is usable, not by effort.**
 
-### 1. Four-bit weights — accel has them and tgo does not store them
+### 1. Four-bit weights — closed, except for the one plane that cannot pack
 
 **Closed upstream on 2026-08-27** ([C21](010-conformance.md)):
 `quant.Int4Quantize` packs eight codes per word with an fp16 scale *and zero*
@@ -157,9 +164,11 @@ the idealised one this section used to quote:
 | **int8, what tgo stores** | 1.0625 | **26.7 GiB** | not a 24 GiB card |
 | int4, scale + zero per 128 | 0.53125 | **13.4 GiB** | hardware people own |
 
-**Built on 2026-08-27.** `weights.Int4` is the third stored form, `nn.Form` is
-the signal that names a representation rather than a dtype, and `auto` narrows
-to it only where int8 does not fit. A 27B checkpoint resolves to **13.4 GiB**.
+**Built on 2026-08-27, so this row is no longer a gap.** `weights.Int4` is the
+third stored form, `nn.Form` is the signal that names a representation rather
+than a dtype, and `auto` narrows to it only where int8 does not fit. A 27B
+checkpoint resolves to **13.4 GiB**. Wave 10 is the entry, and `--precision
+int4` reaches it from the command line.
 
 One thing does not pack: the embedding table is gathered rather than contracted
 against, and accel registers no int4 gather, so it is capped at int8 — declared
@@ -186,10 +195,15 @@ or GPTQ checkpoint is no longer a representation problem. What is left is the
 file format and the layout each toolchain writes, which is a reader rather than
 a kernel, and neither has a spec yet.
 
-[012](012-gguf.md) covers GGUF's K-quants and stays blocked for a different
+**Owner.** GGUF is [012](012-gguf.md), which is `blocked` for a different
 reason: a Q4_K super-block is two levels of scale over eight sub-blocks with a
 minimum each, which is a different shape and not a smaller one
-([C17](010-conformance.md)).
+([C17](010-conformance.md)), and accel closed
+[#15](https://github.com/golang-design/accel/issues/15) as not planned. **AWQ
+and GPTQ have no spec on disk.** They are a deferral rather than an omission,
+and the trigger is stated so it can be met: write the reader when a checkpoint
+tgo is asked to serve is published only in one of those layouts, since the
+representation problem is already solved and what is left is a file format.
 
 ### 3. `rope_scaling` — decides context length
 
@@ -200,6 +214,12 @@ correct; not having it is a gap, and it is entirely tgo's rather than accel's �
 YaRN is a change to how $\theta_i$ is computed, and [004 §2.5](004-model-graph.md)
 already binds the base as a scalar.
 
+**Owner.** [004 §7](004-model-graph.md) owns the refusal. Nothing owns the
+implementation, and no spec on disk covers it. Deferred, with the trigger: spec
+YaRN when a target checkpoint's usable context is shorter than what a caller
+asks for, which is when the refusal starts costing an answer rather than
+preventing a wrong one.
+
 ### 4. Multi-device — a permanent ceiling on model size
 
 accel opens one device. There is no tensor or pipeline parallelism anywhere in
@@ -207,21 +227,35 @@ either project, so **the largest model tgo can ever run is the largest that fits
 one accelerator**. That is a legitimate scope decision and it should be a stated
 one rather than an omission.
 
+**Owner, recommended.** This is a permanent scope boundary rather than work
+somebody will do, so it belongs in [000](000-decisions.md) as a decision with
+its rejected alternative — sharding a model across devices, rejected because
+tgo would be routing around accel's device model, which [000 D1](000-decisions.md)
+forbids — and not as a spec that would never be built. Recorded here as a
+recommendation; 000 is edited by whoever takes it.
+
 ### 5. Things with no spec and no blocker
 
-| | why it matters |
-| --- | --- |
-| **speculative decoding** | the standard 2–3× decode win, and [017 §4.1](017-benchmarks.md) shows decode is 94.62% device — exactly the shape speculation attacks |
-| **embedding models** | a large share of what inference frameworks actually serve; tgo has no `/v1/embeddings` and no pooling |
-| **multimodal input** | [018 §1](018-hybrid-models.md) notes Qwen3.8 carries vision tokens and text-only is a coherent subset, but there is no path to images |
-| **LoRA adapters** | [011 §3](#3-what-is-deliberately-not-in-v0) lists it as not-v0; note [016 §10.3](016-prefix-cache.md) already records that an adapter must reach the prefix cache key |
+Checked against the tree as it stands after the ten specs written on
+2026-08-27.
+
+| | why it matters | owner |
+| --- | --- | --- |
+| **speculative decoding** | the standard 2–3× decode win, and [017 §4.1](017-benchmarks.md) shows decode is 94.62% device — exactly the shape speculation attacks | none. No spec on disk |
+| **embedding models** | a large share of what inference frameworks actually serve; `/v1/embeddings` is a 404 and there is no pooling | none. No spec on disk |
+| **multimodal input** | [018 §1](018-hybrid-models.md) notes Qwen3.8 carries vision tokens and text-only is a coherent subset | half owned. [026](026-image-tokens.md) owns the tolerance — a multimodal vocabulary must not mis-embed on the text path — and the vision path itself is unspecced |
+| **LoRA adapters** | [000](000-decisions.md) states v0's scope and does not include one; note [016 §10.3](016-prefix-cache.md) already records that an adapter must reach the prefix cache key | none. No spec on disk |
 
 ### What this section is not
 
 A backlog. Several of these are correct things to *not* do — multi-device may
 never be in scope, and refusing an unimplemented `rope_scaling` beats
 approximating it. The point is that each should be a decision somebody made
-rather than a question nobody asked.
+rather than a question nobody asked. Four of the five now are: item 1 shipped,
+item 2's GGUF half is [012](012-gguf.md) and its AWQ/GPTQ half is a deferral
+with a trigger, item 3 is a deferral with a trigger, and item 4 is a
+recommendation to [000](000-decisions.md). Item 5's four rows are the ones still
+unanswered, and three of them have no spec at all.
 
 ## 3. Milestones
 
@@ -239,10 +273,23 @@ flowchart LR
   M11 --> M12["M12 batching"] --> M13["M13 vs vLLM"]
 ```
 
-M1–M5 are entirely unblocked and are where the work goes now. They are also
-where [000 D8](000-decisions.md) puts the device-free packages, so they carry
-almost all of the coverage gate: a tree that reaches M5 with the gate green is a
-tree whose remaining risk is concentrated in the parts a device decides.
+**M1 through M12 have shipped**, across Waves 1 to 11. M13, the vLLM
+comparison, is the only milestone left, and [010 §3.1](010-conformance.md) is
+the design nobody owns yet.
+
+Where the work goes now is three groups, and each has a spec:
+
+| | specs |
+| --- | --- |
+| the batched path the scheduler does not reach | [020](020-device-sampling.md) sampling on the device, [021](021-admission-queue.md) a queue in front of admission, [022](022-batched-serving.md) the server driving a scheduler — [008 §9](008-scheduler.md)'s three, which it has handed on |
+| the hybrid graph, which is the last thing between tgo and the 27B | [023](023-cache-kinds.md) a cache per layer kind, [024](024-qwen3-5-architecture.md) the `qwen3_5` registry entry, [025](025-recurrent-snapshot.md) snapshot and restore, [026](026-image-tokens.md) image-token tolerance |
+| the measurements M13 rests on | [027](027-batched-benchmarks.md) the throughput curve at batch, [028](028-performance-gate.md) a gate that fails a build which loses throughput |
+
+[029](029-grammar-front-ends.md) is beside all three: the EBNF and regex front
+ends over the grammar machine [015](015-structured-output.md) built.
+
+M1–M5 remain where [000 D8](000-decisions.md) puts the device-free packages, so
+they carry almost all of the coverage gate.
 
 **M6 through M11 are unblocked.** [C11](010-conformance.md), the 128-position
 cache cap that gated everything, closed on 2026-08-24 when accel shipped
@@ -250,17 +297,13 @@ cache cap that gated everything, closed on 2026-08-24 when accel shipped
 A 4096-position cache is verified. Nothing between here and serving a real model
 is waiting on accel.
 
-What remains blocked is post-v0 and narrower:
-
-| | blocked on |
-| --- | --- |
-| chunked prefill recovering throughput | [C16](010-conformance.md) — a batched step takes one token per sequence, so a prefill runs alone |
-
 **Nothing is blocked upstream any more.** Batching was the last one and accel
 closed it: a batched decode is expressible and verified, two sequences of
-different lengths matching two single runs exactly. What remains open is
-narrower — no sampling operator at the tensor layer, no batched *prefill*, and
-GGUF — and none of it blocks a milestone.
+different lengths matching two single runs exactly. [C16](010-conformance.md)
+closed with it, so a chunked prefill shares a dispatch with the decodes beside
+it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
+remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
+and it blocks no milestone.
 
 ### 2026-08-26 — Wave 7: the server reuses a conversation's prefix
 
@@ -469,53 +512,6 @@ path, a queue in front of admission, and the server actually using it — the re
 of [018 §6](018-hybrid-models.md)'s rows, and
 [§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
 
-### 2026-08-27 — Wave 11: the gated delta layer, and the convolution in front of it
-
-[018 §6](018-hybrid-models.md)'s first two rows, which everything else in that
-spec waits on. `nn.LinearAttention` composes accel's scan and
-`nn.DepthwiseCausalConv` runs over a rolling window, both checked against
-float64 references written from §2 and §4.1's definitions rather than from the
-blocks.
-
-**The convolution is the one that had to be argued for first.**
-[§4.1.1](018-hybrid-models.md) withdrew "it composes" — the probe had padded an
-input *port*, and a real layer convolves a projection the graph computes — and
-then said what to build instead: not a `Concat`, because a convolution running a
-token at a time needs the K−1 inputs of the *previous step* rather than zeros. A
-`[slots, K−1+T, C]` state, scattered into, read K windows out of, and written
-back to the front for the next step.
-
-That last write is after the read and the state versions say so; a write before
-it would convolve rows the step has not produced. And the carry is the half a
-padded operand could never have supplied, so the test is a five-token step
-followed by a one-token step against a reference over all six.
-
-**Two accel defects, and one claim of this tree's own that had to go.**
-
-- **[C25](010-conformance.md) is the worst kind and cost the most.** Declaring a
-  *reshaped* result as a graph output produces all zeros — correct shape, no
-  refusal, `Contiguous` in front does not help. An hour went into a recurrence
-  that was correct; the operator's result unreshaped matched the reference to
-  eleven digits. Reproduced on two harnesses,
-  [accel#26](https://github.com/golang-design/accel/issues/26), with the
-  argument that `Output` holds the tensor and can see it is a view.
-- **[C26](010-conformance.md) is [§4.1](018-hybrid-models.md)'s claim withdrawn**
-  and then answered in the same wave, which is why it is a `won't fix` rather
-  than a filing: the refusal was the right one and what it pointed at is built.
-
-**The block returns accel's shape rather than the one every projection around it
-has**, and that is C25's consequence rather than a preference: flattening would
-put a `Reshape` in every caller's path whether they output the result or not.
-
-**Three more things the tests caught, none of them about the recurrence.** The
-convolution's tap order was reversed against its own doc comment, and reversing
-it runs and produces plausible numbers. `Mul` takes operands and not views, so a
-broadcast tap row needs `Contiguous` around it as well as under it. And the `nn`
-rig discarded `buf.Close()`'s error while binding with a batched write it never
-flushed — so any test that binds a buffer and never submits leaked it, surfacing
-as accel refusing to close the device from a cleanup, about something the test
-was not testing.
-
 ### 2026-08-27 — Wave 10: four-bit weights
 
 [C21](010-conformance.md)'s tgo half, built the day the re-audit named it.
@@ -565,6 +561,53 @@ implementation. What is checkable without a bound is that swapping the scale and
 zero planes changes the answer — if it did not, neither would be read. And the
 claim that int4 is *under* half of int8 is wrong: it is exactly half, because
 the group doubles as the payload halves and both terms halve with it.
+
+### 2026-08-27 — Wave 11: the gated delta layer, and the convolution in front of it
+
+[018 §6](018-hybrid-models.md)'s first two rows, which everything else in that
+spec waits on. `nn.LinearAttention` composes accel's scan and
+`nn.DepthwiseCausalConv` runs over a rolling window, both checked against
+float64 references written from §2 and §4.1's definitions rather than from the
+blocks.
+
+**The convolution is the one that had to be argued for first.**
+[§4.1.1](018-hybrid-models.md) withdrew "it composes" — the probe had padded an
+input *port*, and a real layer convolves a projection the graph computes — and
+then said what to build instead: not a `Concat`, because a convolution running a
+token at a time needs the K−1 inputs of the *previous step* rather than zeros. A
+`[slots, K−1+T, C]` state, scattered into, read K windows out of, and written
+back to the front for the next step.
+
+That last write is after the read and the state versions say so; a write before
+it would convolve rows the step has not produced. And the carry is the half a
+padded operand could never have supplied, so the test is a five-token step
+followed by a one-token step against a reference over all six.
+
+**Two accel defects, and one claim of this tree's own that had to go.**
+
+- **[C25](010-conformance.md) is the worst kind and cost the most.** Declaring a
+  *reshaped* result as a graph output produces all zeros — correct shape, no
+  refusal, `Contiguous` in front does not help. An hour went into a recurrence
+  that was correct; the operator's result unreshaped matched the reference to
+  eleven digits. Reproduced on two harnesses,
+  [accel#26](https://github.com/golang-design/accel/issues/26), with the
+  argument that `Output` holds the tensor and can see it is a view.
+- **[C26](010-conformance.md) is [§4.1](018-hybrid-models.md)'s claim withdrawn**
+  and then answered in the same wave, which is why it is a `won't fix` rather
+  than a filing: the refusal was the right one and what it pointed at is built.
+
+**The block returns accel's shape rather than the one every projection around it
+has**, and that is C25's consequence rather than a preference: flattening would
+put a `Reshape` in every caller's path whether they output the result or not.
+
+**Three more things the tests caught, none of them about the recurrence.** The
+convolution's tap order was reversed against its own doc comment, and reversing
+it runs and produces plausible numbers. `Mul` takes operands and not views, so a
+broadcast tap row needs `Contiguous` around it as well as under it. And the `nn`
+rig discarded `buf.Close()`'s error while binding with a batched write it never
+flushed — so any test that binds a buffer and never submits leaked it, surfacing
+as accel refusing to close the device from a cleanup, about something the test
+was not testing.
 
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
 
@@ -742,8 +785,41 @@ determinism holding on a real model. Measured properly at 64 prompt tokens and
 32 decode steps: **12.57 tokens/s decode, 379 tokens/s prefill**, 169ms warm
 time to first token. [017 §4.1](017-benchmarks.md) has the breakdown and the
 three findings it produced — the sharpest being that **submit is 15.61% of a
-decode step**, which is the largest non-kernel cost tgo has and the first one
-that is not upstream.
+decode step**, read at the time as the largest non-kernel cost tgo has and the
+first one that is not upstream.
+
+**It was upstream after all, and that is the third finding this wave earned.**
+Filed as [accel#21](https://github.com/golang-design/accel/issues/21) and fixed:
+not the per-*step* submission cost this instrument assumed, but a per-*node*
+one — a reflection frame rebuilt on every call into Objective-C, about five
+message sends per dispatch over a ~790-node graph. Re-measured on the same
+prompt and the same 32 decode steps:
+
+| decode | tokens/s | p50 | p99 | submit | device |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| before | 12.57 | 61.6ms | 474.7ms | 15.61% | 81.88% |
+| **after** | **17.97** | 54.2ms | **76.5ms** | **3.34%** | **94.62%** |
+
+**+43% throughput from one upstream change, and the p99 fell 84%** — the tail
+collapsed by more than the median moved, because a per-call frame rebuild
+produces occasional very slow calls rather than a uniform tax. It is the largest
+single performance change this project has made and the second one tgo's
+instrumentation earned rather than its code. A decode step is now 94.62% device,
+which is the shape a decode step should have.
+
+**Deviation from plan: RMSNorm gains are loaded outside the `weights`
+package.** [004 §3](004-model-graph.md) declares a norm gain as an **f32** port
+and [001 §2](001-weights.md)'s pipeline ends at f16-or-int8, so `weights.Load`
+has no f32 output at all and the two shipped packages cannot be composed. accel
+binds by exact dtype, so a gain that came through the loader is refused at the
+first submission. The engine is the first place the two specs meet, so the
+engine widens between them: `loadGains` uploads all 113 of Qwen3-0.6B's gains as
+f32 and 198 of its 311 tensors reach the loader. It is 256 KB against 1.4 GB, so
+the cost is the seam and not the bytes. What it must not skip is
+[004-D9](004-model-graph.md)'s rotary permutation on the `q_norm` and `k_norm`
+gains: getting that wrong scales the wrong channels and produces fluent text
+that loses coherence, with nothing to report it. There is a test named for that
+reason.
 
 **Two gates caught their author, which is the point of having them.** The Metal
 test written to assert *"this cannot work"* began failing because it works; its
@@ -762,10 +838,11 @@ rather than durations**, and `CONTRIBUTING.md` carries the rule. Worth recording
 because the failure mode is invisible on the two platforms most of this was
 developed on.
 
-**Wave 5 next**: the OpenAI/Anthropic/Responses server ([009](009-server.md)),
-prefix caching ([016](016-prefix-cache.md)), and the submit overhead above —
-which is the axis [000 §11](000-decisions.md) says tgo should win and the thing
-that would make a vLLM comparison worth publishing.
+**Wave 5 next**: the OpenAI/Anthropic/Responses server ([009](009-server.md))
+and prefix caching ([016](016-prefix-cache.md)). Host overhead per decode token
+stays the axis [000 §11](000-decisions.md) says tgo should win: after accel#21
+the `host` term is 0.64% of a step and submit 3.34%, so submit remains the
+largest of the non-device terms.
 
 ### 2026-08-25 — Wave 3 shipped: the forward pass agrees with the oracle
 
@@ -995,3 +1072,50 @@ cgo-free grep, ten cross-compile targets, gofmt and `speclint`; and `ci-metal`
 on Apple silicon.
 
 **M1 is next and is unblocked.**
+
+## 4. The release-gate record
+
+[000 D8](000-decisions.md) keeps real weights out of CI and calls the
+`TGO_MODEL` run the release gate instead: run by hand, before a release, and
+recorded here. This section is that record. [010 §4](010-conformance.md) points
+at it for the same reason and adds the shape of an entry.
+
+**It is not the wave log.** The dated entries under [§3](#3-milestones) say
+what shipped.
+This says what a number *was*, on a stated day, on a stated device, against a
+stated checkpoint — so that the next release has something to differ from.
+
+**What one entry carries**, and an entry missing any of these is not one:
+
+- **the date** the run was taken, not the date it was written down;
+- **the accel revision** it ran against, because most of a step is accel's and a
+  number without one attributes a change to the wrong project;
+- **the device**, named — a tier 2 number and a tier 1 number are different
+  measurements of the same quantity;
+- **the tier**, 1, 2 or 3, as `internal/conformance` defines them: tier 1 needs
+  nothing, tier 2 needs a Metal device, tier 3 needs real weights and never runs
+  in CI;
+- **the checkpoint**, because a number measured on one is not comparable to a
+  number measured on another;
+- **the number and its tolerance.** A measurement with no tolerance cannot be
+  compared to the next one, and [010-D3](010-conformance.md) makes the bound a
+  type rather than a preference.
+
+**Nothing is recorded here yet.** No release-gate run has been taken. The first
+entries are [010 §3](010-conformance.md)'s five measurements, each of which is a
+question accel cannot answer about itself and none of which has been run:
+
+1. **CPU/Metal divergence** — greedy, same prompt: the first differing token
+   index and the logit gap there.
+2. **The readback share of a decode step**, which needs $V=151936$ rather than a
+   fixture's vocabulary.
+3. **Quantization error against `Int8ErrorBound`** on real blocks, which
+   synthetic weights flatter because they have no outlier channels.
+4. **Plan compile time per bucket**, and the plan cache hit rate over a session.
+5. **Transient bytes** from `Plan.Memory()` against the hand-computed working
+   set.
+
+The table is empty and the columns are the shape to fill:
+
+| date | accel revision | device | tier | checkpoint | measurement | value | tolerance |
+| --- | --- | --- | --- | --- | --- | ---: | --- |
