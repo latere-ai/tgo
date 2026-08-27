@@ -12,7 +12,7 @@ import (
 	"golang.design/x/accel/tensor"
 )
 
-// The C23 probe: the gated delta layer that 48 of Qwen3.8-27B's 64 layers are.
+// The 018 probe: the gated delta layer that 48 of Qwen3.8-27B's 64 layers are.
 //
 // specs/018-hybrid-models.md carried status: blocked on accel#17 from the day
 // it was written. The operator now exists, and specs/010-conformance.md §2.2.1
@@ -170,8 +170,8 @@ func runLinear(t *testing.T, in linearInputs) ([]float32, *tensor.Plan) {
 	return r.Run(out)
 }
 
-// TestC23GatedDeltaMatchesItsOracle is the value probe.
-func TestC23GatedDeltaMatchesItsOracle(t *testing.T) {
+// TestTheGatedDeltaScanMatchesItsOracle is the value probe.
+func TestTheGatedDeltaScanMatchesItsOracle(t *testing.T) {
 	in := newLinearInputs(linShape, linExtents)
 	got, plan := runLinear(t, in)
 
@@ -200,17 +200,17 @@ func TestC23GatedDeltaMatchesItsOracle(t *testing.T) {
 	if !strings.Contains(kernel, "LinearAttention") {
 		t.Fatalf("the step selected %q", kernel)
 	}
-	t.Logf("C23: %d tokens over %d sequences, kernel %s, state [%d, %d] per head",
+	t.Logf("gated delta: %d tokens over %d sequences, kernel %s, state [%d, %d] per head",
 		in.tokens(), len(linExtents), kernel, linShape.valueDim, linShape.keyDim)
 }
 
-// TestC23TheGatesAreRead varies alpha and requires the output to move.
+// TestTheGatedDeltaGatesAreRead varies alpha and requires the output to move.
 //
 // A recurrence whose decay is ignored still produces plausible numbers, and
 // that is the failure mode a value probe against one input cannot see: the
 // oracle and the kernel would have to disagree, and a kernel that dropped
 // alpha would disagree only on inputs where alpha is not one.
-func TestC23TheGatesAreRead(t *testing.T) {
+func TestTheGatedDeltaGatesAreRead(t *testing.T) {
 	in := newLinearInputs(linShape, linExtents)
 	base, _ := runLinear(t, in)
 
@@ -245,9 +245,9 @@ func TestC23TheGatesAreRead(t *testing.T) {
 		And(Magnitude(b.value)), "the halved-alpha scan")
 }
 
-// TestC23TheStateAxesAreNotInterchangeable is the refusal accel's own comment
+// TestTheGatedDeltaStateAxesAreNotInterchangeable is the refusal accel's own comment
 // says is the mistake worth preventing, checked rather than trusted.
-func TestC23TheStateAxesAreNotInterchangeable(t *testing.T) {
+func TestTheGatedDeltaStateAxesAreNotInterchangeable(t *testing.T) {
 	in := newLinearInputs(linShape, linExtents)
 	sh := in.sh
 	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c23-transposed"})

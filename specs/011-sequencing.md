@@ -308,7 +308,7 @@ binding real buffers rather than by reading `tensor/attention.go`:
 | probe | what it asserts |
 | --- | --- |
 | [C16](010-conformance.md) | a mixed step — a 3-token chunk, a decode, and a sequence contributing nothing — matches a float64 reference that walks the page table itself, selects `AttentionRagged`, is **bit-identical** to the same tokens run as separate dispatches, and changes its output when the extents are re-split 2/1/1 |
-| C23 (018) | the gated delta scan matches a float64 reference, halving every $\alpha$ moves the output, and a state with `valueDim` and `keyDim` transposed is refused |
+| the gated delta scan ([018](018-hybrid-models.md)) | it matches a float64 reference, halving every $\alpha$ moves the output, and a state with `valueDim` and `keyDim` transposed is refused. Not a register row: the register is what tgo *cannot* do, and this it can |
 
 Both closed. [008](008-scheduler.md) and [018](018-hybrid-models.md) are
 therefore unblocked upstream, and **no spec in this tree is blocked upstream any

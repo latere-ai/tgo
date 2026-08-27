@@ -427,3 +427,83 @@ func TestC22TheRaggedStepRefusesAnF16Cache(t *testing.T) {
 	}
 	t.Logf("C22: %v", err)
 }
+
+// TestC23AnUnclaimedQueryRowReadsOutOfBounds is the second thing the C16 probe
+// turned up, and it is the one that decides how a batched step pads.
+//
+// The ragged kernel finds a token's sequence by counting the rows that end at
+// or before it. For a token past the last segment every row does, so the count
+// is Batch and the next read is offsets[Batch+1] -- one past an array of
+// Batch+1 entries. The same index then reaches Lengths and the page-table row
+// base, so on a GPU it reads another sequence's cache and returns a fluent
+// wrong answer instead of crashing.
+//
+// # Why it is upstream and not a caller's mistake to be careful about
+//
+// specs/043-per-row-values.md §2 is what makes this operator right: a value
+// that differs per row is device data. QueryExtents is exactly that, so the sum
+// is not known at record time and tensor.Attention cannot check it -- the
+// validation there covers dtype, emptiness, the page table's shape and
+// BaseName, and correctly says nothing about the sum. The invariant is one only
+// the kernel can enforce, and today it enforces nothing.
+//
+// Filed as accel#24. tgo maintains the invariant itself; see [batch.check].
+func TestC23AnUnclaimedQueryRowReadsOutOfBounds(t *testing.T) {
+	sh, c := probeShape, probeCase
+	in := newRaggedInputs(sh, c)
+	// One fewer token claimed than q holds, so q's last row belongs to no
+	// sequence.
+	in.extents[0]--
+
+	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c24-unclaimed"})
+	shape := tensor.Shape{c.cacheRows(sh), sh.kvHeads, sh.headDim}
+	k := tensor.NewState(r.G.B, tensor.StateDesc{Name: "k", DType: accel.F32, Shape: shape})
+	v := tensor.NewState(r.G.B, tensor.StateDesc{Name: "v", DType: accel.F32, Shape: shape})
+	r.F32("k", in.k)
+	r.F32("v", in.v)
+	q := r.Input("q", accel.F32, tensor.Shape{c.tokens(), sh.qHeads, sh.headDim})
+	r.F32("q", in.q)
+	pages := r.Input("pages", accel.U32, tensor.Shape{len(c.seqs), sh.maxPages})
+	r.U32("pages", in.pages)
+	lengths := r.Input("lengths", accel.U32, tensor.Shape{len(c.seqs)})
+	r.U32("lengths", in.lengths)
+	extents := r.Input("extents", accel.U32, tensor.Shape{len(c.seqs)})
+	r.U32("extents", in.extents)
+	r.ScalarF32("scale", c.scale)
+
+	out := tensor.Attention(r.G.B, q, k, v, tensor.AttentionOptions{
+		Lengths: lengths, Pages: pages, Block: sh.block,
+		ScaleName: "scale", QueryExtents: extents,
+	})
+	if err := r.G.Err(); err != nil {
+		t.Fatalf("the step was refused at record time: %v\n"+
+			"If accel has grown a way to check the sum, this row is closed and "+
+			"the register says so", err)
+	}
+
+	// The CPU backend reports the index; a GPU would not. Run it through the
+	// runtime directly rather than through Rig.Run, which fails the test on a
+	// submission error -- here the error is the finding.
+	tensor.Output(r.G.B, "out", out)
+	plan, err := r.G.B.Compile(r.RT, tensor.CompileOptions{Label: "c24-unclaimed"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	defer func() {
+		if err := plan.Close(); err != nil {
+			t.Errorf("plan close: %v", err)
+		}
+	}()
+	r.F32("out", make([]float32, out.Shape().Elements()))
+	err = plan.Submit(r.Dev.Queue(), tensor.Bindings{
+		Buffers: r.views, Scalars: r.scalars}).Wait()
+	if err == nil {
+		t.Fatal("a query row belonging to no sequence was scored without complaint; " +
+			"if the kernel has learned to drop it, accel#24 is closed and a batched " +
+			"step can pad q instead of inflating a real sequence's extent")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("the failure is not the out-of-bounds read this row is about: %v", err)
+	}
+	t.Logf("C23: %v", err)
+}

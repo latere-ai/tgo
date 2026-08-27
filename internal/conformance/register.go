@@ -286,6 +286,17 @@ func Register() []Row {
 			"[008 §1](008-scheduler.md) makes the batch size worth reaching " +
 			"and the throughput ceiling both proportional to $1/A$",
 	}, {
+		ID:     "C23",
+		Cannot: "a **ragged step that tolerates a query row belonging to no sequence**",
+		Specs:  []string{"046", "010"},
+		Issue:  24,
+		State:  Open,
+		Cost: "a host-side invariant, `sum(QueryExtents) == q.shape[0]`, maintained " +
+			"by tgo and untestable by accel — the extents are device data, so " +
+			"the sum is not known at record time. A batched step therefore " +
+			"pads by inflating a real sequence's extent rather than by leaving " +
+			"rows unclaimed, and a bucketed batch cannot pad `q` freely",
+	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",
 		Specs:  []string{"021"},
