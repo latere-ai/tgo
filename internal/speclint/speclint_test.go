@@ -50,6 +50,7 @@ func TestTheTreeIsWellFormed(t *testing.T) {
 	report(t, "blocked", CheckBlocked(specs))
 	report(t, "decision records", CheckDecisionRecords(specs))
 	report(t, "index", CheckIndex(specs, read(t, "README.md")))
+	report(t, "outcomes", CheckOutcomes(specs, read(t, "011-sequencing.md")))
 }
 
 func TestTheRegisterIsWellFormed(t *testing.T) {
@@ -202,6 +203,104 @@ func TestDecisionRecordsAreChecked(t *testing.T) {
 		spec(t, "011-sequencing.md", "title: S\nstatus: living\nlayer: all", "no record"),
 	}); len(bad) != 0 {
 		t.Fatalf("an exempt spec was flagged: %v", bad)
+	}
+}
+
+// TestAClaimedOutcomeIsChecked is the rule that makes a status carry
+// information again.
+//
+// Twelve specs sat at `drafted` while their subject shipped, and three sat at
+// `implemented` with a body that still described work in the future tense. A
+// reader could not tell a spec waiting to be built from one built six waves
+// ago, which is the whole reason the lifecycle exists.
+func TestAClaimedOutcomeIsChecked(t *testing.T) {
+	const seq = "…[013-distribution.md](013-distribution.md)…"
+	const open = "## Outcome\n\nit shipped\n\n**Not built.** the queue.\n"
+	const closed = "## Outcome\n\nit shipped\n\n**Not built.** Nothing here.\n"
+
+	bad := CheckOutcomes([]Spec{
+		// Built and silent about it: the case the rule is for.
+		spec(t, "005-a.md", "title: A\nstatus: implemented\nlayer: all", record+"body"),
+		// Claims complete, says what happened, but 011 does not carry it —
+		// which is precisely what `complete` means and `implemented` does not.
+		spec(t, "006-b.md", "title: B\nstatus: complete\nlayer: all", record+closed),
+	}, seq)
+	if len(bad) != 2 {
+		t.Fatalf("found %d problems, want a missing Outcome and an unrecorded "+
+			"complete: %v", len(bad), bad)
+	}
+
+	if bad := CheckOutcomes([]Spec{
+		// Drafted is allowed to describe work nobody has started.
+		spec(t, "007-c.md", "title: C\nstatus: drafted\nlayer: all", record+"someday"),
+		// Blocked likewise: it is waiting on something.
+		spec(t, "008-d.md", "title: D\nstatus: blocked\nlayer: all", record+"waiting"),
+		// Built, says what happened and what is left, and 011 links it.
+		spec(t, "013-distribution.md", "title: E\nstatus: complete\nlayer: all",
+			record+closed),
+		// The two exempt by name keep their exemption.
+		spec(t, "000-decisions.md", "title: F\nstatus: normative\nlayer: all", "x"),
+		spec(t, "011-sequencing.md", "title: G\nstatus: living\nlayer: all", "x"),
+	}, seq); len(bad) != 0 {
+		t.Fatalf("a spec that is allowed to be silent was flagged: %v", bad)
+	}
+}
+
+// TestTheTwoBuiltStatusesAreDistinguishable is the half of the outcome rule that
+// carries the difference between them.
+//
+// Without it both statuses check the same two things, so a spec passes at either
+// and the pair says nothing. Four auditors reading the same spec split two-two
+// on `implemented` against `complete` for exactly that reason: the tree had no
+// rule to apply, only a preference. The rule is that `complete` means nothing in
+// the spec's own scope is open, which is a claim the "Not built." paragraph
+// already makes in prose.
+func TestTheTwoBuiltStatusesAreDistinguishable(t *testing.T) {
+	const seq = "…[013-a.md](013-a.md)…[014-b.md](014-b.md)…"
+	const head = record + "## Outcome\n\nit shipped\n\n"
+
+	for _, tc := range []struct {
+		name, status, notBuilt, want string
+	}{
+		{"complete with open work", "complete",
+			"**Not built.** the admission queue, which [021](021-x.md) owns.",
+			"either the work moves to a spec that owns it"},
+		{"implemented with none", "implemented",
+			"**Not built.** Nothing in this spec's scope.",
+			"a spec with no open work and a recorded outcome is complete"},
+		{"no paragraph at all", "implemented",
+			"everything landed and the section stops here.",
+			"the part of an outcome that decays"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := CheckOutcomes([]Spec{
+				spec(t, "013-a.md", "title: A\nstatus: "+tc.status+"\nlayer: all",
+					head+tc.notBuilt),
+			}, seq)
+			if len(bad) != 1 {
+				t.Fatalf("found %d problems, want 1: %v", len(bad), bad)
+			}
+			if !strings.Contains(bad[0], tc.want) {
+				t.Fatalf("message does not say why:\n got %q\nwant it to contain %q",
+					bad[0], tc.want)
+			}
+		})
+	}
+
+	// Both statuses pass when the paragraph agrees with them, and the marker is
+	// read the same way whichever punctuation the author used.
+	for _, body := range []string{
+		"**Not built.** Nothing in this spec's scope.",
+		"**Not built** Nothing further.",
+		"**Not built.**: nothing; the children own the rest.",
+	} {
+		if bad := CheckOutcomes([]Spec{
+			spec(t, "013-a.md", "title: A\nstatus: complete\nlayer: all", head+body),
+			spec(t, "014-b.md", "title: B\nstatus: implemented\nlayer: all",
+				head+"**Not built.** the batched path."),
+		}, seq); len(bad) != 0 {
+			t.Fatalf("an outcome that agrees with its status was flagged: %v", bad)
+		}
 	}
 }
 

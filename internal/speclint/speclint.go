@@ -43,6 +43,11 @@ var Layer = map[string]bool{
 // decisions.
 var noRecord = map[string]bool{"000-decisions.md": true, "011-sequencing.md": true}
 
+// notSpec are the markdown files in specs/ that are not specs. README.md is the
+// index and ROADMAP.md is the order the index does not carry; neither states a
+// decision, so neither takes frontmatter.
+var notSpec = map[string]bool{"README.md": true, "ROADMAP.md": true}
+
 // Spec is one parsed spec file.
 type Spec struct {
 	File      string
@@ -62,7 +67,7 @@ func Load(dir string) ([]Spec, error) {
 	}
 	var specs []Spec
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || e.Name() == "README.md" {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || notSpec[e.Name()] {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -278,6 +283,103 @@ func CheckDecisionRecords(specs []Spec) []string {
 		}
 	}
 	return bad
+}
+
+// CheckOutcomes reports specs that claim to be built and do not say what
+// happened.
+//
+// # Why this is a lint rule and not a habit
+//
+// specs/README.md's lifecycle already distinguishes `implemented` — "code
+// landed; outcome not yet recorded" — from `complete` — "outcome recorded,
+// deviations named". Nothing checked either, so twelve specs sat at `drafted`
+// while their subject shipped, and a reader could not tell a spec that was
+// waiting to be built from one that had been built for six waves.
+//
+// The rule makes the status carry information again:
+//
+//   - `implemented` or `complete` needs an "## Outcome" section, because a
+//     status that says the code landed and a body that still says "would" are
+//     two claims and only one of them is checked.
+//   - that section needs a "**Not built.**" paragraph, because the part of an
+//     outcome that decays is the part naming what is still open. A spec whose
+//     outcome lists nothing open, for a subject that plainly has open work, is
+//     worse than one still marked `drafted`.
+//   - `complete` additionally needs its number to appear in 011, because
+//     "outcome recorded in 011" is what `complete` means and 011 is where a
+//     reader goes to find out what a wave actually cost.
+//
+// A spec still at `drafted` is exempt: it is allowed to describe work nobody
+// has started.
+//
+// # What separates the two built statuses
+//
+// The first version of this rule checked the same two things of `implemented`
+// and `complete`, which made them indistinguishable: a spec could sit at either
+// and pass. So the "Not built." paragraph carries the difference. Under
+// `complete` it must begin with "Nothing", and under `implemented` it must not.
+// That makes the pair exhaustive in both directions -- a spec with open work
+// cannot claim `complete`, and a spec with none cannot hide at `implemented` --
+// and it puts the open work where a reader looks rather than in a tracker.
+func CheckOutcomes(specs []Spec, sequencing string) []string {
+	var bad []string
+	for _, s := range specs {
+		if noRecord[s.File] {
+			continue
+		}
+		switch s.Status {
+		case "implemented", "complete":
+		default:
+			continue
+		}
+		if !strings.Contains(s.Body, "## Outcome") &&
+			!strings.Contains(s.Body, ". Outcome") {
+			bad = append(bad, fmt.Sprintf("%s: status is %q and there is no Outcome "+
+				"section; a status that says the code landed and a body that still "+
+				"says \"would\" are two claims and only one of them is checked",
+				s.File, s.Status))
+		} else {
+			bad = append(bad, checkNotBuilt(s)...)
+		}
+		if s.Status == "complete" && !strings.Contains(sequencing, "]("+s.File+")") {
+			bad = append(bad, fmt.Sprintf("%s: status is complete and 011 does not "+
+				"link it; complete means the outcome is recorded there", s.File))
+		}
+	}
+	return bad
+}
+
+// notBuilt matches the paragraph an Outcome section uses to name what is still
+// open, and captures the first word after it.
+//
+// The marker is bold rather than a heading so that it reads as the last part of
+// the outcome rather than as a section of its own, which is where the three
+// parts specs/README.md defines put it.
+var notBuilt = regexp.MustCompile(`\*\*Not built\.?\*\*:?\s+(\S+)`)
+
+// checkNotBuilt reports an Outcome section with no "Not built." paragraph, and
+// one whose paragraph disagrees with the status it sits under.
+func checkNotBuilt(s Spec) []string {
+	m := notBuilt.FindStringSubmatch(s.Body)
+	if m == nil {
+		return []string{fmt.Sprintf("%s: the Outcome section has no \"**Not built.**\" "+
+			"paragraph; what a spec has *not* built is the part of an outcome that "+
+			"decays, so it is the part that is checked", s.File)}
+	}
+	nothing := strings.EqualFold(strings.Trim(m[1], ".,;:"), "nothing")
+	switch {
+	case s.Status == "complete" && !nothing:
+		return []string{fmt.Sprintf("%s: status is complete and \"Not built.\" opens with "+
+			"%q; complete means nothing in the spec's own scope is open, so either the "+
+			"work moves to a spec that owns it or the status is implemented",
+			s.File, m[1])}
+	case s.Status == "implemented" && nothing:
+		return []string{fmt.Sprintf("%s: status is implemented and \"Not built.\" says "+
+			"nothing is open; a spec with no open work and a recorded outcome is "+
+			"complete, and leaving it at implemented hides that it is finished",
+			s.File)}
+	}
+	return nil
 }
 
 // CheckIndex reports specs the index does not link, and index rows whose stated
