@@ -407,8 +407,47 @@ while the step's own logits stayed correct. And a returned logits slice outlived
 what it described, which the author's own test broke within minutes — a lifetime
 nobody can keep is not a lifetime.
 
+**Then a multi-agent adversarial review of the whole wave, and it is the part
+worth carrying forward.** Five lenses over the diff, every candidate handed to a
+skeptic told to default to refuted; ten survived. Four were defects and they
+shared one root cause — **a lease covered positions no step had computed, and
+everything downstream trusted its extent.**
+
+| what | how it surfaced |
+| --- | --- |
+| a chunked prefill published all six blocks of a prompt 32 tokens in, so the next request reused 160 positions nobody wrote — under two salts, one tenant's hash naming another's rows | `Publish` walked every hash the lease held |
+| a step that failed after an earlier slot reserved left that lease over a token nobody computed, and a retry with a different token wrote *its* state into a block named for the abandoned one | `reserve` recorded tokens before the submission |
+| a caller carving prompts out of one buffer had the first request rewrite the first token of the second | `Admit` kept the caller's slice and `Feed` appended to it |
+| `server.Wrap` dropped `cache_salt` while [009 §4](009-server.md)'s loss report said it was honoured | a session of its own shares nothing, so under `CacheSession` it reached nothing |
+
+**None of them had a symptom a value test could see.** In every one the logits
+of the step that caused the damage are correct, and the wrong answer goes to a
+*later* request whose own caller did nothing unusual. That is the shape this
+tree exists to catch in accel, found in tgo, and it is the argument for the
+review rather than for more of the same tests.
+
+The fix is one rule: **a lease grows before a step and records after it**, and
+publishes only what its slot has written. `Grow` and `Commit` are those halves.
+
+Three of the ten were weak tests, and each is the same mistake in a different
+place: a fixture where two quantities are equal, so two hypotheses make the same
+prediction. Two 4-token prompts summing to a chunk of 8; work always passed in
+slot order; an assertion that could not fail because `InUse` cannot rise on an
+exhausted pool.
+
+**And two upstream reports closed within a day**, both filed from this wave.
+[C22](010-conformance.md) — the ragged kernel read f32 only, giving back the
+halving [C5](010-conformance.md) closed for — and
+[C23](010-conformance.md), where accel took the shape the report argued for: a
+query row past the last extent contributes nothing, rather than being clamped
+into the last sequence, which would have turned an out-of-bounds read into a
+wrong answer. That closure simplified tgo's padding back to what a single
+sequence does.
+
 **Remaining**: [008 §9](008-scheduler.md)'s three — sampling on the batched
-path, a queue in front of admission, and the server actually using it — and
+path, a queue in front of admission, and the server actually using it — an f16
+block pool now that [C22](010-conformance.md) closed, which halves the largest
+allocation a serving process has and is [005 §3](005-kv-cache.md)'s, and
 [§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
 
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
