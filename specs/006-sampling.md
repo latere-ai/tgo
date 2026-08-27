@@ -1,6 +1,6 @@
 ---
 title: "Sampling: the composition order, and reproducibility as a stream"
-status: implemented
+status: complete
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -319,12 +319,13 @@ logits row read back from the device.
 - **The draw stream lives for one request**, not one session: `stream.go:148`
   builds a `sample.New(p.Seed)` per stream and `Policy.Seed` defaults to zero.
 
-**Not built.** Two tests, both 006's own and both the reason it is not
-`complete`: a stop string straddling a UTF-8 boundary, and the penalties checked
-against an independent reference rather than the hand-computed constants at
-`sample/stages_test.go:78`. Selecting the top $k$ on the softmax weights was
-the third item here until 2026-08-27; it shipped with
-`TestTopKSelectsWhereAccelSelects`, which is what §3's amended note records. The
+**Not built.** Nothing in this spec's scope. All three items that stood here
+shipped on 2026-08-27: selecting the top $k$ on the softmax weights
+(`TestTopKSelectsWhereAccelSelects`, which §3's amended note records), a stop
+string straddling a UTF-8 boundary (`TestAStopStringStraddlingAUTF8Boundary`),
+and the penalties against an independent reference — `oracle.Penalize`, written
+from §3.1's prose rather than from `sample/stages.go`, compared over randomised
+inputs. The
 CPU-versus-Metal greedy divergence measurement §4.1 defers to
 [010 §3](010-conformance.md) is 010's, and waits on a Metal device in the loop.
 Moving the policy onto `tensor.Sample`, which removes the per-token logits

@@ -1030,3 +1030,100 @@ func TestATruncatedCodePointAtEndOfStreamIsStillDelivered(t *testing.T) {
 		t.Errorf("the delivered text %q is not valid UTF-8", text)
 	}
 }
+
+// TestAStopStringStraddlingAUTF8Boundary is specs/006-sampling.md §6's missing
+// row: the stop machinery counts bytes, and a multi-byte stop arrives split
+// across tokens.
+//
+// holdBack and firstStop are byte functions on purpose — a stop is a byte
+// string and a token boundary is not a rune boundary — so the property that
+// matters is not that they understand UTF-8 but that what reaches the caller is
+// never a half rune. A partial match held back is exactly the prefix that would
+// have been broken, which makes the two properties the same one.
+//
+// The ASCII table above cannot see this: every one of its stops is one byte per
+// character, so a held-back prefix is a whole character by construction.
+func TestAStopStringStraddlingAUTF8Boundary(t *testing.T) {
+	t.Parallel()
+
+	// "→" is E2 86 92 and "∑" is E2 88 91: they share a leading byte, so a
+	// stream that stalls on the first byte has to recover when the second
+	// proves it was not the stop after all.
+	const arrow, sigma = "→", "∑"
+
+	for _, c := range []struct {
+		s     string
+		stops []string
+		first int
+		keep  int
+	}{
+		{"a" + arrow[:1], []string{arrow}, -1, 1},
+		{"a" + arrow[:2], []string{arrow}, -1, 2},
+		{"a" + arrow, []string{arrow}, 1, 0},
+		// The shared leading byte, resolved the other way: once the second byte
+		// says sigma, nothing is held and the whole rune is emitted.
+		{"a" + sigma, []string{arrow}, -1, 0},
+		{"a" + sigma[:2], []string{arrow}, -1, 0},
+		// A stop inside a longer rune-bearing text.
+		{sigma + arrow + sigma, []string{arrow}, 3, 0},
+	} {
+		if got := firstStop(c.s, c.stops); got != c.first {
+			t.Errorf("firstStop(%q, %v) = %d, want %d", c.s, c.stops, got, c.first)
+		}
+		if got := holdBack(c.s, c.stops); got != c.keep {
+			t.Errorf("holdBack(%q, %v) = %d, want %d", c.s, c.stops, got, c.keep)
+		}
+	}
+
+	// And the property the two exist for, driven the way the stream drives it.
+	//
+	// The chunks are whole runes because that is what reaches this code:
+	// tokenizer.Decoder holds back a valid-but-incomplete prefix, so a partial
+	// rune never becomes pending text. Feeding raw bytes here would test a
+	// pipeline tgo does not have and would fail on the decoder's own guarantee.
+	for _, tc := range []struct{ text, stop, want string }{
+		{sigma + "x" + arrow + "tail", arrow, sigma + "x"},
+		{"plain " + sigma + " text", arrow, "plain " + sigma + " text"},
+		{arrow + "immediately", arrow, ""},
+		// The shared leading byte: "∑" must not be held forever waiting to
+		// become "→", and must not be cut in half to prove it is not.
+		{sigma + sigma + arrow, arrow, sigma + sigma},
+	} {
+		var emitted, pending string
+		for _, r := range tc.text {
+			pending += string(r)
+			if at := firstStop(pending, []string{tc.stop}); at >= 0 {
+				emitted += pending[:at]
+				pending = ""
+				break
+			}
+			keep := holdBack(pending, []string{tc.stop})
+			emitted += pending[:len(pending)-keep]
+			pending = pending[len(pending)-keep:]
+			if !utf8.ValidString(emitted) {
+				t.Fatalf("emitting %q rune at a time with stop %q produced invalid "+
+					"UTF-8: %q", tc.text, tc.stop, emitted)
+			}
+		}
+		if emitted != tc.want {
+			t.Errorf("emitting %q rune at a time with stop %q gave %q, want %q",
+				tc.text, tc.stop, emitted, tc.want)
+		}
+	}
+
+	// The one case that does split a rune, recorded rather than fixed: a stop
+	// string that itself begins in the middle of one. holdBack matches bytes,
+	// so "\x91z" matches the last byte of "∑" and holds it back, leaving the
+	// first two bytes to be emitted alone.
+	//
+	// It is not reachable from the wire — a JSON string decodes to valid UTF-8,
+	// so no request can carry such a stop — and from the library it is a caller
+	// asking to match those bytes and getting them matched. Fixing it would mean
+	// holdBack knowing about runes, which would then refuse to match a stop the
+	// caller deliberately wrote. Named here so the next reader finds the
+	// analysis rather than the surprise.
+	if keep := holdBack("a"+sigma, []string{"\x91z"}); keep != 1 {
+		t.Errorf("holdBack with a stop beginning mid-rune kept %d bytes, want 1; "+
+			"the byte-matching behaviour this documents has changed", keep)
+	}
+}

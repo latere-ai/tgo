@@ -833,3 +833,77 @@ func TestLoadGivesOnePlaneToTwoPorts(t *testing.T) {
 		t.Error("Load accepted two declarations filing under one name")
 	}
 }
+
+// TestAutoWalksDownToInt4AndLoads is the ladder's last rung, taken.
+//
+// Auto is f16 → int8 → int4, and only the *refusals* were covered: that auto
+// never prefers int4 to int8 (int4_test.go), and that a budget below every
+// width fails by name. Nothing set a budget between the int8 and int4
+// footprints and let the load run, so the one case int4 exists for — a model
+// that does not fit at int8 and does at int4 — was never exercised end to end.
+//
+// It is the case with the least margin for a mistake to hide in: the plan picks
+// a width, and three planes with two different dtypes have to reach the device
+// for it.
+func TestAutoWalksDownToInt4AndLoads(t *testing.T) {
+	dev := openCPU(t)
+	// A tensor large enough that the three footprints are far apart: f16 is
+	// 2 bytes a weight, int8 about 1.06, int4 about 0.53.
+	const rows, cols = 256, 128
+	repo := writeRepo(t, tensorSpec{"w", []int{rows, cols}, ramp(rows * cols)})
+	decls := []Tensor{{Name: "w"}}
+
+	// Price the widths through the loader itself rather than restating the
+	// arithmetic: a budget derived from a formula this test wrote would pass
+	// against a loader that priced them differently.
+	sizes := map[Precision]int64{}
+	for _, p := range []Precision{F16, Int8, Int4} {
+		set, err := Load(dev, repo, decls, Options{Policy: p, Log: io.Discard})
+		if err != nil {
+			t.Fatalf("Load at %v: %v", p, err)
+		}
+		sizes[p] = set.Report().Bytes
+		if err := set.Close(); err != nil {
+			t.Fatalf("close the %v set: %v", p, err)
+		}
+	}
+	if !(sizes[Int4] < sizes[Int8] && sizes[Int8] < sizes[F16]) {
+		t.Fatalf("the widths do not order: int4 %d, int8 %d, f16 %d",
+			sizes[Int4], sizes[Int8], sizes[F16])
+	}
+
+	// A budget that int8 misses and int4 clears. The report counts payload
+	// bytes and the arena rounds each buffer up, so the budget is the int8
+	// footprint less one byte: below int8, at or above int4.
+	budget := sizes[Int8] - 1
+	if budget < sizes[Int4] {
+		t.Fatalf("int8 is %d and int4 is %d; there is no budget between them",
+			sizes[Int8], sizes[Int4])
+	}
+
+	set, err := Load(dev, repo, decls, Options{Policy: Auto, Budget: budget, Log: io.Discard})
+	if err != nil {
+		t.Fatalf("Load at auto with a budget between int8 and int4: %v", err)
+	}
+	defer set.Close()
+
+	rep := set.Report()
+	if rep.Chosen != Int4 {
+		t.Fatalf("auto chose %v for a budget of %d that int8 (%d) misses and int4 "+
+			"(%d) clears", rep.Chosen, budget, sizes[Int8], sizes[Int4])
+	}
+
+	// And it loaded: three planes, the codes packed eight to a u32 word.
+	v, ok := set.Get("w")
+	if !ok {
+		t.Fatal("the loaded set has no tensor w")
+	}
+	if v.Data.DType() != accel.U32 || v.Scales.DType() != accel.F16 ||
+		v.Zeros.DType() != accel.F16 {
+		t.Fatalf("int4 value = %+v; want u32 codes with f16 scales and zeros", v)
+	}
+	if want := (rows*cols + 7) / 8; v.Data.Count() != want {
+		t.Errorf("the code plane holds %d words, want %d for %d weights",
+			v.Data.Count(), want, rows*cols)
+	}
+}

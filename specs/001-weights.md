@@ -411,6 +411,13 @@ landed with Wave 2 on 2026-08-24, and int4 with Wave 10 on 2026-08-27
 
 **What diverged** from the design, and why the code is right:
 
+- **The `Auto` ladder's last rung is taken by a test since 2026-08-27.** Only
+  the refusals were covered — that auto never prefers int4 to int8, and that a
+  budget below every width fails by name — so the one case int4 exists for, a
+  model that misses at int8 and fits at int4, never ran end to end.
+  `TestAutoWalksDownToInt4AndLoads` prices the three widths through the loader
+  rather than restating the arithmetic, then sets a budget between two of them.
+
 - §1.2 said `Open` maps a file. It opens one and reads each plane with `ReadAt`.
   Positional reads carry no shared file offset, so several tensors may be read
   at once, and a mapping would have bought nothing the reader needs.
@@ -441,8 +448,6 @@ stages every width a weight is stored in. That second test is the one that would
 have caught it: its complement said an unknown width is refused, and nothing
 said the known ones are not, which "refuse everything" satisfies.
 
-- Test that `auto` resolves to `Int4` **and loads**, with a budget between the
-  int4 and the int8 footprint. Only the refusal branch is covered (001).
 - Decide §5.4: either the loader samples blocks and checks
   `quant.Int8ErrorBound` at load time, or the bound stays an assertion that
   `internal/conformance` owns and §5.4 says so outright (001, tolerance in 010).

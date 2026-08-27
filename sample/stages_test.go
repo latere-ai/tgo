@@ -5,6 +5,7 @@ package sample
 
 import (
 	"math"
+	"math/rand/v2"
 	"slices"
 	"testing"
 
@@ -450,4 +451,73 @@ func collapsingPair() (hi, lo float32, ok bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+// TestPenaltiesAgainstTheOracle is specs/006-sampling.md §6's missing row.
+//
+// The table test above computes its expectation by hand, in the same file, from
+// the same reading of §3.1 — so it checks that penalize does what its author
+// thought the rules said, not that it does what they say. 010 §5 draws that
+// line: a reference is an independent implementation, and internal/oracle is
+// where tgo keeps them.
+//
+// The inputs are randomised over the shapes that make the rules differ from
+// each other: a token seen once against one seen many times separates presence
+// from frequency, and a negative logit separates dividing from multiplying. A
+// fixed seed keeps a failure reproducible.
+func TestPenaltiesAgainstTheOracle(t *testing.T) {
+	rng := rand.New(rand.NewPCG(0x5eed, 0xC0FFEE))
+
+	for trial := range 200 {
+		n := 4 + rng.IntN(12)
+		logits := make([]float32, n)
+		for i := range logits {
+			// Straddle zero: the sign is what selects the branch.
+			logits[i] = (rng.Float32() - 0.5) * 8
+		}
+		// A history with repeats, so counts differ per token.
+		history := make([]int, rng.IntN(20))
+		for i := range history {
+			history[i] = rng.IntN(n)
+		}
+
+		p := Policy{
+			RepetitionPenalty: []float32{0, 1, 1.2, 2}[rng.IntN(4)],
+			PresencePenalty:   []float32{0, 0.3, -0.5}[rng.IntN(3)],
+			FrequencyPenalty:  []float32{0, 0.25, -0.1}[rng.IntN(3)],
+			PenaltyWindow:     []int{0, 3, 8}[rng.IntN(3)],
+		}
+
+		got := make([]float32, n)
+		copy(got, logits)
+		penalize(got, history, p)
+
+		in64 := make([]float64, n)
+		for i, v := range logits {
+			in64[i] = float64(v)
+		}
+		want := oracle.Penalize(in64, history, float64(p.RepetitionPenalty),
+			float64(p.PresencePenalty), float64(p.FrequencyPenalty), p.PenaltyWindow)
+
+		for i := range got {
+			// The host works in f32 and the reference in f64, so the tolerance
+			// is the rounding of the operations §3.1 names: at most one divide
+			// or multiply, then one subtract.
+			const ulps = 4
+			if diff := math.Abs(float64(got[i]) - want[i]); diff > ulps*ulpOf(want[i]) {
+				t.Fatalf("trial %d, logit %d: got %v, oracle %v (policy %+v, history %v)",
+					trial, i, got[i], want[i], p, history)
+			}
+		}
+	}
+}
+
+// ulpOf is the spacing of float32 near v, which is the unit an f32 computation
+// of an f64 quantity can differ by.
+func ulpOf(v float64) float64 {
+	f := float32(v)
+	if f == 0 {
+		return math.SmallestNonzeroFloat32
+	}
+	return math.Abs(float64(math.Nextafter32(f, float32(math.Inf(1))) - f))
 }
