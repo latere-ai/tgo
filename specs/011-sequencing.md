@@ -471,11 +471,26 @@ of [018](018-hybrid-models.md)'s graph, and
 pool is **blocked upstream** on [C24](010-conformance.md); tgo's half of it is
 built.
 
-### 2026-08-27 — Wave 11: the gated delta layer
+### 2026-08-27 — Wave 11: the gated delta layer, and the convolution in front of it
 
-[018 §6](018-hybrid-models.md)'s first row, which everything else in that spec
-waits on. `nn.LinearAttention` composes accel's scan and is checked against a
-float64 reference written from §2's equation rather than from the block.
+[018 §6](018-hybrid-models.md)'s first two rows, which everything else in that
+spec waits on. `nn.LinearAttention` composes accel's scan and
+`nn.DepthwiseCausalConv` runs over a rolling window, both checked against
+float64 references written from §2 and §4.1's definitions rather than from the
+blocks.
+
+**The convolution is the one that had to be argued for first.**
+[§4.1.1](018-hybrid-models.md) withdrew "it composes" — the probe had padded an
+input *port*, and a real layer convolves a projection the graph computes — and
+then said what to build instead: not a `Concat`, because a convolution running a
+token at a time needs the K−1 inputs of the *previous step* rather than zeros. A
+`[slots, K−1+T, C]` state, scattered into, read K windows out of, and written
+back to the front for the next step.
+
+That last write is after the read and the state versions say so; a write before
+it would convolve rows the step has not produced. And the carry is the half a
+padded operand could never have supplied, so the test is a five-token step
+followed by a one-token step against a reference over all six.
 
 **Two accel defects, and one claim of this tree's own that had to go.**
 
@@ -486,16 +501,22 @@ float64 reference written from §2's equation rather than from the block.
   eleven digits. Reproduced on two harnesses,
   [accel#26](https://github.com/golang-design/accel/issues/26), with the
   argument that `Output` holds the tensor and can see it is a view.
-- **[C26](010-conformance.md) is [§4.1](018-hybrid-models.md)'s claim withdrawn.**
-  "The depthwise convolution composes" was probed against a padded input
-  *port*; a real layer convolves a projection the graph computes, and there is
-  nothing to pad it with. Recorded rather than filed, because a `Concat` is the
-  wrong ask: a convolution running a token at a time needs the K−1 inputs of the
-  *previous step*, so it wants the rolling state §6 already lists.
+- **[C26](010-conformance.md) is [§4.1](018-hybrid-models.md)'s claim withdrawn**
+  and then answered in the same wave, which is why it is a `won't fix` rather
+  than a filing: the refusal was the right one and what it pointed at is built.
 
 **The block returns accel's shape rather than the one every projection around it
 has**, and that is C25's consequence rather than a preference: flattening would
 put a `Reshape` in every caller's path whether they output the result or not.
+
+**Three more things the tests caught, none of them about the recurrence.** The
+convolution's tap order was reversed against its own doc comment, and reversing
+it runs and produces plausible numbers. `Mul` takes operands and not views, so a
+broadcast tap row needs `Contiguous` around it as well as under it. And the `nn`
+rig discarded `buf.Close()`'s error while binding with a batched write it never
+flushed — so any test that binds a buffer and never submits leaked it, surfacing
+as accel refusing to close the device from a cleanup, about something the test
+was not testing.
 
 ### 2026-08-27 — Wave 10: four-bit weights
 

@@ -333,14 +333,17 @@ func Register() []Row {
 		Cannot: "a **depthwise causal convolution** over rows the graph computed",
 		Specs:  []string{"025"},
 		State:  WontFix,
-		Cost: "the composition [018 §4.1](018-hybrid-models.md) records needs a " +
-			"left-padded input, and `tensor` has no operator that joins two " +
-			"tensors along an axis — the projections it convolves are produced " +
-			"*inside* the graph, so there is nothing to pad them with. Not " +
-			"filed, because a `Concat` is the wrong ask: a streaming causal " +
-			"convolution needs the K−1 inputs of the *previous step* anyway, " +
-			"so what it wants is a rolling state ([018 §6](018-hybrid-models.md)'s " +
-			"per-layer cache kind) built from `ScatterRows`, which exists",
+		Cost: "**none, and the refusal was the right one.** The composition " +
+			"[018 §4.1](018-hybrid-models.md) records needs a left-padded input " +
+			"and `tensor` joins no two tensors along an axis, so the padded " +
+			"input cannot be built — but a `Concat` was never the ask: a " +
+			"convolution running a token at a time needs the K−1 inputs of the " +
+			"*previous step*, not zeros, and a decode step has no earlier rows " +
+			"in its own tensor at all. `nn.DepthwiseCausalConv` runs over a " +
+			"rolling `[slots, K−1+T, C]` state built from `ScatterRows`, " +
+			"`GatherRows` and `Slice`, all of which exist. It costs ~3K+5 " +
+			"dispatches and K−1 copies of a `[T, C]` tensor per layer, which " +
+			"over 48 layers is one kernel to *want* and none to be blocked on",
 	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",

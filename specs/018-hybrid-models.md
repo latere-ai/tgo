@@ -197,8 +197,29 @@ $K$ windows out of. `ScatterRows` and `Slice` both exist, and
 [§6](#6-what-would-have-to-be-built-here-once-it-is-unblocked)'s "per-layer
 cache kind" is that state.
 
-So the convolution is not blocked and is not built: it needs the cache row of §6
-rather than an operator from accel.
+So the convolution needed the cache row of §6 rather than an operator from
+accel, and **it is built**. `nn.DepthwiseCausalConv` runs over that state: each
+step scatters its rows in behind the $K-1$ already there, reads $K$ windows out,
+and then writes the window's last $K-1$ rows to the front for the next step —
+two writes to one state with an order that matters, which is what
+`tensor.State`'s versions express. A write before the read would convolve rows
+the step has not produced.
+
+The carry is the half a padded operand could never have supplied, and it is what
+the test has to reach for: a decode step has no earlier rows in its own tensor
+at all, so a test that only ever prefills cannot tell a working carry from a
+dropped one. The check is a five-token step followed by a one-token step against
+a reference over all six at once.
+
+**Two costs the dispatch count did not show.** The tap row needs `Contiguous`
+*twice* — once because a slice at row $i$ is a view at an offset, and once
+because `Mul` takes operands and not views — so every tap materialises a
+$[T, C]$ copy. And the tap order is
+
+$$y_t = \sum_i \texttt{taps}_i \cdot x_{t-K+1+i}$$
+
+which is the convention the weights are trained under. Reversing it runs,
+produces plausible numbers, and convolves the window backwards.
 
 ## 4.2 What a recurrent state needs, which is not what a cache needs
 
@@ -245,8 +266,9 @@ legitimate and this spec becomes `deferred` with the reason — the same shape
 
 | | |
 | --- | --- |
-| ~~`nn.LinearAttention`~~ | **built 2026-08-27**, over accel's scan, verified against a float64 reference derived from §2's equation. The depthwise convolution is *not* in it — see [§4.1.1](#411-the-correction-the-probe-padded-an-input-port-and-a-graph-cannot) |
-| a per-layer cache kind | [005](005-kv-cache.md) gains a state per layer *type*, not one shape for all |
+| ~~`nn.LinearAttention`~~ | **built 2026-08-27**, over accel's scan, verified against a float64 reference derived from §2's equation |
+| ~~the depthwise convolution~~ | **built 2026-08-27**, over the rolling window [§4.1.1](#411-the-correction-the-probe-padded-an-input-port-and-a-graph-cannot) argued for, with the carry across steps checked |
+| a per-layer cache kind | [005](005-kv-cache.md) gains a state per layer *type*, not one shape for all. Two of them, in fact: the recurrent `[slots, heads, valueDim, keyDim]` and the convolution's `[slots, K−1+T, C]` |
 | snapshot/restore for recurrent state | [016](016-prefix-cache.md) gains ollama's shape for the layers that need it |
 | the `qwen3_5` registry entry | config parsing, the weight map, the layer-type schedule |
 | image-token tolerance | the text path must not break on a multimodal tokenizer |
