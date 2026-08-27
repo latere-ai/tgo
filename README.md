@@ -23,10 +23,10 @@ program.
 > on Apple silicon today — about 18 tokens a second on a 0.6B model, with a
 > 170ms wait for the first one.
 >
-> One caveat worth knowing before you plan around it. Concurrent requests
-> interleave rather than run in one step, so the total throughput is close to
-> what one conversation gets: it holds many conversations at once and does not
-> yet batch them into a single forward pass.
+> One caveat worth knowing before you plan around it. `tgo serve` holds many
+> conversations at once but still gives each request its own forward pass, so
+> its total throughput is close to what one conversation gets. The engine below
+> it does batch — see the table — and connecting the two is the next thing.
 > [`docs/orientation.md`](docs/orientation.md) explains what runs where.
 
 ## Why you might want it
@@ -62,11 +62,15 @@ on Apple silicon.
 | **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
 | **Serving** | streaming, logprobs, seeded reproducible output, and JSON-schema output that parses every time |
 | **Reuse** | a conversation's next turn prefills only what is new, and with `--prefix-cache process` two conversations sharing a system prompt prefill it once between them; `cache_salt` bounds who shares with whom |
-| **As a library** | open a model, hold a conversation, stream tokens, and reuse the prompt a conversation has already paid for |
+| **As a library** | open a model, hold a conversation, stream tokens, reuse the prompt a conversation has already paid for, and run several conversations in one forward pass |
 
-Continuous batching — running many conversations in one step, which is where a
-server gets most of its throughput — is designed and now expressible in the
-layer below.
+**Continuous batching runs, and `tgo serve` does not use it yet.** The engine
+puts several conversations in one forward pass, and puts a long prompt's next
+chunk in that same pass rather than making everyone wait for it — so the weights
+are read once for all of them, which is where a server gets most of its
+throughput. Reach it with `Model.NewScheduler`. The server still gives each
+request its own conversation slot, so its throughput is close to what one
+conversation gets; wiring the two together is the next thing.
 
 ## What using it will look like
 

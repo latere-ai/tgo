@@ -186,6 +186,13 @@ matching beginning.
   next turn reuses its own work if fewer than N *other* conversations were
   served since its last turn. Below that, it starts again from nothing.
 
+The second meaning goes away under `--prefix-cache process`. There the cached
+work lives in one pool that every conversation draws from, so which slot a
+request lands on stops deciding what it reuses, and `--sessions` is concurrency
+alone. That is usually what you want: the pool is the same memory the per-slot
+caches were, held once instead of once each, and a conversation's next turn
+finds its own work in it however many others were served in between.
+
 The cost is memory, and it is not conditional. All N conversations' caches are
 reserved when the process starts and held until it exits, whether or not a
 second request ever arrives. So `--sessions 8` at a 32k context on a 32B model
@@ -197,6 +204,32 @@ peers.
 what N of them come to, what is left after the weights, and how many the device
 would hold. If you ask for more than fits, it says so then rather than failing
 under load.
+
+## Running several conversations in one pass
+
+Everything above gives each conversation its own forward pass. Reading a model's
+weights is most of what a step costs, and a step that produces one token reads
+all of them — so two conversations stepping together read those weights **once**
+and produce two tokens. That is where a server's throughput comes from, and it
+is why a busy server can be many times faster per token than an idle one.
+
+The engine does this. `Model.NewScheduler` holds a fixed number of slots, admits
+a conversation into one, and puts every slot's next token into a single pass. A
+long prompt does not stall the conversations decoding beside it: its next chunk
+rides along in the same pass.
+
+Two things to know before you build on it.
+
+**`tgo serve` does not use it yet.** The server pools conversations and gives
+each request its own pass, so its throughput is close to what one conversation
+gets. Connecting the two is the next piece of work, and it needs a decision
+about where sampling runs that has a measurement attached rather than an opinion.
+
+**A slot reserves room for its answer, not just its prompt.** A conversation
+admitted on its prompt alone is one that may not be able to grow, and a server
+full of those cannot finish anything. So admission asks for the prompt *and* a
+reserve, together or not at all, and refuses when the two do not fit. A refusal
+you can see beats a server that quietly admits fewer requests than it could.
 
 ## Which models
 
