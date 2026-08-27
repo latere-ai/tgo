@@ -51,6 +51,7 @@ type precisionFacts struct {
 	Chosen    string `json:"chosen"`
 	F16Bytes  int64  `json:"f16_bytes"`
 	Int8Bytes int64  `json:"int8_bytes"`
+	Int4Bytes int64  `json:"int4_bytes"`
 	Budget    int64  `json:"budget"`
 	Why       string `json:"why"`
 }
@@ -124,8 +125,8 @@ func describe(dir string, b model.Builder, o describeOptions, hw hardware, env e
 	if budget == 0 {
 		budget = hw.MaxPoolBytes
 	}
-	params, planes, f16, int8 := footprint(specs)
-	choice, err := choosePrecision(o.Policy, f16, int8, budget)
+	params, planes, f16, int8, int4 := footprint(specs)
+	choice, err := choosePrecision(o.Policy, f16, int8, int4, budget)
 	if err != nil {
 		return modelReport{}, err
 	}
@@ -169,7 +170,7 @@ func describe(dir string, b model.Builder, o describeOptions, hw hardware, env e
 // The two byte counts are specs/001-weights.md §5's, per tensor rather than
 // over a summed element count: a trailing partial block gets its own scale, so
 // the number of int8 scales is a sum of per-tensor block counts.
-func footprint(specs []model.WeightSpec) (params, planes, f16Bytes, int8Bytes int64) {
+func footprint(specs []model.WeightSpec) (params, planes, f16Bytes, int8Bytes, int4Bytes int64) {
 	seen := make(map[string]bool, len(specs))
 	for _, s := range specs {
 		n := int64(1)
@@ -177,14 +178,15 @@ func footprint(specs []model.WeightSpec) (params, planes, f16Bytes, int8Bytes in
 			n *= int64(d)
 		}
 		planes += n
-		f16Bytes += planeBytes(s.Kind, n, false)
-		int8Bytes += planeBytes(s.Kind, n, true)
+		f16Bytes += planeBytes(s.Kind, n, weights.F16)
+		int8Bytes += planeBytes(s.Kind, n, weights.Int8)
+		int4Bytes += planeBytes(s.Kind, n, weights.Int4)
 		if !seen[s.Tensor] {
 			seen[s.Tensor] = true
 			params += n
 		}
 	}
-	return params, planes, f16Bytes, int8Bytes
+	return params, planes, f16Bytes, int8Bytes, int4Bytes
 }
 
 // planeBytes is what one plane of n elements occupies on the device, at the
@@ -197,14 +199,25 @@ func footprint(specs []model.WeightSpec) (params, planes, f16Bytes, int8Bytes in
 // quantized path never sees it. Pricing one at f16 understates Qwen3-0.6B by
 // 128 KiB, which is small and is not zero, and a `tgo info` that prints a
 // footprint the model does not have is the silent number §5 exists to prevent.
-func planeBytes(kind model.Kind, n int64, narrow bool) int64 {
+func planeBytes(kind model.Kind, n int64, p weights.Precision) int64 {
 	if kind == model.KindGain {
 		return n * int64(accel.F32.Size())
 	}
-	if !narrow {
-		return n * int64(accel.F16.Size())
+	// The embedding table is gathered rather than multiplied and accel
+	// registers no int4 gather, so a load at int4 pins it to int8. Pricing it
+	// at int4 here would print a footprint the model does not have, which is
+	// the silent number specs/001-weights.md §5 exists to prevent -- and it is
+	// the same argument the gain note above makes, at a different tensor.
+	if p == weights.Int4 && kind == model.KindEmbedding {
+		p = weights.Int8
 	}
-	return n + (n+quant.Int8Block-1)/quant.Int8Block*2
+	switch p {
+	case weights.Int8:
+		return n + (n+quant.Int8Block-1)/quant.Int8Block*2
+	case weights.Int4:
+		return (n+7)/8*4 + (n+int64(quant.Int4Group)-1)/int64(quant.Int4Group)*2*2
+	}
+	return n * int64(accel.F16.Size())
 }
 
 // choosePrecision is specs/001-weights.md §5 and decision 5 of
@@ -216,10 +229,10 @@ func planeBytes(kind model.Kind, n int64, narrow bool) int64 {
 // `tgo info` has to print the choice without doing that, so the rule is here
 // too and the two are pinned against each other by TestChoosePrecisionMatches-
 // TheLoader below. See the discrepancy note in the package's report.
-func choosePrecision(policy weights.Precision, f16Bytes, int8Bytes, budget int64) (precisionFacts, error) {
+func choosePrecision(policy weights.Precision, f16Bytes, int8Bytes, int4Bytes, budget int64) (precisionFacts, error) {
 	p := precisionFacts{
 		Requested: policy.String(), F16Bytes: f16Bytes,
-		Int8Bytes: int8Bytes, Budget: budget,
+		Int8Bytes: int8Bytes, Int4Bytes: int4Bytes, Budget: budget,
 	}
 	if policy == weights.Inherit {
 		// The zero value means "use the load policy", which as a policy is
@@ -228,25 +241,37 @@ func choosePrecision(policy weights.Precision, f16Bytes, int8Bytes, budget int64
 		p.Requested = weights.Auto.String()
 	}
 	switch policy {
-	case weights.F16, weights.Int8:
+	case weights.F16, weights.Int8, weights.Int4:
 		p.Chosen = policy.String()
 		p.Why = fmt.Sprintf("asked for: --precision %s", policy)
 	case weights.Inherit, weights.Auto:
-		if f16Bytes > budget {
+		switch {
+		case f16Bytes <= budget:
+			p.Chosen = weights.F16.String()
+			p.Why = fmt.Sprintf("auto: f16 needs %s, which fits the %s budget",
+				humanBytes(f16Bytes), humanBytes(budget))
+		case int8Bytes <= budget:
 			p.Chosen = weights.Int8.String()
 			p.Why = fmt.Sprintf("auto: f16 needs %s, which is more than the %s budget, so int8 at %s",
 				humanBytes(f16Bytes), humanBytes(budget), humanBytes(int8Bytes))
-			break
+		default:
+			p.Chosen = weights.Int4.String()
+			p.Why = fmt.Sprintf("auto: int8 needs %s, which is more than the %s budget, so int4 at %s",
+				humanBytes(int8Bytes), humanBytes(budget), humanBytes(int4Bytes))
 		}
-		p.Chosen = weights.F16.String()
-		p.Why = fmt.Sprintf("auto: f16 needs %s, which fits the %s budget",
-			humanBytes(f16Bytes), humanBytes(budget))
 	default:
-		return precisionFacts{}, fmt.Errorf("%w: precision policy %v is not f16, int8 or auto", errUsage, policy)
+		return precisionFacts{}, fmt.Errorf("%w: precision policy %v is not f16, int8, int4 or auto",
+			errUsage, policy)
 	}
-	if p.Chosen == weights.Int8.String() && int8Bytes > budget {
-		return precisionFacts{}, fmt.Errorf("the model needs %s at int8, which is more than the %s budget; "+
-			"no supported precision fits", humanBytes(int8Bytes), humanBytes(budget))
+	for _, c := range []struct {
+		name  string
+		bytes int64
+	}{{weights.Int8.String(), int8Bytes}, {weights.Int4.String(), int4Bytes}} {
+		if p.Chosen == c.name && c.bytes > budget {
+			return precisionFacts{}, fmt.Errorf("the model needs %s at %s, which is more than "+
+				"the %s budget; no supported precision fits",
+				humanBytes(c.bytes), c.name, humanBytes(budget))
+		}
 	}
 	return p, nil
 }
@@ -341,7 +366,7 @@ func dtypeSize(name string) int {
 func infoFlagSet() (*flag.FlagSet, *infoFlags) {
 	fs := flag.NewFlagSet("info", flag.ContinueOnError)
 	return fs, &infoFlags{
-		precision: fs.String("precision", "auto", "f16, int8 or auto"),
+		precision: fs.String("precision", "auto", "f16, int8, int4 or auto"),
 		context:   fs.Int("context", defaultContext, "KV cache capacity in positions"),
 		budget:    fs.Int64("budget", 0, "device bytes the weights may occupy; 0 asks the device"),
 		device:    fs.String("device", "auto", "auto, cpu or metal"),
@@ -412,6 +437,7 @@ func renderInfo(w io.Writer, r modelReport) {
 	fmt.Fprintf(w, "  why               %s\n", p.Why)
 	fmt.Fprintf(w, "  f16 footprint     %s\n", humanBytes(p.F16Bytes))
 	fmt.Fprintf(w, "  int8 footprint    %s\n", humanBytes(p.Int8Bytes))
+	fmt.Fprintf(w, "  int4 footprint    %s\n", humanBytes(p.Int4Bytes))
 	fmt.Fprintf(w, "  budget            %s\n", humanBytes(p.Budget))
 	if m.TiedEmbeddings {
 		fmt.Fprintf(w, "  note              the footprints cover %s device elements: a tied checkpoint\n"+

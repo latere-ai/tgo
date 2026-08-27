@@ -49,7 +49,7 @@ func runFlagSet() (*flag.FlagSet, *runFlags) {
 		topP:      fs.Float64("top-p", 0, "nucleus mass in (0, 1]; 0 disables the stage"),
 		repeat:    fs.Float64("repeat-penalty", 1, "divisive repetition penalty; 1 is none"),
 		seed:      fs.Uint64("seed", 0, "the sampler seed"),
-		precision: fs.String("precision", "auto", "f16, int8 or auto"),
+		precision: fs.String("precision", "auto", "f16, int8, int4 or auto"),
 		context:   fs.Int("context", defaultContext, "KV cache capacity in positions"),
 		device:    fs.String("device", "auto", "auto, cpu or metal"),
 	}

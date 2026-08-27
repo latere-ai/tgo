@@ -17,6 +17,7 @@ import (
 
 	tgo "github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/model"
+	"github.com/latere-ai/tgo/weights"
 )
 
 func TestRunDispatch(t *testing.T) {
@@ -213,7 +214,7 @@ func TestRealCheckpoint(t *testing.T) {
 		for _, d := range sp.Shape {
 			n *= int64(d)
 		}
-		want += planeBytes(sp.Kind, n, false)
+		want += planeBytes(sp.Kind, n, weights.F16)
 	}
 	if rep.Precision.F16Bytes != want {
 		t.Errorf("f16 footprint = %d, want %d", rep.Precision.F16Bytes, want)

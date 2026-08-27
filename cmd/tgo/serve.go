@@ -81,7 +81,7 @@ func serveFlagSet() (*flag.FlagSet, *serveFlags) {
 	return fs, &serveFlags{
 		addr:      fs.String("addr", server.DefaultAddr, "host:port to listen on"),
 		public:    fs.Bool("public", false, "allow a bind that is not loopback, which has no authentication"),
-		precision: fs.String("precision", "auto", "f16, int8 or auto"),
+		precision: fs.String("precision", "auto", "f16, int8, int4 or auto"),
 		context:   fs.Int("context", defaultContext, "KV cache capacity per session, in positions"),
 		device:    fs.String("device", "auto", "auto, cpu or metal"),
 		sessions: fs.Int("sessions", 0,

@@ -387,22 +387,12 @@ func (m *Model) load(repo *safetensors.Repo, specs []model.WeightSpec, p Precisi
 		if s.Permute {
 			d.HeadDim = m.cfg.HeadDim
 		}
-		if s.Kind == model.KindEmbedding && toLoader(p) == weights.Int4 {
-			// The embedding table is *gathered*, not multiplied, and accel
-			// registers no int4 gather: `QuantGatherRows` reads a quant plane
-			// and a scale plane, and there is no three-plane form of it.
-			//
-			// So the table stays int8 while everything else packs. That is a
-			// pin and not a fallback -- it is stated here, per tensor, rather
-			// than discovered as a refusal at record time -- and it is what
-			// every quantizer in the ecosystem does anyway: an embedding row is
-			// read once per token and never contracted, so the width it is
-			// stored at buys latency rather than arithmetic.
-			//
-			// A tied checkpoint still packs its *LM head*, which is the same
-			// file tensor in the other layout (004-D7) and is a MatMul.
-			d.Precision = weights.Int8
-		}
+		// The embedding table is read a row at a time rather than contracted
+		// against, and accel registers no int4 gather, so the loader caps it at
+		// int8 however narrow the policy. A tied checkpoint still packs its LM
+		// head, which is the same file tensor in the other layout (004-D7) and
+		// is a MatMul.
+		d.Gathered = s.Kind == model.KindEmbedding
 		decls = append(decls, d)
 	}
 	// The log is stderr when the policy is Auto and silent when it is not.

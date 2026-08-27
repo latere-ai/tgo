@@ -98,8 +98,8 @@ func TestParsePrecision(t *testing.T) {
 	// would silently run a precision the user did not ask for, which is what
 	// specs/001-weights.md §5 exists to prevent.
 	_, err := parsePrecision("fp16")
-	if err == nil || !strings.Contains(err.Error(), "is not f16, int8 or auto") {
-		t.Fatalf("parsePrecision(fp16) error = %v, want one naming the three", err)
+	if err == nil || !strings.Contains(err.Error(), "is not f16, int8, int4 or auto") {
+		t.Fatalf("parsePrecision(fp16) error = %v, want one naming the four", err)
 	}
 	if !errors.Is(err, errUsage) {
 		t.Error("the refusal does not wrap errUsage")

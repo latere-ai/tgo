@@ -42,7 +42,7 @@ func TestParseBenchRefusals(t *testing.T) {
 		{"a negative warm-up", []string{"--warmup", "-1", "d"}, "--warmup is -1"},
 		{"a prompt longer than the cache", []string{"--prompt-tokens", "4000", "--tokens", "200", "d"},
 			"more than the --context"},
-		{"an unknown precision", []string{"--precision", "q4", "d"}, "is not f16, int8 or auto"},
+		{"an unknown precision", []string{"--precision", "q4", "d"}, "is not f16, int8, int4 or auto"},
 		{"a negative temperature", []string{"--temp", "-1", "d"}, "temperature -1 is negative"},
 		{"no directory", nil, "no model directory"},
 	} {

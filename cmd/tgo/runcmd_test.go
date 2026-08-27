@@ -54,7 +54,7 @@ func TestParseRunRefusals(t *testing.T) {
 		{"top-p above one", []string{"--top-p", "2", "d"}, "outside [0, 1]"},
 		{"top-k above the kernel", []string{"--top-k", "500", "d"}, "clamps silently"},
 		{"negative temperature", []string{"--temp", "-0.5", "d"}, "negative or NaN"},
-		{"a bad precision", []string{"--precision", "q8", "d"}, "is not f16, int8 or auto"},
+		{"a bad precision", []string{"--precision", "q8", "d"}, "is not f16, int8, int4 or auto"},
 		{"zero context", []string{"--context", "0", "d"}, "--context is 0"},
 		{"two directories", []string{"a", "b"}, "one model directory"},
 	} {

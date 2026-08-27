@@ -104,7 +104,9 @@ run flags:
   --top-p P           nucleus mass in (0, 1]; 0 disables the stage
   --repeat-penalty R  divisive repetition penalty; 1 is none (default 1)
   --seed S            the sampler seed (default 0)
-  --precision P       f16, int8 or auto (default auto)
+  --precision P       f16, int8, int4 or auto (default auto). Narrowing is a
+                      last resort: auto takes the widest that fits, and int4 is
+                      not uniformly more accurate than int8
   --context C         KV cache capacity in positions (default 4096)
   --device D          auto, cpu or metal (default auto)
 
@@ -116,7 +118,9 @@ bench flags:
   --json out.json     write the machine-readable record here
   --temp T            sampling temperature; 0 is greedy (default 0)
   --seed S            the sampler seed (default 0)
-  --precision P       f16, int8 or auto (default auto)
+  --precision P       f16, int8, int4 or auto (default auto). Narrowing is a
+                      last resort: auto takes the widest that fits, and int4 is
+                      not uniformly more accurate than int8
   --context C         KV cache capacity in positions (default 4096)
   --device D          auto, cpu or metal (default auto)
 
@@ -124,7 +128,9 @@ serve flags:
   --addr host:port    where to listen (default 127.0.0.1:11434, loopback)
   --public            allow a bind that is not loopback; this server has no
                       authentication, so it is a flag rather than a default
-  --precision P       f16, int8 or auto (default auto)
+  --precision P       f16, int8, int4 or auto (default auto). Narrowing is a
+                      last resort: auto takes the widest that fits, and int4 is
+                      not uniformly more accurate than int8
   --context C         KV cache capacity per session, in positions (default 4096)
   --sessions N        pooled sessions: how many requests generate at once, and
                       under --prefix-cache session how many conversations keep
@@ -147,7 +153,9 @@ serve flags:
 
 info flags:
   --context C         KV cache capacity to price (default 4096)
-  --precision P       f16, int8 or auto (default auto)
+  --precision P       f16, int8, int4 or auto (default auto). Narrowing is a
+                      last resort: auto takes the widest that fits, and int4 is
+                      not uniformly more accurate than int8
   --budget B          device bytes the weights may occupy; 0 asks the device
   --device D          auto, cpu or metal (default auto)
 

@@ -68,8 +68,11 @@ func parsePrecision(s string) (weights.Precision, error) {
 		return weights.F16, nil
 	case "int8":
 		return weights.Int8, nil
+	case "int4":
+		return weights.Int4, nil
 	default:
-		return weights.Auto, fmt.Errorf("%w: precision %q is not f16, int8 or auto", errUsage, s)
+		return weights.Auto, fmt.Errorf("%w: precision %q is not f16, int8, int4 or auto",
+			errUsage, s)
 	}
 }
 

@@ -139,6 +139,20 @@ type Tensor struct {
 	// wrong on a real checkpoint (specs/004-model-graph.md §5).
 	HeadDim int
 
+	// Gathered says this tensor is read a row at a time rather than contracted
+	// against, which is what an embedding table is.
+	//
+	// It caps the tensor at [Int8] however narrow the policy: accel registers
+	// no int4 gather -- QuantGatherRows reads a quant plane and a scale plane
+	// and has no three-plane form -- so a gathered tensor at int4 is a refusal
+	// at record time rather than a load that works.
+	//
+	// It is a property of the tensor and not a policy, which is why it is
+	// declared here rather than pinned by a caller: two callers pinning it
+	// separately is two rules that have to agree, and the footprint `tgo info`
+	// prints is computed by one of them and the load by the other.
+	Gathered bool
+
 	// Precision overrides the load policy for this tensor. The case it exists
 	// for is holding the embedding table and the LM head at F16 — the largest
 	// tensors in a small model and the most sensitive to quantization — while
@@ -464,7 +478,14 @@ func planLoad(repo *safetensors.Repo, decls []Tensor, policy Precision, budget i
 		case Inherit, Auto:
 			flexF16 += f16Bytes(n)
 			flexInt8 += int8Bytes(n)
-			flexInt4 += int4Bytes(n)
+			// A gathered tensor cannot pack, so at int4 it costs what int8
+			// costs. Counted here rather than corrected later, because this
+			// sum is what the choice is made against.
+			if d.Gathered {
+				flexInt4 += int8Bytes(n)
+			} else {
+				flexInt4 += int4Bytes(n)
+			}
 		default:
 			return loadPlan{}, fmt.Errorf("weights: %q declares precision %v, which is not "+
 				"F16, Int8, Int4 or the zero value", d.Name, d.Precision)
@@ -517,6 +538,9 @@ func planLoad(repo *safetensors.Repo, decls []Tensor, policy Precision, budget i
 		plan.precision[i] = d.Precision
 		if d.Precision == Inherit || d.Precision == Auto {
 			plan.precision[i] = rep.Chosen
+		}
+		if d.Gathered && plan.precision[i] == Int4 {
+			plan.precision[i] = Int8
 		}
 	}
 	return plan, nil

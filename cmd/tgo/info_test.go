@@ -55,7 +55,8 @@ func TestKVCacheArithmetic(t *testing.T) {
 func TestFootprintCountsTheTiedPlaneTwice(t *testing.T) {
 	b := syntheticBuilder(t)
 	specs := b.Weights()
-	params, planes, f16, int8 := footprint(specs)
+	params, planes, f16, int8, int4 := footprint(specs)
+	_ = int4
 
 	// The tied plane is the one checkpoint tensor two specs name.
 	count := make(map[string]int, len(specs))
@@ -88,7 +89,7 @@ func TestFootprintCountsTheTiedPlaneTwice(t *testing.T) {
 		for _, d := range sp.Shape {
 			n *= int64(d)
 		}
-		want += planeBytes(sp.Kind, n, false)
+		want += planeBytes(sp.Kind, n, weights.F16)
 	}
 	if f16 != want {
 		t.Errorf("f16 footprint = %d, want %d", f16, want)
@@ -112,20 +113,35 @@ func TestFootprintCountsTheTiedPlaneTwice(t *testing.T) {
 // asking for int8 would appear to shrink weights that do not shrink.
 func TestGainsArePricedAtF32AtEveryPrecision(t *testing.T) {
 	const n = 1024
-	for _, narrow := range []bool{false, true} {
-		if got := planeBytes(model.KindGain, n, narrow); got != n*4 {
-			t.Errorf("a %d-element gain costs %d bytes at narrow=%t, want %d", n, got, narrow, n*4)
+	for _, p := range []weights.Precision{weights.F16, weights.Int8, weights.Int4} {
+		if got := planeBytes(model.KindGain, n, p); got != n*4 {
+			t.Errorf("a %d-element gain costs %d bytes at %v, want %d", n, got, p, n*4)
 		}
 	}
-	if got := planeBytes(model.KindProjection, n, false); got != n*2 {
+	if got := planeBytes(model.KindProjection, n, weights.F16); got != n*2 {
 		t.Errorf("an f16 projection costs %d bytes, want %d", got, n*2)
 	}
-	if got := planeBytes(model.KindProjection, n, true); got >= n*2 || got <= n {
+	if got := planeBytes(model.KindProjection, n, weights.Int8); got >= n*2 || got <= n {
 		t.Errorf("an int8 projection costs %d bytes, want a quant plus its scales", got)
+	}
+	// int4 is under half of int8 and over the codes alone: (n+7)/8 words of
+	// four bytes is n/2, plus a scale and a zero per group.
+	i8 := planeBytes(model.KindProjection, n, weights.Int8)
+	if got := planeBytes(model.KindProjection, n, weights.Int4); got >= i8 || got <= n/2 {
+		t.Errorf("an int4 projection costs %d bytes against int8's %d, want it between "+
+			"the %d bytes of codes and int8", got, i8, n/2)
+	}
+	// The embedding is gathered and accel registers no int4 gather, so at int4
+	// it costs what int8 costs. A footprint that priced it at int4 would print
+	// a number the device never has.
+	if got, want := planeBytes(model.KindEmbedding, n, weights.Int4),
+		planeBytes(model.KindEmbedding, n, weights.Int8); got != want {
+		t.Errorf("a gathered plane costs %d bytes at int4 and %d at int8; it cannot "+
+			"pack, so the two are the same number", got, want)
 	}
 	// A partial block gets its own scale, which is why the count is per plane
 	// and not over a summed element count.
-	if got, want := planeBytes(model.KindEmbedding, 1, true), int64(1+2); got != want {
+	if got, want := planeBytes(model.KindEmbedding, 1, weights.Int8), int64(1+2); got != want {
 		t.Errorf("a one-element int8 plane costs %d bytes, want %d", got, want)
 	}
 }
@@ -195,7 +211,7 @@ func TestFootprintMatchesTheLoader(t *testing.T) {
 	// A budget the f16 footprint fits, and one it does not, so that both arms
 	// of decision 5 are compared against the loader rather than only the arm
 	// this machine happens to take.
-	_, _, f16, int8 := footprint(specs)
+	_, _, f16, int8, int4 := footprint(specs)
 	for _, budget := range []int64{f16 * 2, f16 - 1} {
 		set, err := weights.Load(dev, repo, decls, weights.Options{Budget: budget, Log: io.Discard})
 		if err != nil {
@@ -204,11 +220,12 @@ func TestFootprintMatchesTheLoader(t *testing.T) {
 		got := set.Report()
 		set.Close()
 
-		if got.F16Bytes != f16 || got.Int8Bytes != int8 {
-			t.Errorf("the loader reports f16=%d int8=%d and this package computed f16=%d int8=%d",
-				got.F16Bytes, got.Int8Bytes, f16, int8)
+		if got.F16Bytes != f16 || got.Int8Bytes != int8 || got.Int4Bytes != int4 {
+			t.Errorf("the loader reports f16=%d int8=%d int4=%d and this package "+
+				"computed f16=%d int8=%d int4=%d", got.F16Bytes, got.Int8Bytes,
+				got.Int4Bytes, f16, int8, int4)
 		}
-		mine, err := choosePrecision(weights.Auto, f16, int8, budget)
+		mine, err := choosePrecision(weights.Auto, f16, int8, int4, budget)
 		if err != nil {
 			t.Fatalf("choosePrecision: %v", err)
 		}
@@ -278,7 +295,7 @@ func TestChoosePrecision(t *testing.T) {
 		{"asked for int8", weights.Int8, 10, "int8", "asked for"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := choosePrecision(tc.policy, f16, int8, tc.budget)
+			got, err := choosePrecision(tc.policy, f16, int8, int8/2, tc.budget)
 			// Asking for f16 or int8 above the budget is the caller's
 			// statement and not auto's decision, so only int8 above the budget
 			// is refused; f16 above it is a choice the loader will attempt.
@@ -308,22 +325,33 @@ func TestChoosePrecision(t *testing.T) {
 }
 
 // TestChoosePrecisionRefusesAModelThatCannotFit walks decision 5 to its end: a
-// model too large at int8 has no precision left, and the refusal names both
-// numbers rather than loading and failing part way through.
+// model too large at the narrowest form has no precision left, and the refusal
+// names both numbers rather than loading and failing part way through.
 func TestChoosePrecisionRefusesAModelThatCannotFit(t *testing.T) {
-	_, err := choosePrecision(weights.Auto, 4000, 2200, 2000)
+	// int4 is now the last resort, so it is int4 that has to not fit.
+	_, err := choosePrecision(weights.Auto, 4000, 2200, 2100, 2000)
 	if err == nil {
-		t.Fatal("a model larger than the budget at int8 was accepted")
+		t.Fatal("a model larger than the budget at int4 was accepted")
 	}
-	for _, want := range []string{"no supported precision fits", "2.15 KiB", "1.95 KiB"} {
+	for _, want := range []string{"no supported precision fits", "int4", "2.05 KiB", "1.95 KiB"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
 		}
 	}
+
+	// And int8 not fitting is no longer the end: auto narrows again, and only
+	// refuses when the narrowest does not fit either.
+	got, err := choosePrecision(weights.Auto, 4000, 2200, 1900, 2000)
+	if err != nil {
+		t.Fatalf("a model that fits at int4 was refused: %v", err)
+	}
+	if got.Chosen != weights.Int4.String() {
+		t.Errorf("auto chose %s for a model that fits only at int4", got.Chosen)
+	}
 }
 
 func TestChoosePrecisionRefusesAnUnknownPolicy(t *testing.T) {
-	if _, err := choosePrecision(weights.Precision(99), 1, 1, 1); err == nil {
+	if _, err := choosePrecision(weights.Precision(99), 1, 1, 1, 1); err == nil {
 		t.Fatal("an unknown precision policy was accepted")
 	}
 }

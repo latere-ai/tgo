@@ -40,7 +40,7 @@ func benchFlagSet() (*flag.FlagSet, *benchFlags) {
 		batch:        fs.Int("batch", 1, "sequences in flight"),
 		warmup:       fs.Int("warmup", 8, "steps to run and discard before measuring"),
 		jsonPath:     fs.String("json", "", "write the machine-readable record here"),
-		precision:    fs.String("precision", "auto", "f16, int8 or auto"),
+		precision:    fs.String("precision", "auto", "f16, int8, int4 or auto"),
 		context:      fs.Int("context", defaultContext, "KV cache capacity in positions"),
 		temp:         fs.Float64("temp", 0, "sampling temperature; 0 is greedy"),
 		seed:         fs.Uint64("seed", 0, "the sampler seed"),

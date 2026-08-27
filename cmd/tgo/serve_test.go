@@ -158,7 +158,7 @@ func TestParseServeRefusals(t *testing.T) {
 		{"an address with no port", []string{"--addr", "127.0.0.1", "d"}, "is not a host:port address"},
 		{"an empty context", []string{"--context", "0", "d"}, "--context is 0"},
 		{"a negative context", []string{"--context", "-1", "d"}, "--context is -1"},
-		{"an unknown precision", []string{"--precision", "bf16", "d"}, "not f16, int8 or auto"},
+		{"an unknown precision", []string{"--precision", "bf16", "d"}, "not f16, int8, int4 or auto"},
 		{"an unknown device", []string{"--device", "cuda", "d"}, "not auto, cpu or metal"},
 		{"a public address without the flag", []string{"--addr", "0.0.0.0:8080", "d"}, "--public"},
 		{"the wildcard without the flag", []string{"--addr", ":8080", "d"}, "--public"},
