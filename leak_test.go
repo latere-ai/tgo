@@ -59,7 +59,7 @@ func drain(t *testing.T, s *Scheduler, slot int) []float32 {
 // ordinary serving case.
 func TestAChunkedPrefillPublishesOnlyWhatItWrote(t *testing.T) {
 	t.Parallel()
-	m := openSynthetic(t, WithPrefixCache(CacheProcess, 32*CacheBlock))
+	m := openSynthetic(t, WithPrefixCache(CacheProcess, 16*CacheBlock))
 	b, err := m.NewBatch(2)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestAChunkedPrefillPublishesOnlyWhatItWrote(t *testing.T) {
 		}
 	})
 
-	prompt := promptIDs(11, 6*CacheBlock)
+	prompt := promptIDs(11, 3*CacheBlock)
 	if _, err := b.Admit(0, prompt, "tenant", CacheBlock); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestAChunkedPrefillPublishesOnlyWhatItWrote(t *testing.T) {
 // over a token nobody computed.
 func TestAFailedStepRecordsNoToken(t *testing.T) {
 	t.Parallel()
-	m := openSynthetic(t, WithPrefixCache(CacheProcess, 8*CacheBlock))
+	m := openSynthetic(t, WithPrefixCache(CacheProcess, 5*CacheBlock))
 	b, err := m.NewBatch(2)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestAFailedStepRecordsNoToken(t *testing.T) {
 	if _, err := b.Admit(0, p0, "s", CacheBlock); err != nil {
 		t.Fatal(err)
 	}
-	p1 := promptIDs(2, 6*CacheBlock)
+	p1 := promptIDs(2, 3*CacheBlock)
 	if _, err := b.Admit(1, p1, "s", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestAFailedStepRecordsNoToken(t *testing.T) {
 // Both answers stay fluent.
 func TestAdmitDoesNotWriteIntoTheCallersPrompt(t *testing.T) {
 	t.Parallel()
-	m := openSynthetic(t, WithPrefixCache(CacheProcess, 64*CacheBlock))
+	m := openSynthetic(t, WithPrefixCache(CacheProcess, 16*CacheBlock))
 	s, err := m.NewScheduler(2, SchedulerOptions{Chunk: CacheBlock, Reserve: CacheBlock})
 	if err != nil {
 		t.Fatal(err)
