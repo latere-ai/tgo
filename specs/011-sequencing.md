@@ -465,11 +465,37 @@ wrong answer. That closure simplified tgo's padding back to what a single
 sequence does.
 
 **Remaining**: [008 §9](008-scheduler.md)'s three — sampling on the batched
-path, a queue in front of admission, and the server actually using it —
-[018](018-hybrid-models.md)'s graph, and
+path, a queue in front of admission, and the server actually using it — the rest
+of [018](018-hybrid-models.md)'s graph, and
 [§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps. The f16 block
 pool is **blocked upstream** on [C24](010-conformance.md); tgo's half of it is
 built.
+
+### 2026-08-27 — Wave 11: the gated delta layer
+
+[018 §6](018-hybrid-models.md)'s first row, which everything else in that spec
+waits on. `nn.LinearAttention` composes accel's scan and is checked against a
+float64 reference written from §2's equation rather than from the block.
+
+**Two accel defects, and one claim of this tree's own that had to go.**
+
+- **[C25](010-conformance.md) is the worst kind and cost the most.** Declaring a
+  *reshaped* result as a graph output produces all zeros — correct shape, no
+  refusal, `Contiguous` in front does not help. An hour went into a recurrence
+  that was correct; the operator's result unreshaped matched the reference to
+  eleven digits. Reproduced on two harnesses,
+  [accel#26](https://github.com/golang-design/accel/issues/26), with the
+  argument that `Output` holds the tensor and can see it is a view.
+- **[C26](010-conformance.md) is [§4.1](018-hybrid-models.md)'s claim withdrawn.**
+  "The depthwise convolution composes" was probed against a padded input
+  *port*; a real layer convolves a projection the graph computes, and there is
+  nothing to pad it with. Recorded rather than filed, because a `Concat` is the
+  wrong ask: a convolution running a token at a time needs the K−1 inputs of the
+  *previous step*, so it wants the rolling state §6 already lists.
+
+**The block returns accel's shape rather than the one every projection around it
+has**, and that is C25's consequence rather than a preference: flattening would
+put a `Reshape` in every caller's path whether they output the result or not.
 
 ### 2026-08-27 — Wave 10: four-bit weights
 
