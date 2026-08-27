@@ -39,30 +39,25 @@ type blockPool struct {
 	pool         *prefix.Pool
 	keys, values *accel.Buffer
 
-	// dtype is what the states hold.
+	// dtype is what the states hold: **f16**.
 	//
-	// f32, and it wants to be f16.
+	// [C5](specs/010-conformance.md) is the argument. The key and value states
+	// are the largest allocation a serving process has after the weights and
+	// the only one that scales with *both* concurrency and context, so halving
+	// them is twice the blocks, twice the prefixes worth keeping, and twice the
+	// batch size worth reaching -- [008 §1](specs/008-scheduler.md) makes the
+	// throughput ceiling proportional to 1/A.
 	//
-	// [C5](specs/010-conformance.md) is the argument for narrowing: the key and
-	// value states are the largest allocation a serving process has after the
-	// weights and the only one that scales with *both* concurrency and context,
-	// so halving them is twice the blocks, twice the prefixes worth keeping,
-	// and twice the batch size worth reaching
-	// ([008 §1](specs/008-scheduler.md) makes the ceiling proportional to 1/A).
-	// It is defensible where a narrow *accumulator* would not be: K and V are
-	// operands and the score accumulates in f32 whatever they are stored as.
+	// It is defensible where a narrow *accumulator* would not be. K and V are
+	// operands: the score accumulates in f32 whatever they are stored as, which
+	// is the trade MatMul already makes.
 	//
-	// [C24](specs/010-conformance.md) is why it is f32 anyway. accel selects
-	// the f16 prefill kernel and then overwrites the selection whenever a page
-	// table is supplied, and there is no paged f16 prefill kernel to select --
-	// so the narrow cache is reachable for a contiguous single sequence and for
-	// nobody who pages, which is the opposite of who wants it. A pool is paged
-	// by construction and every conversation begins with a prefill, so there is
-	// no configuration that reaches around it (accel#25).
-	//
-	// It is a field rather than a constant because the other half is built:
-	// nn.Attention casts the scattered rows, model.GraphSpec carries the width,
-	// and the day the kernel lands this line is the change.
+	// It is a field rather than a constant because it was f32 for six hours.
+	// [C24](specs/010-conformance.md) was accel selecting the f16 prefill
+	// kernel and then overwriting the selection whenever a page table was
+	// supplied -- and a pool is paged by construction, so the narrow cache was
+	// reachable for a contiguous single sequence and for nobody who shares
+	// blocks. Filed as accel#25 and fixed upstream the same day.
 	dtype accel.DType
 
 	// positions is the pool's capacity, blocks*CacheBlock, and is the row
@@ -90,7 +85,7 @@ func newBlockPool(dev *accel.Device, c *model.Config, scope prefix.Scope,
 	if err != nil {
 		return nil, fmt.Errorf("tgo: %w", err)
 	}
-	bp := &blockPool{pool: p, positions: blocks * CacheBlock, dtype: accel.F32}
+	bp := &blockPool{pool: p, positions: blocks * CacheBlock, dtype: accel.F16}
 
 	n := c.NumLayers * bp.positions * c.NumKVHeads * c.HeadDim
 	for _, a := range []struct {

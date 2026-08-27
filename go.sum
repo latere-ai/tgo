@@ -8,6 +8,8 @@ golang.design/x/accel v0.0.0-20260827081124-19225bb6a0d6 h1:1sx6Ff/SUxwr7ekkYv6F
 golang.design/x/accel v0.0.0-20260827081124-19225bb6a0d6/go.mod h1:eLMrBJbg3V0yKC5qnnSpMyU0Dt1059gmXEGVCYBVjRA=
 golang.design/x/accel v0.0.0-20260827102126-e09ec54bda1d h1:IFrLFCplj/vY7Kl5tTs7M06ChgcYoDix1uE3yvLJ8lQ=
 golang.design/x/accel v0.0.0-20260827102126-e09ec54bda1d/go.mod h1:eLMrBJbg3V0yKC5qnnSpMyU0Dt1059gmXEGVCYBVjRA=
+golang.design/x/accel v0.0.0-20260827130011-b99f0cfd4576 h1:tj9iKvd5poU3KgXRv44bKlE9XbUDRT39xDl+xZ/SIV4=
+golang.design/x/accel v0.0.0-20260827130011-b99f0cfd4576/go.mod h1:eLMrBJbg3V0yKC5qnnSpMyU0Dt1059gmXEGVCYBVjRA=
 golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
 golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
 latere.ai/x/pkg v0.41.0 h1:MeXiO6vxBLniOVxbQgWrGckFbZLg249ElYj1ifmcMS4=

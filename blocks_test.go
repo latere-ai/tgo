@@ -7,6 +7,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"golang.design/x/accel"
 )
 
 // blockPoolCap is the shared pool's size, in positions. Whole blocks, and large
@@ -361,5 +363,45 @@ func TestARefusedSharedRequestLeavesTheConversationReusable(t *testing.T) {
 		t.Fatalf("the turn after a refused request reused %d positions of a %d-token "+
 			"opening; the refusal cost the conversation what it had already paid for",
 			two.usage.CachedPromptTokens, len(first))
+	}
+}
+
+// TestTheSharedPoolIsNarrow is C5's whole argument, asserted rather than
+// commented.
+//
+// The key and value states are the largest allocation a serving process has
+// after the weights, and the only one that scales with *both* concurrency and
+// context. Halving them is twice the blocks, twice the prefixes worth keeping,
+// and — by 008 §1, where the throughput ceiling is proportional to 1/A — twice
+// the batch size worth reaching.
+//
+// It cost six hours rather than a wave: C24 was accel selecting the f16 prefill
+// kernel and then overwriting the selection whenever a page table was supplied,
+// and a pool is paged by construction.
+func TestTheSharedPoolIsNarrow(t *testing.T) {
+	t.Parallel()
+	m := sharedModel(t)
+	if got := m.blocks.dtype; got != accel.F16 {
+		t.Fatalf("the shared pool holds %v; a narrow cache is twice the blocks for "+
+			"the same bytes, which is what C5 closed for", got)
+	}
+	for _, b := range []*accel.Buffer{m.blocks.keys, m.blocks.values} {
+		if got := b.DType(); got != accel.F16 {
+			t.Errorf("a pool state is %v", got)
+		}
+	}
+	// And the graph is told, or ScatterRows would refuse the pair split apart:
+	// one kernel reads the rows and writes the state, so an f16 state needs
+	// f16 rows.
+	s := session(t, m, WithSessionContext(sharedCap))
+	if got := s.cacheDType(); got != accel.F16 {
+		t.Fatalf("a pooled session records a %v cache while the pool holds f16", got)
+	}
+	// A session that owns its cache keeps f32: it is sized to one conversation,
+	// so halving it buys one conversation's memory rather than the allocation
+	// that grows with concurrency.
+	own := session(t, openSynthetic(t), WithSessionContext(cacheCap))
+	if got := own.cacheDType(); got != accel.F32 {
+		t.Fatalf("an unshared session records a %v cache", got)
 	}
 }

@@ -308,26 +308,26 @@ func Register() []Row {
 		Cannot: "a **paged prefill over an f16 cache**",
 		Specs:  []string{"010", "030"},
 		Issue:  25,
-		State:  Open,
-		Cost: "an f32 block pool, so [C5](#2-the-register)'s halving is " +
-			"unreachable for anyone who pages — which is everyone who shares " +
-			"blocks, because a pool is addressed through a page table by " +
-			"construction. `Attention` selects the f16 prefill kernel and then " +
-			"overwrites the selection when `Pages` is set, and there is no " +
-			"paged f16 variant. tgo's half is built: `nn.Attention` casts the " +
-			"scattered rows and `GraphSpec` carries the width, so this is one " +
-			"line the day the kernel lands",
+		State:  Closed,
+		Cost: "none needed. `AttentionPrefillPagedF16` landed against this " +
+			"report **the same day**, and the shared block pool is f16: twice " +
+			"the blocks, twice the prefixes worth keeping, and by " +
+			"[008 §1](008-scheduler.md) twice the batch size worth reaching. It " +
+			"was [C5](#2-the-register)'s pattern a third time — each of " +
+			"\"`ScatterRows`, prefill and paged decode all take f16\" is true " +
+			"and the combination was not, because the width and the paging " +
+			"selected separately. accel fixed the *pair*",
 	}, {
 		ID:     "C25",
 		Cannot: "declare a **reshaped** result as a graph output",
 		Specs:  []string{"007", "025"},
 		Issue:  26,
-		State:  Open,
-		Cost: "return the operator's own shape and reshape at the call site, " +
-			"where the result is an operand rather than an output. It is the " +
-			"**accept-and-silently-wrong** class §2 calls the worst kind: " +
-			"correct shape, no refusal, all zeros, and `Contiguous` in front " +
-			"does not help",
+		State:  Closed,
+		Cost: "none needed, and this row is why §2's rule is about values. It " +
+			"was the **accept-and-silently-wrong** class: correct shape, no " +
+			"refusal, all zeros, and `Contiguous` in front did not help. It " +
+			"cost an hour inside a recurrence that was correct, and it would " +
+			"have cost a wrong answer in production rather than a red build",
 	}, {
 		ID:     "C26",
 		Cannot: "a **depthwise causal convolution** over rows the graph computed",

@@ -356,126 +356,118 @@ func groupRange(w []float32, group int) float32 {
 	return mx - mn
 }
 
-// TestC24APagedPrefillOverAnF16CacheHasNoKernel is the gap the f16 block pool
-// walked into, and it is [C5](#2-the-register)'s pattern a third time.
+// TestC24APagedPrefillReadsAnF16Cache closes C24, which blocked the f16 block
+// pool for the six hours between filing it and accel shipping the kernel.
 //
-// C5 closed on "ScatterRows, prefill and paged decode all take f16", and each
-// of those is true. The combination is not: `Attention` selects
-// `AttentionPrefillF16Kernel` for a narrow cache and then, two lines later,
-// overwrites it with `AttentionPrefillPagedKernel` whenever a page table is
-// supplied — and there is no paged f16 variant to select.
+// The row was [C5](#2-the-register)'s pattern a third time. C5 closed on
+// "ScatterRows, prefill and paged decode all take f16" and each of those is
+// true; the *combination* was not, because `Attention` selected the f16 prefill
+// kernel and then overwrote the selection whenever a page table was supplied.
+// A pool is paged by construction, so the narrow cache was reachable for a
+// contiguous single sequence and for nobody who shares blocks — the opposite of
+// who wants it, since concurrency is what forces paging.
 //
-// It is not a wrong answer: accel's compile catches the mismatch. But it
-// catches it as a *binding* complaint about slot widths, from a plan the
-// caller assembled correctly, rather than as a refusal naming the missing
-// kernel — so a consumer reads it as their own mistake.
-//
-// It blocks the f16 block pool outright. A shared pool is addressed through a
-// page table by construction ([016 §3](016-prefix-cache.md)) and every
-// conversation begins with a prefill, so there is no configuration that reaches
-// the narrow cache and skips this.
-func TestC24APagedPrefillOverAnF16CacheHasNoKernel(t *testing.T) {
+// accel chose the pair rather than a fourth kernel name: the width and the
+// paging select together now.
+func TestC24APagedPrefillReadsAnF16Cache(t *testing.T) {
 	const qHeads, kvHeads, headDim, block, maxPages = 4, 2, 4, 4, 4
 	const rows, tokens = block * maxPages, 3
 
-	// Its own device rather than the rig's, and the reason is the second
-	// finding: a Compile that fails leaves device children behind. The rig
-	// closes the device in a cleanup and accel refuses to close one with live
-	// children, so a probe that deliberately compiles something invalid cannot
-	// use it. This closes the runtime and lets the device go, which is what a
-	// caller who hit this error would have to do too.
-	dev := Device(t, Tier1)
-	rt, err := tensor.NewRuntime(dev)
-	if err != nil {
-		t.Fatalf("runtime: %v", err)
-	}
-	b := rt.NewBuilder("c24")
+	kf := spread(rows*kvHeads*headDim, 13)
+	vf := spread(rows*kvHeads*headDim, 29)
+	qf := spread(tokens*qHeads*headDim, 7)
 
-	shape := tensor.Shape{rows, kvHeads, headDim}
-	k := tensor.NewState(b, tensor.StateDesc{Name: "k", DType: accel.F16, Shape: shape})
-	v := tensor.NewState(b, tensor.StateDesc{Name: "v", DType: accel.F16, Shape: shape})
-	q := tensor.Input(b, tensor.ValueDesc{
-		Name: "q", DType: accel.F32, Shape: tensor.Shape{tokens, qHeads, headDim}})
-	pages := tensor.Input(b, tensor.ValueDesc{
-		Name: "pages", DType: accel.U32, Shape: tensor.Shape{1, maxPages}})
-	lengths := tensor.Input(b, tensor.ValueDesc{
-		Name: "lengths", DType: accel.U32, Shape: tensor.Shape{1}})
-	tensor.Scalar(b, tensor.ScalarDesc{Name: "scale", Kind: tensor.ScalarF32})
-	tensor.Scalar(b, tensor.ScalarDesc{Name: "base", Kind: tensor.ScalarU32})
+	// The f16 cache, and the values widened back: what the kernel reads is what
+	// the f32 run must be compared against, or the comparison is charged for
+	// the storage error twice.
+	half := func(v []float32) ([]uint16, []float32) {
+		bits := make([]uint16, len(v))
+		back := make([]float32, len(v))
+		for i, x := range v {
+			h := accel.ToFloat16(x)
+			bits[i], back[i] = h.Bits(), h.F32()
+		}
+		return bits, back
+	}
+	kb, kw := half(kf)
+	vb, vw := half(vf)
 
-	out := tensor.Attention(b, q, k, v, tensor.AttentionOptions{
-		Lengths: lengths, Pages: pages, Block: block,
-		ScaleName: "scale", BaseName: "base",
-	})
-	if err := b.Err(); err != nil {
-		t.Fatalf("the step was refused at record time: %v\n"+
-			"If accel has grown a named refusal for this, the row is narrower "+
-			"than it says and the probe should assert the new message", err)
+	run := func(t *testing.T, dt accel.DType) []float32 {
+		t.Helper()
+		r := New(t, Tier1, Options{Eps: 1e-6, Label: "c24"})
+		shape := tensor.Shape{rows, kvHeads, headDim}
+		k := tensor.NewState(r.G.B, tensor.StateDesc{Name: "k", DType: dt, Shape: shape})
+		v := tensor.NewState(r.G.B, tensor.StateDesc{Name: "v", DType: dt, Shape: shape})
+		if dt == accel.F16 {
+			r.bind("k", accel.F16, len(kb), kb)
+			r.bind("v", accel.F16, len(vb), vb)
+		} else {
+			r.F32("k", kw)
+			r.F32("v", vw)
+		}
+		q := r.Input("q", accel.F32, tensor.Shape{tokens, qHeads, headDim})
+		r.F32("q", qf)
+		pages := r.Input("pages", accel.U32, tensor.Shape{1, maxPages})
+		r.U32("pages", []uint32{0, 1, 2, 3})
+		lengths := r.Input("lengths", accel.U32, tensor.Shape{1})
+		r.U32("lengths", []uint32{tokens})
+		r.ScalarF32("scale", 0.5)
+		r.ScalarU32("base", 0)
+		got, plan := r.Run(tensor.Attention(r.G.B, q, k, v, tensor.AttentionOptions{
+			Lengths: lengths, Pages: pages, Block: block,
+			ScaleName: "scale", BaseName: "base",
+		}))
+		for _, s := range plan.Selections() {
+			if s.Op == "Attention" {
+				t.Logf("C24: a %v cache selected %s", dt, s.Kernel)
+			}
+		}
+		return got
 	}
 
-	// It records. It does not compile, and the message is about a binding
-	// rather than about a kernel that does not exist.
-	tensor.Output(b, "out", out)
-	plan, err := b.Compile(rt, tensor.CompileOptions{Label: "c24"})
-	if err == nil {
-		_ = plan.Close()
-		_ = rt.Close()
-		t.Fatal("a paged prefill over an f16 cache compiled; if the paged f16 kernel " +
-			"has landed, this row is closed and the block pool can be narrow")
+	var narrow, wide []float32
+	t.Run("an f16 cache", func(t *testing.T) { narrow = run(t, accel.F16) })
+	t.Run("the same values at f32", func(t *testing.T) { wide = run(t, accel.F32) })
+
+	// The f32 run reads the *widened* f16 values, so the two see the same
+	// numbers and differ only in how they were stored. What is left is the
+	// accumulation order, which is the same kernel shape either way.
+	if len(narrow) != len(wide) {
+		t.Fatalf("%d values narrow and %d wide", len(narrow), len(wide))
 	}
-	for _, want := range []string{"f32", "f16"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("the failure does not mention %q, so it is not the width "+
-				"mismatch this row is about: %v", want, err)
+	Compare(t, narrow, f64(wide), AccumF32(headDim).And(AccumF32(tokens)).
+		And(Magnitude(magnitudeOf(vw))), "a paged prefill over an f16 cache")
+}
+
+// f64 widens a device result so it can stand as a reference.
+func f64(v []float32) []float64 {
+	out := make([]float64, len(v))
+	for i, x := range v {
+		out[i] = float64(x)
+	}
+	return out
+}
+
+// magnitudeOf is the largest absolute value a weighted sum could combine, which
+// is what the relative terms apply to when the sum itself can cancel.
+func magnitudeOf(v []float32) float64 {
+	worst := 0.0
+	for _, x := range v {
+		if a := math.Abs(float64(x)); a > worst {
+			worst = a
 		}
 	}
-	if cerr := rt.Close(); cerr != nil {
-		t.Logf("C24, second finding: the runtime does not close cleanly after a "+
-			"failed compile: %v", cerr)
-	}
-	t.Logf("C24: %v", err)
-
-	// The control: the same step over an f32 cache compiles, so what fails
-	// above is the width and not the paging.
-	t.Run("an f32 cache compiles", func(t *testing.T) {
-		pagedPrefillF32(t)
-	})
+	return worst
 }
 
-func pagedPrefillF32(t *testing.T) {
-	const qHeads, kvHeads, headDim, block, maxPages = 4, 2, 4, 4, 4
-	const rows, tokens = block * maxPages, 3
-	r2 := New(t, Tier1, Options{Eps: 1e-6, Label: "c24-paged-prefill-f32"})
-	shape2 := tensor.Shape{rows, kvHeads, headDim}
-	k2 := tensor.NewState(r2.G.B, tensor.StateDesc{Name: "k", DType: accel.F32, Shape: shape2})
-	v2 := tensor.NewState(r2.G.B, tensor.StateDesc{Name: "v", DType: accel.F32, Shape: shape2})
-	r2.F32("k", make([]float32, rows*kvHeads*headDim))
-	r2.F32("v", make([]float32, rows*kvHeads*headDim))
-	q2 := r2.Input("q", accel.F32, tensor.Shape{tokens, qHeads, headDim})
-	r2.F32("q", spread(tokens*qHeads*headDim, 7))
-	p2 := r2.Input("pages", accel.U32, tensor.Shape{1, maxPages})
-	r2.U32("pages", []uint32{0, 1, 2, 3})
-	l2 := r2.Input("lengths", accel.U32, tensor.Shape{1})
-	r2.U32("lengths", []uint32{tokens})
-	r2.ScalarF32("scale", 0.5)
-	r2.ScalarU32("base", 0)
-	r2.Run(tensor.Attention(r2.G.B, q2, k2, v2, tensor.AttentionOptions{
-		Lengths: l2, Pages: p2, Block: block,
-		ScaleName: "scale", BaseName: "base",
-	}))
-}
-
-// TestC25AReshapedOutputIsSilentlyZero is the row §2 calls the worst kind:
-// correct shape, no refusal, and the wrong numbers.
+// TestC25AReshapedResultReachesItsOutputPort closes C25, and it is the row this
+// register exists for: it was **accept-and-silently-wrong**, not a refusal.
 //
-// `Reshape` is a view, and views are ordinary operands everywhere else in this
-// API — `Attention` reshapes q, `Contiguous(Slice(...))` is the documented way
-// to feed `MatMul` a slice. A reader has no reason to expect that the last node
-// before an output is the one place a view is not accepted.
-//
-// It cost an hour of looking at a recurrence that was correct. The block that
-// found it returns accel's own shape now and reshapes at the call site.
-func TestC25AReshapedOutputIsSilentlyZero(t *testing.T) {
+// Declaring a reshaped result as a graph output produced all zeros — correct
+// shape, no error, and `Contiguous` in front did not help. It cost an hour
+// inside a recurrence that was correct, and it would have cost a wrong answer
+// in production rather than a red build.
+func TestC25AReshapedResultReachesItsOutputPort(t *testing.T) {
 	sum := func(t *testing.T, wrap func(*tensor.Builder, *tensor.Tensor) *tensor.Tensor) []float32 {
 		t.Helper()
 		r := New(t, Tier1, Options{Eps: 1e-6, Label: "c25"})
@@ -502,24 +494,23 @@ func TestC25AReshapedOutputIsSilentlyZero(t *testing.T) {
 		})
 	})
 
-	nonzero := func(v []float32) bool {
-		for _, x := range v {
-			if x != 0 {
-				return true
-			}
-		}
-		return false
-	}
-	if !nonzero(direct) {
-		t.Fatal("the direct output is zero, so this fixture measures nothing")
-	}
+	// A reshape moves no element, so all three hold the same values in the same
+	// order whatever shape the port declares. Asserted elementwise rather than
+	// as "not all zeros", because zeros were the symptom and agreeing with the
+	// direct output is the property.
 	for _, c := range []struct {
 		what string
 		got  []float32
 	}{{"a reshaped output", reshaped}, {"a reshaped output made contiguous", packed}} {
-		if nonzero(c.got) {
-			t.Errorf("%s produced values; if accel has learned to write one, or to "+
-				"refuse it at record time, this row is closed", c.what)
+		if len(c.got) != len(direct) {
+			t.Fatalf("%s produced %d values and the direct one %d",
+				c.what, len(c.got), len(direct))
+		}
+		for i := range direct {
+			if c.got[i] != direct[i] {
+				t.Fatalf("%s: element %d is %v and the direct output is %v; a reshape "+
+					"moves no element", c.what, i, c.got[i], direct[i])
+			}
 		}
 	}
 	t.Logf("C25: the same sum is %v direct and %v reshaped", direct[1], reshaped[1])
