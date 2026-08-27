@@ -131,7 +131,7 @@ where the code is, what diverged, and what is open.
 | [000](000-decisions.md) | record | the thirteen decisions everything is built on | — |
 | [001](001-weights.md) | implemented | safetensors, dtype conversion, transposition, quantization policy | §5.4's error-bound check is test-time only; four sections the code has and the spec does not |
 | [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode | reference id vectors, which need a machine with huggingface `tokenizers` |
-| [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn | seven rules the code follows and the spec does not state |
+| [003](003-chat-template.md) | complete | chat rendering, and why user text cannot forge a turn | — |
 | [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass | — |
 | [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs | where §7's capacity refusal lives; the shared-pool addressing is undescribed |
 | [006](006-sampling.md) | complete | composition order, and reproducibility as a stream | — |

@@ -305,6 +305,60 @@ it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
 remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
 and it blocks no milestone.
 
+### 2026-08-28 — Wave 12: the specs say what the code does
+
+No new capability. This wave closed the gap between what shipped and what is
+written down, which [§1](#1-the-rule-that-fixes-the-order)'s rule makes a
+first-class piece of work rather than tidying: a spec that describes a design
+the code no longer has is worse than no spec, because a contributor trusts it.
+
+**Four specs reached `complete`**, each by writing what was already built rather
+than by narrowing what was open:
+
+- [003](003-chat-template.md) carried seven rules the renderer followed and the
+  spec did not state. §3.3 gives the tools preamble byte for byte, §3.4 the
+  Hugging Face `tojson` escaping Go's encoder does not produce, §3.5 the
+  keep-thinking rule as a formula over the whole open round with its four
+  whitespace trims, and §3.6 the refusal contract — which also became
+  003-D9, so the second refuse-versus-warn choice in that spec has an id.
+- [015](015-structured-output.md) documented three deliberate narrowings and the
+  one behaviour that widens: `G` admits every number RFC 8259 does, so `1e999`
+  is admissible JSON a `float64` field cannot hold.
+- [016](016-prefix-cache.md) documented `Reserve`, the `Grow`/`Commit`/
+  `Publish(written)` split, `Batch` and the hash encoding, and settled §6 — the
+  cold-against-warm divergence stays asserted here rather than becoming a
+  [010 §3](010-conformance.md) row, because accel could not act on the number.
+- [016 §8](016-prefix-cache.md)'s one uncovered row is covered:
+  `TestPartialHitAttentionAtANonzeroBase` asserts a partial hit's attention
+  **output** against the float64 oracle at causal base 9, and against a cold
+  prefill of the whole prompt. Binding the base at 0 and changing nothing else
+  fails at 160 elements of 160.
+
+**[009-D14](009-server.md)'s footprint gate was the one decision row with
+nothing behind it, and now has `internal/depcheck`.** It compares
+`go list -deps ./server` against an allowlist carrying a reason per prefix. The
+list is pinned both ways: a module nobody allowed fails, and so does an
+allowance the build stopped using, because a stale prefix can only make the gate
+greener while silently admitting whatever later appears under that path.
+
+**[C27](010-conformance.md) is confirmed without the 50 GiB download.**
+[024 §4.4](024-qwen3-5-architecture.md) had priced the answer as a safetensors
+header read on a checkpoint nobody has. ollama's public `qwen3_5` implementation
+answers it: `in_proj_ba` is permuted through a permutation of length
+$2 H_v$, the native layout is beta then alpha per key head, and the whole width
+reaches the gated delta kernel unreduced. The gate has a head axis, so the layer
+is inexpressible on `tensor.LinearAttention` as it stands. Reported on
+[accel#27](https://github.com/golang-design/accel/issues/27).
+
+**Two gates were added because two bugs got past every existing one.** A pipe
+inside a table cell splits the row — in a code span too — and the drift test for
+the generated register compared the generated line against the file and found
+them equal, because both carried it. `Validate` now rejects a pipe in any cell
+that renders, and `speclint.CheckTables` checks every table in the tree. And a
+semicolon inside a mermaid `Note` is a statement separator, so a sequence
+diagram in [016](016-prefix-cache.md) did not parse and nothing but rendering it
+would have said so.
+
 ### 2026-08-26 — Wave 7: the server reuses a conversation's prefix
 
 [019](019-session-affinity.md), and it closes what Wave 6 opened: the prefix

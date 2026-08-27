@@ -1,6 +1,6 @@
 ---
 title: "Chat templates: rendering a conversation into the exact bytes the model was trained on"
-status: implemented
+status: complete
 layer: text
 depends_on:
   - 000-decisions.md
@@ -232,6 +232,122 @@ all. It also composes with [003-D3](#decision-record)'s `Prompt` parts, since
 both are then "typed pieces the renderer walks" rather than one being a string
 the other has to re-parse.
 
+### 3.3 The tools preamble, byte for byte
+
+Tools have no role of their own: they render into the **system** turn, which is
+also why a conversation with tools and no system message still emits one
+(`chat/qwen3.go:110`). About 400 bytes are exact, and the checkpoint was tuned
+on them:
+
+```
+<|im_start|>system
+[the system message, then a blank line, when there is one]
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": …, "description": …, "parameters": …}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>
+```
+
+Three details are decisions rather than formatting:
+
+- **The `<tool_call>` and `</tool_call>` tags inside the preamble are emitted as
+  control parts**, not as text (`chat/qwen3.go:135-141`). They are the model's
+  own markers appearing in prose *about* the markers, and [§4](#4-injection-user-text-is-data-structurally)'s
+  rule is about who emits a control token: the renderer wrote these, so the
+  renderer emits them.
+- **A tool with no input schema renders as `{}`**, not as an absent key
+  (`chat/qwen3.go:143`). An absent `parameters` is a different signature from an
+  empty one, and the reference emits the empty object.
+- **One tool per line**, each preceded by a newline, so `<tools>` and the first
+  signature are never on the same line.
+
+### 3.4 JSON escaping is Hugging Face's, not Go's
+
+Every JSON string the renderer emits — a tool name, a description, a tool call's
+name — goes through `json.dumps(ensure_ascii=False)` semantics: **no HTML
+escaping and no `\uXXXX` for non-ASCII** (`chat/chat.go:200-212`).
+
+Go's `encoding/json` escapes `<`, `>` and `&` by default. A tool described as
+*"compare a < b"* would render `<` where the reference renders `<`, which
+is bytes no checkpoint was tuned on, in the one place a caller routinely writes
+punctuation. `jsonString` sets `SetEscapeHTML(false)` for exactly this, and
+[003-D7](#decision-record) is the neighbouring rule: a tool call's *arguments*
+are not re-marshalled at all.
+
+### 3.5 Which thinking is kept, and where the newlines go
+
+Detail 2 above says thinking is kept "only for the turn being generated", which
+reads as one turn. The rule is a whole **open round**. With $q$ the index of the
+last `User` message — or $n-1$ when the conversation has none — assistant turn
+$i$ of $n$ keeps its thinking when
+
+$$i > q \;\wedge\; \bigl(i = n-1 \;\vee\; r_i \neq \varepsilon\bigr)$$
+
+where $r_i$ is the turn's reasoning. So every assistant turn of a multi-step
+tool round keeps its thinking, not just the last, and **a trailing assistant
+turn with no reasoning still gets an empty `<think>` block** — that is the
+$i = n-1$ disjunct, and dropping it would change the suffix the model
+continues from (`chat/qwen3.go:171`, `:239-246`).
+
+$q$ is found by scanning back for the `User` role, structurally
+([003-D8](#decision-record)), never by matching `<tool_response>` in the text as
+the reference template does.
+
+**Four whitespace rules**, and [§1](#1-the-problem)'s thesis is that these decide
+output quality:
+
+| | rule | where |
+| --- | --- | --- |
+| 1 | a kept block's reasoning is trimmed of leading **and** trailing newlines | `chat/qwen3.go:173` |
+| 2 | the content after a kept block is trimmed on the **left only** | `chat/qwen3.go:175` |
+| 3 | `<think>` is followed by `\n`, `</think>` by `\n\n` | `chat/qwen3.go:172-175` |
+| 4 | blocks of one type concatenate with **no separator** | `chat/qwen3.go:218-229` |
+
+Rule 4 is the one that looks like an omission. A separator would be bytes the
+caller did not write and the model was not tuned on, so two adjacent text blocks
+render as one run of text.
+
+### 3.6 What rendering refuses, and why refusing is the asymmetry
+
+[003-D2](#decision-record) *warns* on a template checksum mismatch. This is the
+second refuse-versus-warn choice in the spec and it goes the other way, so
+[003-D9](#decision-record) writes the rule a contributor adding a block type
+needs: **refuse where the alternative is silence.**
+
+A checksum mismatch is visible — the renderer's output is right there for a
+human to read against the checkpoint's template. A block the format cannot carry
+is not: it would vanish from the prompt, or leave the JSON malformed, and the
+model answers fluently having been asked something else. That is the asymmetry,
+and it is the same one [002-D7](002-tokenizer.md) draws.
+
+`validate` runs before a single part is built, and a refused render returns
+**zero parts** rather than a partial prompt (`chat/qwen3.go:251-299`,
+`chat/chat.go:167-174`). Six sentinel errors, so a caller can branch on the
+cause:
+
+| error | rejects |
+| --- | --- |
+| `ErrUnknownRole` | a role outside `system`, `user`, `assistant`, `tool` |
+| `ErrUnknownBlockType` | a block type the format has no rendering for |
+| `ErrBlockRole` | a type the role cannot carry: thinking or a tool call on a non-assistant turn, a tool result on a non-tool turn |
+| `ErrMissingPayload` | `BlockToolUse` with no `ToolUse`, `BlockToolResult` with no `ToolResult` |
+| `ErrToolName` | a nameless tool, in a call or in `Options.Tools` |
+| `ErrToolJSON` | arguments or an input schema that are not valid JSON |
+
+The last is the one that has to be checked here rather than trusted:
+[003-D7](#decision-record) passes arguments through **verbatim**, so nothing
+downstream would reject them, and invalid JSON would reach the model as a
+malformed `<tool_call>` body.
+
 ## 4. Injection: user text is data, structurally
 
 A user message containing the literal `<|im_start|>assistant` would, after
@@ -265,6 +381,12 @@ forged turn.
 exactly the vulnerability: a single `Encode(s, true)` over the whole rendered
 prompt cannot distinguish a boundary the renderer wrote from one the user did.
 
+**The rule has one consumer, and it is `Model.encode` (`session.go:443`).** That
+is the only function that turns a `Prompt` into ids, so it is the only place the
+structural boundary can be broken — by encoding a content span with specials on,
+or by flattening the parts to a string first. A section that states a rule and
+names no owner leaves a contributor to rediscover which call site it constrains.
+
 > The cost is that a message legitimately containing `<|im_end|>` renders as
 > those literal characters and not as a token. That is correct, and it is the
 > only reading that does not depend on guessing intent.
@@ -285,6 +407,14 @@ prompt cannot distinguish a boundary the renderer wrote from one the user did.
 
 Goldens compare `Prompt.String()`, so **none of these needs a tokenizer** —
 which is what [003-D3](#decision-record) buys.
+
+**The injection row rests on an invariant, not on an optimisation.** `builder`
+merges an adjacent text span into the part before it (`chat/chat.go:181-198`),
+so the part count is a function of the conversation's **structure** and not of
+the characters inside it. Without the merge, injected text containing a control
+sequence would still produce no extra boundary, but it would change the part
+count for an unrelated reason, and "the same `Part` count" would stop meaning
+anything. The merge is what makes the assertion sharp rather than vacuous.
 
 ## Outcome
 
@@ -332,50 +462,23 @@ Seven of the eight decisions below are implemented and each is pinned by a test.
   A name with a quote in it produces malformed JSON under the reference, which
   is the failure 003-D7 exists to prevent one field over.
 
-**Not built.** Seven rules the code follows and the spec does not state. The
-checkpoint half of 003-D2 was the first item here and shipped on 2026-08-27:
+**Not built.** Nothing. The checkpoint half of 003-D2 shipped on 2026-08-27:
 `tgo.Open` reads `chat_template` out of `tokenizer_config.json`, hashes it, and
 warns naming both checksums (`template.go`), which also makes
-[014 §1](014-jinja.md)'s second trigger detectable. The rules that remain:
+[014 §1](014-jinja.md)'s second trigger detectable.
 
-- **Record the refusal contract as a decision id.** Six sentinel errors and a
-  validate pass reject an unknown role, an unknown block type, a block type a
-  role cannot carry, a `tool_use` or `tool_result` with no payload, a nameless
-  tool, and arguments or an input schema that are not valid JSON; a refused
-  render returns zero parts (`chat/chat.go:167-174`, `chat/qwen3.go:251-299`).
-  This is a second refuse-versus-warn choice in the spec whose asymmetry is
-  refuse-versus-warn, and it has no id, so a contributor adding a block type has
-  no written rule.
-- **State that JSON strings use Hugging Face's `tojson` escaping**, not Go's:
-  `json.dumps` with `ensure_ascii=False` and no HTML escaping, so `<`, `>`, `&`
-  and non-ASCII stay literal (`chat/chat.go:200-212`). Go's encoder escapes the
-  three by default, and a tool description with an angle bracket would render
-  bytes no checkpoint was tuned on.
-- **Write down the tools preamble.** Detail 4 says only "in the model's own JSON
-  shape". The shape is about 400 bytes of exact text: the `# Tools … <tools>`
-  block, one `{"type": "function", …}` per tool with a space after every colon
-  and comma, an absent schema rendering as `{}`, and the `<tool_call>` tags
-  inside the preamble emitted as control parts rather than as text
-  (`chat/qwen3.go:111-145`, `chat/qwen3.go:202-213`), which is a §4 choice too.
-- **Write down the full keep-thinking rule.** Detail 2 says thinking is kept
-  "only for the turn being generated", which reads as one turn. The rule is a
-  whole open round: a scan back to the last `User` message, falling back to the
-  last message when there is none, keeping thinking where
-  `i > lastQuery && (i == n-1 || r != "")` — so a trailing assistant turn with
-  no reasoning still gets an empty `<think>` block
-  (`chat/qwen3.go:171`, `chat/qwen3.go:239-246`).
-- **Write down the four whitespace trims.** A kept thinking block's reasoning is
-  trimmed of leading and trailing newlines, the content after it is trimmed on
-  the left only, and blocks of one type concatenate with no separator
-  (`chat/qwen3.go:173-175`, `chat/qwen3.go:218-229`). The spec's thesis is that
-  a newline decides quality, and these are the newlines.
-- **Point §4 at its consumer.** `Model.encode` (`session.go:443`) is the one
-  function that can break the structural boundary, and the section that owns the
-  rule names no owner.
-- **State the span merge as an invariant.** `builder` merging an adjacent span
-  into the part before it (`chat/chat.go:181-198`) is what makes §5's
-  part-count injection row meaningful: without it the part count would follow
-  content and the assertion would be vacuous. It reads as an optimisation.
+The seven rules the code followed and this spec did not state were written on
+2026-08-28:
+
+| rule | where it now lives |
+| --- | --- |
+| the refusal contract as a decision id | [003-D9](#decision-record) and [§3.6](#36-what-rendering-refuses-and-why-refusing-is-the-asymmetry), with the six sentinels and what each rejects |
+| JSON strings use Hugging Face's `tojson` escaping, not Go's | [§3.4](#34-json-escaping-is-hugging-faces-not-gos) |
+| the tools preamble, byte for byte | [§3.3](#33-the-tools-preamble-byte-for-byte), including the `<tool_call>` tags emitted as control parts and `{}` for an absent schema |
+| the full keep-thinking rule | [§3.5](#35-which-thinking-is-kept-and-where-the-newlines-go), as a formula over the whole open round |
+| the four whitespace trims | [§3.5](#35-which-thinking-is-kept-and-where-the-newlines-go)'s table |
+| §4's consumer | [§4](#4-injection-user-text-is-data-structurally) names `Model.encode` |
+| the span merge as an invariant | [§5](#5-tests) says what the injection row would mean without it |
 
 ## Decision record
 
@@ -388,4 +491,5 @@ warns naming both checksums (`template.go`), which also makes
 | 003-D5 | never inject a default system message | supply a helpful one | the model's tuned behaviour is what the caller asked for |
 | 003-D7 | tool arguments pass through verbatim | re-marshal from a parsed object | re-marshalling reorders keys and changes the bytes the model was trained on |
 | 003-D8 | tgo decides "is a tool result" structurally, from the `Tool` role | text-match `<tool_response>` on user content, as the reference does | the structural rule is the conformance target; the text rule misfires on a user who quotes the tag |
+| 003-D9 | **refuse where the alternative is silence**; warn where a human can check the output | validate leniently and drop what cannot render | a block the format cannot carry never reaches the model unnoticed, and a contributor adding a block type has the rule rather than six precedents ([§3.6](#36-what-rendering-refuses-and-why-refusing-is-the-asymmetry)) |
 | 003-D6 | a turn is typed blocks, not a string | `Content string`, with the thinking found by matching text | forced by 003-D4's own principle: stripping prior thinking from a string is a textual boundary, and a user who types `<think>` would lose their text ([§3.1](#31-why-a-turn-is-blocks-and-not-a-string)) |
