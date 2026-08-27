@@ -433,12 +433,14 @@ landed with Wave 2 on 2026-08-24, and int4 with Wave 10 on 2026-08-27
 - Norm gains never enter §2's pipeline. `nn.Graph.Gain` reads f32 and the loader
   has no f32 output, so `gains.go:40` uploads them itself.
 
-**Not built.** Open work, in the order it costs something:
+**Not built.** Open work, in the order it costs something. The first item here
+until 2026-08-27 was `arena.stage`'s missing `U32` case, which failed an int4
+load on any device without shared memory — that is, on every GPU this project
+targets and no machine it is tested on. It has one now, and with it a test that
+stages every width a weight is stored in. That second test is the one that would
+have caught it: its complement said an unknown width is refused, and nothing
+said the known ones are not, which "refuse everything" satisfies.
 
-- Give `arena.stage` a `U32` case, or refuse `Int4` in `planLoad` where the
-  arena is not mapped. Today an int4 load on a device without shared memory
-  fails at the first tensor with "no staging path for U32"
-  (`weights/device.go:167`), and `forceStaging` covers f16 and i8 only (001).
 - Test that `auto` resolves to `Int4` **and loads**, with a budget between the
   int4 and the int8 footprint. Only the refusal branch is covered (001).
 - Decide §5.4: either the loader samples blocks and checks
