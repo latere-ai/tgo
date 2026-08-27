@@ -156,7 +156,10 @@ The full-attention quarter needs nothing new:
 - `head_dim: 256` with $d/H = 213$ — a case [004 §5](004-model-graph.md) already
   refuses to infer, and reads from the config instead.
 
-## 4.1 The depthwise convolution composes, and was checked
+## 4.1 The depthwise convolution composes over a *port*, and not over a projection
+
+**This section was right about the arithmetic and wrong about where it applies**,
+and the correction is the useful part.
 
 `linear_conv_kernel_dim: 4` needs no kernel. Built against accel and run:
 
@@ -174,6 +177,28 @@ operator needs to know the convolution is causal.
 $K-1$ packing copies of a `[T, C]` tensor per layer. Across 48 linear layers
 that is real. So this is one less kernel to be *blocked on*, not one less kernel
 to *want*.
+
+### 4.1.1 The correction: the probe padded an input port, and a graph cannot
+
+`Slice(x, 0, K-1-i, T+K-1-i)` reads up to row $T+K-2$, so `x` is already
+$[T+K-1, C]$ when the slice is taken. The probe supplied that as an **input
+port** — a buffer the caller filled, with $K-1$ zero rows at the front.
+
+A real layer convolves a **projection**, which the graph computes. There is
+nothing to pad it with: `tensor` has no operator that joins two tensors along an
+axis, so the padded input cannot be built ([C26](010-conformance.md)).
+
+**A `Concat` is the wrong thing to ask for**, which is why this is recorded
+rather than filed. A convolution that runs a token at a time needs the $K-1$
+inputs of the *previous step*, not zeros — a decode step has no earlier rows in
+its own tensor at all. So the layer wants a **rolling state**: a
+`[slots, K-1+T_max, C]` `State` that each step scatters its rows into and slices
+$K$ windows out of. `ScatterRows` and `Slice` both exist, and
+[§6](#6-what-would-have-to-be-built-here-once-it-is-unblocked)'s "per-layer
+cache kind" is that state.
+
+So the convolution is not blocked and is not built: it needs the cache row of §6
+rather than an operator from accel.
 
 ## 4.2 What a recurrent state needs, which is not what a cache needs
 
@@ -220,7 +245,7 @@ legitimate and this spec becomes `deferred` with the reason — the same shape
 
 | | |
 | --- | --- |
-| `nn.LinearAttention` | over accel's scan operator, with the depthwise convolution |
+| ~~`nn.LinearAttention`~~ | **built 2026-08-27**, over accel's scan, verified against a float64 reference derived from §2's equation. The depthwise convolution is *not* in it — see [§4.1.1](#411-the-correction-the-probe-padded-an-input-port-and-a-graph-cannot) |
 | a per-layer cache kind | [005](005-kv-cache.md) gains a state per layer *type*, not one shape for all |
 | snapshot/restore for recurrent state | [016](016-prefix-cache.md) gains ollama's shape for the layers that need it |
 | the `qwen3_5` registry entry | config parsing, the weight map, the layer-type schedule |

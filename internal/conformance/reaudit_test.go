@@ -464,3 +464,63 @@ func pagedPrefillF32(t *testing.T) {
 		ScaleName: "scale", BaseName: "base",
 	}))
 }
+
+// TestC25AReshapedOutputIsSilentlyZero is the row §2 calls the worst kind:
+// correct shape, no refusal, and the wrong numbers.
+//
+// `Reshape` is a view, and views are ordinary operands everywhere else in this
+// API — `Attention` reshapes q, `Contiguous(Slice(...))` is the documented way
+// to feed `MatMul` a slice. A reader has no reason to expect that the last node
+// before an output is the one place a view is not accepted.
+//
+// It cost an hour of looking at a recurrence that was correct. The block that
+// found it returns accel's own shape now and reshapes at the call site.
+func TestC25AReshapedOutputIsSilentlyZero(t *testing.T) {
+	sum := func(t *testing.T, wrap func(*tensor.Builder, *tensor.Tensor) *tensor.Tensor) []float32 {
+		t.Helper()
+		r := New(t, Tier1, Options{Eps: 1e-6, Label: "c25"})
+		x := r.Input("x", accel.F32, tensor.Shape{3, 4})
+		y := r.Input("y", accel.F32, tensor.Shape{3, 4})
+		r.F32("x", spread(12, 7))
+		r.F32("y", spread(12, 13))
+		got, _ := r.Run(wrap(r.G.B, tensor.Add(r.G.B, x, y)))
+		return got
+	}
+
+	var direct, reshaped, packed []float32
+	t.Run("direct", func(t *testing.T) {
+		direct = sum(t, func(b *tensor.Builder, x *tensor.Tensor) *tensor.Tensor { return x })
+	})
+	t.Run("reshaped", func(t *testing.T) {
+		reshaped = sum(t, func(b *tensor.Builder, x *tensor.Tensor) *tensor.Tensor {
+			return tensor.Reshape(b, x, tensor.Shape{2, 6})
+		})
+	})
+	t.Run("reshaped then made contiguous", func(t *testing.T) {
+		packed = sum(t, func(b *tensor.Builder, x *tensor.Tensor) *tensor.Tensor {
+			return tensor.Contiguous(b, tensor.Reshape(b, x, tensor.Shape{2, 6}))
+		})
+	})
+
+	nonzero := func(v []float32) bool {
+		for _, x := range v {
+			if x != 0 {
+				return true
+			}
+		}
+		return false
+	}
+	if !nonzero(direct) {
+		t.Fatal("the direct output is zero, so this fixture measures nothing")
+	}
+	for _, c := range []struct {
+		what string
+		got  []float32
+	}{{"a reshaped output", reshaped}, {"a reshaped output made contiguous", packed}} {
+		if nonzero(c.got) {
+			t.Errorf("%s produced values; if accel has learned to write one, or to "+
+				"refuse it at record time, this row is closed", c.what)
+		}
+	}
+	t.Logf("C25: the same sum is %v direct and %v reshaped", direct[1], reshaped[1])
+}

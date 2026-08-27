@@ -318,6 +318,30 @@ func Register() []Row {
 			"scattered rows and `GraphSpec` carries the width, so this is one " +
 			"line the day the kernel lands",
 	}, {
+		ID:     "C25",
+		Cannot: "declare a **reshaped** result as a graph output",
+		Specs:  []string{"007", "025"},
+		Issue:  26,
+		State:  Open,
+		Cost: "return the operator's own shape and reshape at the call site, " +
+			"where the result is an operand rather than an output. It is the " +
+			"**accept-and-silently-wrong** class §2 calls the worst kind: " +
+			"correct shape, no refusal, all zeros, and `Contiguous` in front " +
+			"does not help",
+	}, {
+		ID:     "C26",
+		Cannot: "a **depthwise causal convolution** over rows the graph computed",
+		Specs:  []string{"025"},
+		State:  WontFix,
+		Cost: "the composition [018 §4.1](018-hybrid-models.md) records needs a " +
+			"left-padded input, and `tensor` has no operator that joins two " +
+			"tensors along an axis — the projections it convolves are produced " +
+			"*inside* the graph, so there is nothing to pad them with. Not " +
+			"filed, because a `Concat` is the wrong ask: a streaming causal " +
+			"convolution needs the K−1 inputs of the *previous step* anyway, " +
+			"so what it wants is a rolling state ([018 §6](018-hybrid-models.md)'s " +
+			"per-layer cache kind) built from `ScatterRows`, which exists",
+	}, {
 		ID:     "C20",
 		Cannot: "a decode step whose submit cost is amortised",
 		Specs:  []string{"021"},
