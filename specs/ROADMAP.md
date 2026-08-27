@@ -28,10 +28,19 @@ its own `## Outcome`, compressed. A spec at `complete` has none and is absent.
 | [011](011-sequencing.md) sequencing | it is `living`; it is never done |
 | [012](012-gguf.md) GGUF | blocked on `quant_matmul_superblock`; neither of §3's two deciding numbers has been produced, and neither needs a kernel |
 | [014](014-jinja.md) Jinja | deferred; its trigger is unmet and one half of it is undetectable until 003's checksum path exists |
-| [015](015-structured-output.md) structured output | `json_object` is accepted and reaches no grammar |
+| [015](015-structured-output.md) structured output | `json_object` is accepted and reaches no grammar; the EBNF front end is [029](029-grammar-front-ends.md), which defers regex again to a spec after it |
 | [016](016-prefix-cache.md) prefix cache | a partial hit's attention at a nonzero causal base is untested against the oracle |
 | [017](017-benchmarks.md) benchmarks | the recorder drops its oldest steps and reports quantiles anyway |
 | [018](018-hybrid-models.md) hybrid models | two blocks built; the graph is [023](023-cache-kinds.md)–[026](026-image-tokens.md) |
+
+**Three of the ten new specs judged themselves too large.**
+[022](022-batched-serving.md) §14 names three sub-scopes in order,
+[024](024-qwen3-5-architecture.md) §11 names three, and
+[029](029-grammar-front-ends.md) defers the regex front end to a spec after it.
+Each is disclosed in the spec that owns it rather than split again, because the
+sub-scopes share one design and splitting the design across three files costs
+more than it saves. Read those sections before starting either spec: a *Large*
+below is one spec, not one sitting.
 
 ## 2. Qwen3-4B dense
 
@@ -125,9 +134,12 @@ starting item 2 — it is a day's difference at the start and a rewrite at the e
    3, 4 and 5. It also carries the slots axis the convolution state does not
    have: what shipped is one slot, so single-sequence 27B does not need the axis
    and **serving** 27B does.
-3. **The `qwen3_5` architecture** ([024](024-qwen3-5-architecture.md)). *Large.*
-   Blocked on 1 and 2. Nothing in `model/` reads `layer_types` or
-   `full_attention_interval` today.
+3. **The `qwen3_5` architecture** ([024](024-qwen3-5-architecture.md)). *Large*,
+   and its §11 cuts itself into three passes: the `nn` prerequisites plus a
+   checkpoint read that settles the field names and the gate question; then
+   config, schedule, refusals, weight map and registry, which is executable
+   today; then the block wired end to end. Blocked on 1 and 2. Nothing in
+   `model/` reads `layer_types` or `full_attention_interval` today.
 4. **Snapshot and restore** ([025](025-recurrent-snapshot.md)). *Medium.*
    Blocked on 2. Without it a hybrid gets no prefix reuse on three layers in
    four: a recurrent state has no positional addressing, so a prefix cannot be
