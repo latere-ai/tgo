@@ -1,6 +1,6 @@
 ---
 title: "Continuous batching: slots, admission, and the ragged step that makes a mixed dispatch possible"
-status: drafted
+status: implemented
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -229,24 +229,60 @@ The first two were free because accel 043 moved per-row values onto tensors
 before tgo wrote any code. The third and fourth are decisions tgo made for
 reasons that stand on their own, and which happen to survive batching.
 
-## 8. What this spec is waiting on, and it is tgo
+## 8. Outcome
 
-Nothing upstream. The order of work is:
+Built between 2026-08-26 and 2026-08-27, in the order §8 planned: the
+page-table port, then the shared block pool, then the batched graph, then
+admission, then the policy over it.
 
-1. **The page-table port.** [004 §3](004-model-graph.md)'s port table has no
-   page table and `nn.Attention` binds no `Pages` or `Block`, so nothing in tgo
-   can pass one however capable the kernels are. `internal/prefix` is the
-   bookkeeping and has no importers. Until a `Session`'s cache is addressed
-   through a table, a slot cannot be swapped and a batch cannot be formed.
-   [016 §9](016-prefix-cache.md) is the same statement from the other side.
-2. **Then slots and admission**, which are §2 and §3 and are pure policy over
-   the port above.
-3. **Then the ragged step**, which is a shape change on a graph that already
-   pages.
+| section | what shipped |
+| --- | --- |
+| §2 slots | `Batch`: one set of ports for the whole dispatch, `PortExtents` and `PortLast` beside the widened `Lengths` and `Pages`. Verified by a batch of three producing what three single steps produce, bit for bit, on a permuted page table |
+| §3 admission | `prefix.Request.Reserve`, so $\lceil (T+R)/B \rceil$ blocks are taken together or not at all. `Scheduler.Admit` distinguishes "no slot" from "the pool cannot hold this", because a server that reports one number for both is the one §3 warns about |
+| §4 eviction | `Scheduler.Evict`, last-arrived-first, preferring a slot mid-prefill at equal arrival — 008-D2 makes eviction a recompute, and recomputing a prefill nobody has read costs no latency a caller was promised |
+| §5 chunked prefill | `nextStep` mixes a chunk with the decodes beside it in one dispatch. Measured on the device: 8 prompt tokens and 2 decodes, one step |
 
-Each is a wave. None of them is blocked.
+**The policy is a pure function over integers and is tested without a device.**
+`nextStep` and `victim` decide from slot state alone, so every case is
+microseconds and the cases can be the ones that matter rather than the ones a
+forward-pass fixture can afford. What the device tests carry is the mix and the
+values, and the values are asserted against real sessions.
 
-## 9. What tgo does now
+**Three defects, none of which a value test on its own would have found.**
+
+- **A batched step padded rows that belonged to no sequence.** A single
+  sequence's bucketed prefill pads with rows whose slot is the cache capacity
+  and lets `ScatterRows` drop them; in a batch those rows index one past the
+  offsets array — another sequence's cache on a GPU, read back fluently. That
+  is [C23](010-conformance.md), filed as
+  [accel#24](https://github.com/golang-design/accel/issues/24), and the padding
+  is charged to a real sequence's extent instead.
+- **`Admit` leased the prompt and `Step` leased it again**, so the lease chained
+  its block hashes over `prompt+prompt` — hashes naming blocks that hold only
+  `prompt`. The logits of the step that caused it are correct, so nothing
+  downstream reports it; the lease's own length is what the test asserts.
+- **A returned logits slice outlived what it described.** The first draft
+  aliased one shared readback, and the test written minutes later broke the rule
+  and compared stale numbers, which read as a batching bug. A lifetime nobody
+  can keep is not a lifetime.
+
+## 9. What is not built
+
+- **Sampling on the batched path.** `Scheduler.Step` returns logits and the
+  caller feeds the token, which keeps [006](006-sampling.md)'s policy where it
+  lives. The readback is $B \times V$ floats per step, and
+  [C3/C6](010-conformance.md)'s `tensor.Sample` is the answer to it —
+  [006-D1](006-sampling.md) makes tgo's host path the *reference* for accel's
+  device-side one, so which of the two the batched loop runs is a decision with
+  a measurement attached and not a detail.
+- **A queue in front of admission.** `Admit` refuses rather than waits, and
+  [008-D9](#decision-record) says [019](019-session-affinity.md)'s `Pool`
+  becomes that queue.
+- **The server does not use it.** `tgo serve` pools sessions; a scheduler over
+  a batch is the thing that would replace them, and it needs the two above
+  first.
+
+## 10. What tgo does now
 
 Holds one named, skipping test per [010](010-conformance.md) register row, each
 naming the accel spec that owns it. [C1](010-conformance.md) and

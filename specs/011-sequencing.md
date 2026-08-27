@@ -369,13 +369,47 @@ Over the wire, two different conversations sharing an opening turn: the second
 reuses what the first paid for, and a third under a `cache_salt` reuses nothing.
 No session-scoped cache produces that at any pool size.
 
-**Remaining**: [008](008-scheduler.md) §2 and §3 — slots and admission — which
-are now pure policy over a graph that pages, and
-[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps. One smaller
-debt is named rather than hidden: `Pool.route` still asks `Session.reusable`,
-which returns zero outside the session scope, so under a process pool a request
-goes to the coldest session and the blocks do the sharing. Nothing is lost, and
-[008-D9](008-scheduler.md) is where routing learns to ask the pool.
+**Remaining after Wave 8**: [008](008-scheduler.md), which Wave 9 built. One
+smaller debt is named rather than hidden: `Pool.route` still asks
+`Session.reusable`, which returns zero outside the session scope, so under a
+process pool a request goes to the coldest session and the blocks do the
+sharing. Nothing is lost, and [008-D9](008-scheduler.md) is where routing learns
+to ask the pool.
+
+### 2026-08-27 — Wave 9: several conversations in one step
+
+[008](008-scheduler.md), which was `blocked` from the day it was written and is
+`implemented`. [§8](008-scheduler.md) is what shipped, section by section;
+what is worth recording here is the shape of the work and what it cost.
+
+**The order was the page-table port, the shared pool, the batched graph, then
+the policy** — the order 008 §8 planned, and each step's test was the same
+shape: a batch of N must produce what N single steps produce, bit for bit, and
+the page tables are permutations because an identity table passes whether the
+kernel reads it or not.
+
+**The mix is the deliverable.** A chunked prefill and the decodes beside it are
+one dispatch, measured at 8 prompt tokens and 2 decodes in one step. That is
+what makes chunking recover throughput rather than only bound latency: the
+weights are read once for the chunk and its passengers together.
+
+**The policy is a pure function and is tested without a device.** `nextStep` and
+`victim` decide from slot state alone, so the cases are the ones that matter
+rather than the ones a forward-pass fixture can afford. It is the first part of
+this tree where the cheap test and the thorough test are the same test.
+
+**Three defects, and none of them had a symptom a value test would catch.** A
+batched step padded rows belonging to no sequence, which on a GPU is another
+sequence's cache read back fluently — [C23](010-conformance.md), filed as
+[accel#24](https://github.com/golang-design/accel/issues/24). `Admit` leased the
+prompt and `Step` leased it again, chaining block hashes over `prompt+prompt`
+while the step's own logits stayed correct. And a returned logits slice outlived
+what it described, which the author's own test broke within minutes — a lifetime
+nobody can keep is not a lifetime.
+
+**Remaining**: [008 §9](008-scheduler.md)'s three — sampling on the batched
+path, a queue in front of admission, and the server actually using it — and
+[§2.3](#23-what-is-missing-that-no-spec-covers)'s unspecced gaps.
 
 ### 2026-08-26 — Wave 6: structured output is reachable from a request
 

@@ -78,7 +78,7 @@ teaches nobody why the obvious thing was not done.
 | [005](005-kv-cache.md) | drafted | the contiguous KV cache, and what it costs |
 | [006](006-sampling.md) | drafted | composition order, and reproducibility as a stream |
 | [007](007-engine.md) | drafted | sessions, plans, buckets, the decode loop |
-| [008](008-scheduler.md) | drafted | continuous batching: slots, admission, eviction |
+| [008](008-scheduler.md) | implemented | continuous batching: slots, admission, eviction, chunked prefill |
 | [009](009-server.md) | drafted | three wire dialects over one neutral request |
 | [010](010-conformance.md) | drafted | **what tgo proves about accel**, and the register of gaps |
 | [011](011-sequencing.md) | living | build order, and what actually landed |
@@ -101,12 +101,16 @@ conversation. [011 §2](011-sequencing.md) is the order,
 [011 §2.1](011-sequencing.md) is what is gated upstream, and
 [011 §4](011-sequencing.md) is where outcomes are recorded as they land.
 
-What it is not yet is a server that batches: requests interleave rather than run
-in one step, so total throughput is close to what one conversation gets. That is
-[008](008-scheduler.md), and as of 2026-08-27 the page-table port it named as
-its prerequisite is built — so what is left of it is §2 and §3, slots and
-admission, which are pure policy over a graph that pages.
-[008 §8](008-scheduler.md) is the order that work goes in.
+**The engine batches.** `Model.NewScheduler` puts a chunked prefill and the
+decodes beside it in one dispatch, so the weights are read once for all of them
+— [008 §8](008-scheduler.md) is what shipped and
+[008 §9](008-scheduler.md) is what did not.
+
+What is not yet true is that `tgo serve` uses it: the server pools sessions, and
+a scheduler over a batch is what would replace them. It needs two things first,
+both named in §9 — sampling on the batched path, which is a decision with a
+measurement attached rather than a detail, and a queue in front of admission,
+which [008-D9](008-scheduler.md) makes [019](019-session-affinity.md)'s `Pool`.
 
 The one thing to know before reading further: **no spec in this tree is blocked
 upstream.** accel closed fifteen of the eighteen gaps tgo filed, including the
