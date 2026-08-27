@@ -298,7 +298,7 @@ is the pool, and 019 §8.1 has the measurement.
 
 Every one is host-side logic — the map, the refcounts, the eviction — plus a
 small device test for the reuse itself. No weights. Each row names the test that
-covers it; the one row with no test is marked as such.
+covers it, and every row has one.
 
 | test | what it catches | covered by |
 | --- | --- | --- |
@@ -310,16 +310,29 @@ covers it; the one row with no test is marked as such.
 | eviction never frees a block at refcount > 0 | §5 | `internal/prefix/prefix_test.go:330` |
 | a seeded completion is identical cold and warm | §6 | `prefixcache_test.go:460` |
 | `session` scope: two sessions with the same prefix do not share | §7 | `internal/prefix/scope_test.go:8` |
-| a partial hit's attention **output** matches the host oracle, not merely its `base` value | §9 — asserting the base is what let C13 pass | **no test** |
+| a partial hit's attention **output** matches the host oracle, not merely its `base` value | §9 — asserting the base is what let C13 pass | `internal/conformance/prefixbase_test.go:53` |
 | concurrent identical-prefix inserts keep one block, under `-race` | §10.4 | `internal/prefix/concurrent_test.go:12` |
 | **the identical prompt submitted twice** returns the same completion, and the second prefills exactly one token | §3.1 — the case the chat path cannot produce | `prefixcache_test.go:197` |
 | **a request refused after the rewind leaves the session's history intact** | a rejected request must not silently truncate the conversation it was rejected from | `prefixcache_test.go:430` |
 
-**The uncovered row is the one that would catch the failure §9 records.** The
-only `oracle.Attention` call in the tree is `model/graph_rig_test.go:360` at
-causal base 0, and `internal/conformance/parity_test.go:334` binds base 0 and
-asserts only that the graph compiled — which is the failure mode the row exists
-to warn about. The Outcome names it as open.
+**Every row is covered, and the last one to be was the one that would catch the
+failure §9 records.** Until 2026-08-28 the only `oracle.Attention` call in the
+tree was `model/graph_rig_test.go:360` at causal base 0, and
+`internal/conformance/parity_test.go:334` bound base 0 and asserted only that the
+graph compiled — which is the failure mode the row exists to warn about.
+
+`TestPartialHitAttentionAtANonzeroBase` binds the shape a partial hit produces:
+a cache holding all 14 rows of the prompt, queries for the last 5 only, and
+`BaseName` at 9. It asserts twice. Against a float64 reference at
+`causalBase = 9`, which is what catches a mask taken against the query index
+instead — binding the base at 0 and leaving everything else alone makes it fail
+at 160 elements of 160, worst case 2.7 against a budget of 3.6e-06. And against
+the same rows of a **cold** prefill of the whole prompt, which is "a warm
+request produces the same tokens as a cold one" one layer below the tokens.
+
+The prefix and suffix lengths are 9 and 5: coprime, and neither a multiple of
+the head count or the head dimension, so a kernel that confused one length for
+another is caught rather than agreeing by arithmetic accident.
 
 ## 9. What accel gives, verified by value
 
@@ -589,16 +602,15 @@ a hundred tests cover it across `internal/prefix`, `prefixcache_test.go`,
   with session "ab" and no salt. Each is built and tested; each is undocumented
   here.
 
-**Not built.** Three things, and none of them is the pool. First, the missing
-test: a partial hit's attention **output** at a nonzero causal base compared
-against `internal/oracle.Attention`, which is §8's one uncovered row and the row
-[C13](010-conformance.md) was recorded as passing without — the only
-`oracle.Attention` call in the tree is `model/graph_rig_test.go:360` at base 0,
-and `internal/conformance/parity_test.go:334` binds base 0 and asserts only that
-the graph compiled. Second, §6's cold-against-warm divergence measurement, which
-is still an open decision: either a new row in [010 §3](010-conformance.md), or
+**Not built.** Two things, and neither is the pool. §8's uncovered row is
+covered as of 2026-08-28: `TestPartialHitAttentionAtANonzeroBase` asserts a
+partial hit's attention **output** against `internal/oracle.Attention` at
+causal base 9, and against a cold prefill of the whole prompt.
+
+First, §6's cold-against-warm divergence measurement, which is still an open
+decision: either a new row in [010 §3](010-conformance.md), or
 an amendment to §6 saying the property is asserted in `prefixcache_test.go`
-rather than reported. Third, sections in this spec for the four undocumented
+rather than reported. Second, sections in this spec for the four undocumented
 mechanisms above — `Reserve`, the `Grow`/`Commit`/`Publish(written)` split,
 `Batch`, and the hash encoding — which is what stands between this status and
 `complete`. Owned elsewhere: [025](025-recurrent-snapshot.md) extends this
