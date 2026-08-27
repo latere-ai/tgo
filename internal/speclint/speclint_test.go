@@ -51,6 +51,38 @@ func TestTheTreeIsWellFormed(t *testing.T) {
 	report(t, "decision records", CheckDecisionRecords(specs))
 	report(t, "index", CheckIndex(specs, read(t, "README.md")))
 	report(t, "outcomes", CheckOutcomes(specs, read(t, "011-sequencing.md")))
+	report(t, "tables", CheckTables(specs))
+}
+
+// TestABrokenTableIsCaughtWhereverThePipeIs is CheckTables' negative control.
+//
+// The case that motivated it is the third: a pipe inside a code span, which
+// looks quoted and is not. Markdown splits the row anyway, so the table renders
+// with an extra column and every cell after the pipe shifts one to the right --
+// and nothing else in the tree notices, because the file is exactly what its
+// generator produced.
+func TestABrokenTableIsCaughtWhereverThePipeIs(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		want       int
+	}{
+		{"a sound table", "| a | b |\n| --- | --- |\n| 1 | 2 |\n", 0},
+		{"a bare pipe in a cell", "| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n", 1},
+		{"a pipe inside a code span", "| a | b |\n| --- | --- |\n| 1 | `[x | y]` |\n", 1},
+		{"an escaped pipe is content", "| a | b |\n| --- | --- |\n| 1 | `<\\|im_end\\|>` |\n", 0},
+		{"a short row is caught too", "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 |\n", 1},
+		{"two tables, each with its own width",
+			"| a | b |\n| --- | --- |\n| 1 | 2 |\n\n| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n", 0},
+		{"a pipe in a fenced block is not a table",
+			"```\n| a | b | c |\n```\n", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bad := CheckTables([]Spec{{File: "x.md", Body: c.body}})
+			if len(bad) != c.want {
+				t.Errorf("CheckTables reported %d findings, want %d: %v", len(bad), c.want, bad)
+			}
+		})
+	}
 }
 
 func TestTheRegisterIsWellFormed(t *testing.T) {

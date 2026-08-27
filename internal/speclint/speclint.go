@@ -495,3 +495,66 @@ func CheckRegisterCitations(specs []Spec, rows map[string]bool) []string {
 	}
 	return bad
 }
+
+// cells counts the cells in a markdown table row.
+//
+// The row is bounded by a leading and a trailing pipe, so splitting on
+// unescaped pipes gives the cells plus one empty on each end. Go's regexp has
+// no lookbehind, so the escape is handled by hiding `\|` before the split.
+func cells(row string) int {
+	hidden := strings.ReplaceAll(row, `\|`, "\x00")
+	return len(strings.Split(strings.TrimSpace(hidden), "|")) - 2
+}
+
+// separator reports whether a row is a table's `| --- | --- |` rule.
+var separator = regexp.MustCompile(`^\|[\s:|-]+\|$`)
+
+// fence matches the start or end of a code block.
+var fence = regexp.MustCompile("^\\s*```")
+
+// CheckTables reports table rows whose cell count disagrees with their header.
+//
+// A pipe inside a cell splits the row, and markdown breaks it inside a code
+// span just the same -- `[a | b]` in a cell renders as two cells and shifts
+// every column after it. Nothing else notices: the build passes, the spec
+// renders, and the table says something other than what was written. It reached
+// specs/010-conformance.md §2 once, through a generator whose drift test
+// compared the generated line against the file and found them equal, because
+// both carried the pipe.
+//
+// The fix at a call site is `\|`, which this counts as content.
+func CheckTables(specs []Spec) []string {
+	var bad []string
+	for _, s := range specs {
+		var header string
+		var headerAt, width int
+		inFence := false
+		for i, line := range strings.Split(s.Body, "\n") {
+			n := i + 1
+			if fence.MatchString(line) {
+				inFence = !inFence
+				header = ""
+				continue
+			}
+			t := strings.TrimSpace(line)
+			if inFence || !strings.HasPrefix(t, "|") || !strings.HasSuffix(t, "|") {
+				header = ""
+				continue
+			}
+			if header == "" {
+				header, headerAt, width = t, n, cells(t)
+				continue
+			}
+			if separator.MatchString(t) {
+				continue
+			}
+			if got := cells(t); got != width {
+				bad = append(bad, fmt.Sprintf(
+					"%s:%d has %d cells and its header at :%d has %d. A pipe "+
+						"inside a cell splits the row, in a code span too; "+
+						"write it as \\| or without one", s.File, n, got, headerAt, width))
+			}
+		}
+	}
+	return bad
+}
