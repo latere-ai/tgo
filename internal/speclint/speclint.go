@@ -332,14 +332,13 @@ func CheckOutcomes(specs []Spec, sequencing string) []string {
 		default:
 			continue
 		}
-		if !strings.Contains(s.Body, "## Outcome") &&
-			!strings.Contains(s.Body, ". Outcome") {
+		if section := outcome(s.Body); section == "" {
 			bad = append(bad, fmt.Sprintf("%s: status is %q and there is no Outcome "+
 				"section; a status that says the code landed and a body that still "+
 				"says \"would\" are two claims and only one of them is checked",
 				s.File, s.Status))
 		} else {
-			bad = append(bad, checkNotBuilt(s)...)
+			bad = append(bad, checkNotBuilt(s, section)...)
 		}
 		if s.Status == "complete" && !strings.Contains(sequencing, "]("+s.File+")") {
 			bad = append(bad, fmt.Sprintf("%s: status is complete and 011 does not "+
@@ -357,10 +356,35 @@ func CheckOutcomes(specs []Spec, sequencing string) []string {
 // parts specs/README.md defines put it.
 var notBuilt = regexp.MustCompile(`\*\*Not built\.?\*\*:?\s+(\S+)`)
 
+// outcomeHeading matches the Outcome section's heading, numbered or not.
+var outcomeHeading = regexp.MustCompile(`(?m)^#+ (?:\d+\. )?Outcome\s*$`)
+
+// outcome returns the Outcome section alone, from its heading to the next
+// heading of the same level or the end of the body. It returns "" when there is
+// none.
+//
+// The section has to be cut out before anything reads it. Several specs write
+// "not built" about one row of a table elsewhere -- 016 marks an uncovered test
+// row, 008's hand-off section names what it did not build -- and a check that
+// searches the whole body finds one of those and reports a spec as compliant
+// whose Outcome says nothing about what is open. That is the same hole one
+// level down as a status nothing checks.
+func outcome(body string) string {
+	loc := outcomeHeading.FindStringIndex(body)
+	if loc == nil {
+		return ""
+	}
+	rest := body[loc[1]:]
+	if end := strings.Index(rest, "\n## "); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
 // checkNotBuilt reports an Outcome section with no "Not built." paragraph, and
 // one whose paragraph disagrees with the status it sits under.
-func checkNotBuilt(s Spec) []string {
-	m := notBuilt.FindStringSubmatch(s.Body)
+func checkNotBuilt(s Spec, section string) []string {
+	m := notBuilt.FindStringSubmatch(section)
 	if m == nil {
 		return []string{fmt.Sprintf("%s: the Outcome section has no \"**Not built.**\" "+
 			"paragraph; what a spec has *not* built is the part of an outcome that "+

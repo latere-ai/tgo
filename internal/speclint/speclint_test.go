@@ -287,6 +287,26 @@ func TestTheTwoBuiltStatusesAreDistinguishable(t *testing.T) {
 		})
 	}
 
+	// The paragraph is read from inside the Outcome section and nowhere else.
+	//
+	// Several specs write about something not being built well away from their
+	// Outcome — 016 marks one uncovered row of a test table, 008's hand-off
+	// section names what it gave to its children. A check that searched the
+	// whole body would find one of those and pass a spec whose Outcome says
+	// nothing about what is open, which is the hole this rule exists to close,
+	// one level down.
+	t.Run("a marker outside the section does not count", func(t *testing.T) {
+		body := record + "## 3. Handed on\n\n**Not built.** the queue; 021 has it.\n\n" +
+			"## Outcome\n\nit shipped\n\n" +
+			"## Decision record\n\n**Not built.** Nothing, said too late.\n"
+		bad := CheckOutcomes([]Spec{
+			spec(t, "013-a.md", "title: A\nstatus: implemented\nlayer: all", body),
+		}, "…[013-a.md](013-a.md)…")
+		if len(bad) != 1 || !strings.Contains(bad[0], "the part of an outcome that decays") {
+			t.Fatalf("a marker outside the Outcome section was accepted: %v", bad)
+		}
+	})
+
 	// Both statuses pass when the paragraph agrees with them, and the marker is
 	// read the same way whichever punctuation the author used.
 	for _, body := range []string{
