@@ -617,7 +617,7 @@ func (s *Session) run(rows int, toks []int, first int) ([]float32, timings, erro
 		return nil, t, err
 	}
 	start := time.Now()
-	plan, err := s.m.plan(rows, s.stateRows(), s.block())
+	plan, err := s.m.plan(rows, s.stateRows(), s.block(), 1)
 	if err != nil {
 		return nil, t, err
 	}

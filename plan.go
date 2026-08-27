@@ -50,6 +50,32 @@ func bucketsFor(capacity int) (tensor.Buckets, error) {
 	return tensor.NewBuckets(sizes...)
 }
 
+// batchBuckets is the bucket set a batch of n slots over a pool of rows
+// positions can run.
+//
+// [defaultBuckets] starts at 32 because a single sequence's prefill is the
+// thing it rounds, and a decode is one token and gets its own plan below the
+// ladder. A batch inverts that: its steady state is **every slot decoding**,
+// which is exactly n rows, and rounding that up to 32 would run a 16x wider
+// plan than the step needs at the batch sizes a single device holds.
+//
+// So n is a bucket of its own, and the default ladder above it covers the
+// prefill chunks a scheduler mixes in (008 §5). The set is small on purpose:
+// each entry is a compile, and 007-D2's argument for a logarithmic ladder is
+// unchanged by there being one more rung at the bottom.
+func batchBuckets(n, rows int) (tensor.Buckets, error) {
+	sizes := []int{n}
+	for _, b := range defaultBuckets {
+		if b > n && b < rows {
+			sizes = append(sizes, b)
+		}
+	}
+	if rows > n {
+		sizes = append(sizes, rows)
+	}
+	return tensor.NewBuckets(sizes...)
+}
+
 // plan returns the compiled plan for one step shape, compiling it at most once.
 //
 // Every step goes through the cache rather than through a memoized field.
@@ -57,16 +83,20 @@ func bucketsFor(capacity int) (tensor.Buckets, error) {
 // makes "N decode steps compile exactly one plan" a measurement rather than a
 // tautology: a plan held in a variable cannot miss, whatever §6's Weight and
 // Input ports are declared as.
-func (m *Model) plan(tokens, capacity, block int) (*tensor.Plan, error) {
+func (m *Model) plan(tokens, capacity, block, batch int) (*tensor.Plan, error) {
 	spec := model.GraphSpec{
 		Tokens:   tokens,
 		Capacity: capacity,
 		Block:    block,
+		Batch:    batch,
 		Cache:    accel.F32,
 		Stored:   m.stored,
 	}
 	label := "prefill"
-	if tokens == 1 {
+	switch {
+	case batch > 1:
+		label = "batch"
+	case tokens == 1:
 		label = "decode"
 	}
 	var recErr error
@@ -76,12 +106,12 @@ func (m *Model) plan(tokens, capacity, block int) (*tensor.Plan, error) {
 	// The recording error first: model.Record refuses a step the graph cannot
 	// hold before it records anything, and an empty graph compiles.
 	if recErr != nil {
-		return nil, fmt.Errorf("tgo: recording the %s graph at T=%d, C=%d: %w",
-			label, tokens, capacity, recErr)
+		return nil, fmt.Errorf("tgo: recording the %s graph at T=%d, C=%d, B=%d: %w",
+			label, tokens, capacity, max(batch, 1), recErr)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("tgo: compiling the %s graph at T=%d, C=%d: %w",
-			label, tokens, capacity, err)
+		return nil, fmt.Errorf("tgo: compiling the %s graph at T=%d, C=%d, B=%d: %w",
+			label, tokens, capacity, max(batch, 1), err)
 	}
 	return p, nil
 }
