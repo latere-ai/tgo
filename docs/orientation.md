@@ -97,20 +97,32 @@ because a framework that is quiet about being slow is wasting your afternoon.
 
 A model has to fit in memory. Roughly:
 
-| stored as | bytes per parameter | a 4B model |
-| --- | --- | --- |
-| f16 | 2 | 8 GB |
-| int8 | ~1.06 | 4.3 GB |
+| stored as | bytes per parameter | a 4B model | a 27B model |
+| --- | --- | --- | --- |
+| f16 | 2 | 8 GB | 50 GB |
+| int8 | ~1.06 | 4.3 GB | 27 GB |
+| int4 | ~0.53 | 2.2 GB | 13 GB |
 
-int8 costs some accuracy, by a bounded amount that tgo measures rather than
-assumes. f16 sits between the two and is available for every weight, including
-the embedding table. Above about 8 GB of weights, f16 stops being an option on the machines
+Each step down costs some accuracy, by a bounded amount tgo measures rather than
+assumes. Above about 8 GB of weights f16 stops being an option on the machines
 tgo targets, so int8 is not an optimisation there — it is the only way the model
-loads.
+loads. int4 is that same sentence one size up: a 27B model does not fit a 24 GB
+card at int8 and does at int4.
+
+**tgo will not choose int4 for you unless int8 does not fit.** Unlike the step
+from f16 to int8, the step to int4 is not uniformly a small loss: it does better
+than int8 on some weights and worse on others, so picking it to save memory you
+were not short of is a trade you did not ask for. Ask for it deliberately when
+you need it.
 
 tgo chooses by what fits and **prints which it chose**. A quietly quantized
 model is a quietly different model, so it is never silent, and it is always
 overridable.
+
+One weight does not shrink at int4: the embedding table, which the model reads a
+row at a time rather than multiplying against. It stays at int8 while everything
+else packs, which is what other quantizers do as well and costs little — it is
+read once per token.
 
 ## The KV cache, which is the other half of your memory
 

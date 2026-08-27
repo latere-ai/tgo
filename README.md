@@ -57,7 +57,7 @@ on Apple silicon.
 | | |
 | --- | --- |
 | **Models** | Qwen3 dense — 0.6B through 32B — from Hugging Face safetensors. The hybrid-attention models (Qwen3.5, Qwen3.8) need work in the layer below first |
-| **Precision** | f16 or int8, chosen by what fits your machine, and always overridable |
+| **Precision** | f16, int8 or int4, chosen by what fits your machine and always overridable. A 27B model is 50 GB at f16 and 13 GB at int4 |
 | **Devices** | Metal on Apple silicon, and CPU everywhere. Use a GPU if you have one: the CPU path works and is currently far slower |
 | **APIs** | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses, so most clients work unchanged |
 | **Serving** | streaming, logprobs, seeded reproducible output, and JSON-schema output that parses every time |
