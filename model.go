@@ -190,6 +190,9 @@ func Open(dir string, opts ...Option) (*Model, error) {
 		return nil, err
 	}
 
+	// 003-D2: warn naming both checksums, and render anyway.
+	warnTemplateMismatch(dir, b.Template())
+
 	m := &Model{
 		builder: b,
 		cfg:     cfg,

@@ -304,14 +304,21 @@ Seven of the eight decisions below are implemented and each is pinned by a test.
 | 3.2 | the `<tool_call>` shape with verbatim arguments, and a run of `Tool` messages merged into one user turn | `chat/qwen3.go:72-86`, `chat/qwen3.go:180-200` |
 | 3.1 | thinking dropped by block type; the text is never inspected | `chat/qwen3.go:152-176` |
 | 4 | the alternating `Part` sequence, the span merge that keeps the part count structural, and the consumer that resolves a control by id and encodes text with `allowSpecial=false` | `chat/chat.go:181-198`, `session.go:443-465` |
-| 5 | eight of the nine rows, all green; the ninth has no code path to test | `chat/qwen3_test.go`, `chat/chat_test.go` |
+| 5 | all nine rows, green. The ninth had no code path to test until 2026-08-27 | `chat/qwen3_test.go`, `chat/chat_test.go`, `template_test.go` |
 
 **What diverged** from the design, and why the code is right:
 
 - The checksum warning is **not the renderer's**. `chat/qwen3.go:31-33` states
   the reason: a renderer that consulted the checksum would have two behaviours
   to test and would refuse work a human can verify by reading the prompt.
-  003-D2 stands; the owner of the comparison is a caller, and there is none yet.
+  003-D2 stands, and the caller that owns the comparison arrived on 2026-08-27:
+  `tgo.Open` reads `chat_template` out of `tokenizer_config.json` and warns
+  naming both checksums (`template.go`). Two shapes are honoured because
+  checkpoints use both — a string, and the named list transformers added for
+  models with a separate tool-calling template, read for its `default` entry.
+  A list with no `default` says nothing rather than guessing which of several
+  is the one to compare. A missing or unparseable file never fails a load: every
+  refusal that matters about a checkpoint is made elsewhere.
 - An **empty conversation** renders the generation hint rather than raising
   (`chat/qwen3_test.go:332`). The reference template raises. A caller asking for
   a prompt with no messages wants the assistant opener, and refusing gives it no
@@ -325,19 +332,12 @@ Seven of the eight decisions below are implemented and each is pinned by a test.
   A name with a quote in it produces malformed JSON under the reference, which
   is the failure 003-D7 exists to prevent one field over.
 
-**Not built.** The checkpoint half of 003-D2, plus seven rules the code follows
-and the spec does not state:
+**Not built.** Seven rules the code follows and the spec does not state. The
+checkpoint half of 003-D2 was the first item here and shipped on 2026-08-27:
+`tgo.Open` reads `chat_template` out of `tokenizer_config.json`, hashes it, and
+warns naming both checksums (`template.go`), which also makes
+[014 §1](014-jinja.md)'s second trigger detectable. The rules that remain:
 
-- **Read a checkpoint's `chat_template` and compare it.** Nothing does. The
-  constant exists (`chat/qwen3.go:34`) and `chat.Checksum` hashes a template
-  (`chat/chat.go:158`), but the two comparisons in the tree hash the vendored
-  fixture (`chat/qwen3_test.go:393`) and the renderer's own accessor
-  (`model/model_test.go:36`); `tokenizer_config.json` is named only in a
-  download list (`internal/hub/client.go:372`) and never parsed for
-  `chat_template`. So no checkpoint can mismatch and nothing warns. This also
-  makes [014](014-jinja.md) §1's second trigger condition — a family whose
-  checkpoints routinely ship customised templates — undetectable: the signal
-  that would fire it is the warning that does not exist.
 - **Record the refusal contract as a decision id.** Six sentinel errors and a
   validate pass reject an unknown role, an unknown block type, a block type a
   role cannot carry, a `tool_use` or `tool_result` with no payload, a nameless

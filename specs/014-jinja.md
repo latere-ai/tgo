@@ -19,11 +19,13 @@ routinely ship customised templates; or a template feature that a Go renderer
 cannot reasonably mirror. Until then a renderer is 60 lines and an interpreter
 is a language.
 
-Condition 2 is undetectable today. Nothing reads a checkpoint's
-`chat_template`, so 003-D2's warn-on-mismatch has no code path even though
-`chat.Checksum` and `Renderer.TemplateChecksum` both exist
-(`chat/chat.go:119`, `chat/chat.go:158`). [003](003-chat-template.md) owns that
-gap and names it in its Outcome.
+Condition 2 became detectable on 2026-08-27. `tgo.Open` reads the checkpoint's
+`chat_template` out of `tokenizer_config.json`, hashes it with `chat.Checksum`,
+and warns naming both checksums when it differs from the renderer's
+(`template.go`, 003-D2). Until then the pieces existed and nothing called them,
+so the trigger this spec waits on could not fire. It now reports itself, which
+is what makes the deferral honest rather than indefinite: a checkpoint that
+customises its template says so at load.
 
 ## 2. The subset
 

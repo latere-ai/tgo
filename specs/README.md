@@ -131,7 +131,7 @@ where the code is, what diverged, and what is open.
 | [000](000-decisions.md) | record | the thirteen decisions everything is built on | — |
 | [001](001-weights.md) | implemented | safetensors, dtype conversion, transposition, quantization policy | no `Auto`→`Int4` load test; §5.4's bound check is test-time only |
 | [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode | reference id vectors, which need a machine with huggingface `tokenizers` |
-| [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn | **003-D2 has no code path**: nothing reads a checkpoint's `chat_template` |
+| [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn | seven rules the code follows and the spec does not state |
 | [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass | — |
 | [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs | `cacheBytes` drops the width term, so `Info` reports f32 for an f16 pool; two §7 tests |
 | [006](006-sampling.md) | implemented | composition order, and reproducibility as a stream | two tests: a stop string across a UTF-8 boundary, penalties against an independent reference |
@@ -185,51 +185,48 @@ Ordered, with what blocks what. Sizes are effort, not importance.
 
 The code runs. What is left is two defects, proof, and throughput.
 
-**Correctness.** Two of the three defects the audit found are fixed: an int4
-load could not be staged onto a device without unified memory, and top-*k*
-selected on the logits where accel selects on the softmax weights. One is left:
-
-1. **Build 003-D2's warning.** Read `chat_template` from the checkpoint, hash
-   it, warn naming both checksums, render anyway. One file and one test, blocked
-   by nothing. Also closes [014](014-jinja.md) §1's second trigger, which is
-   undetectable without it.
+**Correctness.** All three defects the audit found are fixed: an int4 load could
+not be staged onto a device without unified memory; top-*k* selected on the
+logits where accel selects on the softmax weights; and 003-D2's warn-on-mismatch
+had no code path, so no checkpoint could ever be found to disagree with the
+renderer. Each shipped with the test that fails without it.
 
 **Proof:**
 
-3. **Tier-3 run on a real Qwen3-4B checkpoint**: [010](010-conformance.md) §3's
+1. **Tier-3 run on a real Qwen3-4B checkpoint**: [010](010-conformance.md) §3's
    five numbers, recorded in [011](011-sequencing.md) §4. *Large*, blocked on a
    4B checkpoint on disk. The one on hand is 0.6B, which proves the loader and
    the graph and not the footprint.
-4. **CPU/Metal greedy divergence**: first differing token index and the logit
+2. **CPU/Metal greedy divergence**: first differing token index and the logit
    gap. *Medium*, blocked on a Metal device in the loop;
    `internal/conformance/measure.go` is otherwise ready.
 
 **Throughput.** This is the sequence that makes a busy server faster than an
 idle one, and today `server/` imports no `Scheduler`:
 
-5. **Measure the batched sampling path** and choose the design. *Medium*,
+3. **Measure the batched sampling path** and choose the design. *Medium*,
    blocked by nothing — C3 and C6 are closed, so the device path exists to
    measure against.
-6. **Device-side sampling** ([020](020-device-sampling.md)). *Large*, blocked on
-   5. Its oracle is 006's host path, which is why the top-*k* fix came first.
-7. **The admission queue** ([021](021-admission-queue.md)). *Medium*, blocked by
-   nothing and independent of 5 and 6, so it can run in parallel.
-8. **The server drives the scheduler** ([022](022-batched-serving.md)). *Large*,
-   blocked on 6 and 7.
-9. **Instrument the batched path** ([027](027-batched-benchmarks.md)), then the
+4. **Device-side sampling** ([020](020-device-sampling.md)). *Large*, blocked on
+   3. Its oracle is 006's host path, which is why the top-*k* fix came first.
+5. **The admission queue** ([021](021-admission-queue.md)). *Medium*, blocked by
+   nothing and independent of 3 and 4, so it can run in parallel.
+6. **The server drives the scheduler** ([022](022-batched-serving.md)). *Large*,
+   blocked on 4 and 5.
+7. **Instrument the batched path** ([027](027-batched-benchmarks.md)), then the
    **performance gate** ([028](028-performance-gate.md)), which needs a baseline
    worth committing.
-10. **The vLLM and sglang comparison** under [010](010-conformance.md) §3.1's six
-    rules. *Large*, blocked on 8 and on 017 §4.1's own argument that the row is
+8. **The vLLM and sglang comparison** under [010](010-conformance.md) §3.1's six
+    rules. *Large*, blocked on 6 and on 017 §4.1's own argument that the row is
     not worth running before the served path batches.
 
 ```mermaid
 flowchart LR
-  M["5 measure sampling"] --> S["6 020 device sampling"]
-  Q["7 021 admission queue"] --> V["8 022 batched serving"]
+  M["3 measure sampling"] --> S["4 020 device sampling"]
+  Q["5 021 admission queue"] --> V["6 022 batched serving"]
   S --> V
-  V --> B["9 027 + 028 bench and gate"]
-  V --> C["10 vLLM comparison"]
+  V --> B["7 027 + 028 bench and gate"]
+  V --> C["8 vLLM comparison"]
 ```
 
 ### Qwen3.8-27B hybrid
