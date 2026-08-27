@@ -164,15 +164,38 @@ func TestPaddedPrefillLeavesCacheRowsBeyondTUntouched(t *testing.T) {
 		}
 		// And the real rows were written, or the test above would pass on a
 		// prefill that wrote nothing at all.
-		written := 0
-		for p := 0; p < len(prompt); p++ {
-			lo := p * row
-			if !equalF32(got[lo:lo+row], sentinel[lo:lo+row]) {
-				written++
+		//
+		// Per layer, which is specs/005-kv-cache.md §7's layer-disjointness
+		// check and is what this loop did not do until 2026-08-27: it indexed
+		// `p * row` with no layer stride, so it proved the write for layer 0
+		// and then read layer 0's rows again for every other layer. Two layers
+		// sharing one region — which is what a wrong stride produces — leaves
+		// some layer still at the sentinel, and only a per-layer count sees it.
+		for l := 0; l < c.NumLayers; l++ {
+			written := 0
+			for p := 0; p < len(prompt); p++ {
+				lo := l*stride + p*row
+				if !equalF32(got[lo:lo+row], sentinel[lo:lo+row]) {
+					written++
+				}
+			}
+			if written != len(prompt) {
+				t.Errorf("%s: layer %d had %d of %d real rows written; each layer "+
+					"writes its own stride and no other layer's", name, l, written,
+					len(prompt))
 			}
 		}
-		if written != len(prompt) {
-			t.Errorf("%s: %d of %d real rows were written", name, written, len(prompt))
+
+		// Two layers holding the same bytes would mean one region, which is
+		// what the count above cannot see: aliased layers are both "written".
+		// Distinct k and v across layers is what the model computes, so equal
+		// regions are storage that overlaps rather than a coincidence.
+		if c.NumLayers > 1 {
+			w := len(prompt) * row
+			if equalF32(got[:w], got[stride:stride+w]) {
+				t.Errorf("%s: layers 0 and 1 hold identical bytes over %d written "+
+					"rows; the per-layer slice is one region, not two", name, len(prompt))
+			}
 		}
 	}
 }

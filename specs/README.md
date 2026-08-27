@@ -133,7 +133,7 @@ where the code is, what diverged, and what is open.
 | [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode | reference id vectors, which need a machine with huggingface `tokenizers` |
 | [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn | seven rules the code follows and the spec does not state |
 | [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass | — |
-| [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs | §7's layer-disjointness and stale-version tests |
+| [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs | where §7's capacity refusal lives; the shared-pool addressing is undescribed |
 | [006](006-sampling.md) | implemented | composition order, and reproducibility as a stream | two tests: a stop string across a UTF-8 boundary, penalties against an independent reference |
 | [007](007-engine.md) | complete | sessions, plans, buckets, the decode loop | — |
 | [008](008-scheduler.md) | complete | continuous batching: slots, admission, eviction, chunked prefill | — |

@@ -300,6 +300,17 @@ tree existing.
 
 **What diverged** from the design, and why the code is right:
 
+- **§7's two missing tests landed on 2026-08-27.** The layer-disjointness check
+  was a positive control inside
+  `TestPaddedPrefillLeavesCacheRowsBeyondTUntouched` that indexed `p*row` with
+  no layer stride, so it read layer 0's rows again for every layer and proved
+  the write for layer 0 alone. It now counts written rows per layer, and
+  asserts that two layers do not hold identical bytes — the count alone cannot
+  see aliased layers, because both then read as written. The stale-version
+  refusal is `internal/conformance/state_test.go`, with the overlap half beside
+  it: a write to one layer must **not** stale another's read, or 005's design
+  of two states sliced per layer would not compile at all.
+
 - **§3's width term reached `cacheBytes` on 2026-08-27**, and until then did
   not. The function hardcoded f32 while `cmd/tgo`'s `kvBytesPerPosition` took a
   dtype and priced it correctly, so under `--prefix-cache process` the library
@@ -328,14 +339,7 @@ tree existing.
   model's shared pool, the dtype flips to f16, and addressing splits into `rows`
   and `limit`. §2 describes neither, which is open work below.
 
-**Not built.** §7's layer-disjointness test: no test seeds both states with a
-sentinel, writes one layer and asserts every byte of every other layer unchanged.
-The nearest test is `engine_test.go:116`, and its positive control at
-`engine_test.go:167` computes `lo := p*row` with no layer stride, so "the real
-rows were written" is proved for layer 0 alone — the fix is one term in that
-index and belongs with the new test. §7's stale-version test: reading a `State`
-version `ScatterRows` has superseded must be refused, and nothing here asserts it
-although §1.1's whole no-hand-ordering argument rests on it. Deciding where §7's capacity refusal lives: today the number-carrying refusal is
+**Not built.** Deciding where §7's capacity refusal lives: today the number-carrying refusal is
 the server's, in `kvAdmission` (`cmd/tgo/serve.go:329`), and the library's is
 `ErrContextExhausted` at request admission — either move that arithmetic behind
 `NewSession` or amend §7 and the decision record to say the server owns it. Documenting the
