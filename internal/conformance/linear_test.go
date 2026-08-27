@@ -271,3 +271,46 @@ func TestTheGatedDeltaStateAxesAreNotInterchangeable(t *testing.T) {
 			"wrong answer")
 	}
 }
+
+// TestTheGatedDeltaGateHasNoHeadAxis is C27's probe.
+//
+// The gate accel takes is one f32 per token: LinearOptions documents Alpha and
+// Beta as "one entry per token, in the flat order q is in", and the kernel
+// reads alpha[tok] with no head term. A model that gives each value head its
+// own decay is therefore inexpressible — every head of a token shares one
+// alpha and one beta.
+//
+// This asks the question by value rather than by reading the comment, because
+// the answer that matters is not "does it refuse" but "what does it do". A
+// refusal is a gap tgo can report and wait on. An accept-and-broadcast is the
+// class [010 §5](../../specs/010-conformance.md) exists for: 48 layers of a
+// 27B model computing a plausible wrong answer, with nothing red.
+func TestTheGatedDeltaGateHasNoHeadAxis(t *testing.T) {
+	in := newLinearInputs(linShape, linExtents)
+	sh := in.sh
+	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c27-per-head-gate"})
+
+	s := tensor.NewState(r.G.B, tensor.StateDesc{Name: "s", DType: accel.F32,
+		Shape: tensor.Shape{len(linExtents), sh.heads, sh.valueDim, sh.keyDim}})
+	q := r.Input("q", accel.F32, tensor.Shape{in.tokens(), sh.heads, sh.keyDim})
+	k := r.Input("k", accel.F32, tensor.Shape{in.tokens(), sh.heads, sh.keyDim})
+	v := r.Input("v", accel.F32, tensor.Shape{in.tokens(), sh.heads, sh.valueDim})
+	extents := r.Input("extents", accel.U32, tensor.Shape{len(linExtents)})
+
+	// [tokens, heads] rather than [tokens]: a decay per head per token, which
+	// is the shape a Qwen3.5 `in_proj_ba` of width 2*valueHeads would produce.
+	alpha := r.Input("alpha", accel.F32, tensor.Shape{in.tokens(), sh.heads})
+	beta := r.Input("beta", accel.F32, tensor.Shape{in.tokens(), sh.heads})
+
+	tensor.LinearAttention(r.G.B, q, k, v, s, tensor.LinearOptions{
+		Alpha: alpha, Beta: beta, QueryExtents: extents,
+	})
+	if err := r.G.Err(); err == nil {
+		t.Fatal("a per-head gate recorded; accel would then be reading the first " +
+			"heads-worth of a [tokens, heads] gate as though it were [tokens], " +
+			"which is a wrong decay on every head but the first and produces no " +
+			"error anywhere")
+	} else {
+		t.Logf("refused, which is the good answer: %v", err)
+	}
+}

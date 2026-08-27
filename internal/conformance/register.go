@@ -360,6 +360,29 @@ func Register() []Row {
 			"have ([017 §4.1](017-benchmarks.md), Qwen3-0.6B f16 on Metal, " +
 			"2026-08-25). The row's cost cell quoted the *before* number for two " +
 			"days after the spec it cites recorded the after",
+	}, {
+		ID:     "C27",
+		Cannot: "a gated delta layer whose **decay is per head**",
+		Specs:  []string{"047", "043"},
+		Issue:  27,
+		State:  Open,
+		Cost: "**48 dispatches per layer where one would do, or the wrong model.** " +
+			"`LinearOptions.Alpha` and `.Beta` are one f32 per token, while the " +
+			"state is `[slots, heads, valueDim, keyDim]` and the recurrence runs " +
+			"independently per head — every term carries a head index except the " +
+			"two gates. The published gated-delta formulation produces them per " +
+			"value head, and the target config reads `linear_num_value_heads: 48`. " +
+			"accel **refuses** the `[tokens, heads]` shape rather than reading the " +
+			"first heads-worth of it, which is the good answer and is why this row " +
+			"is a gap and not a defect: nothing computes a wrong decay quietly. " +
+			"The consumer's two workarounds are one call per head with a sliced " +
+			"`[T]` gate (3072 dispatches for a 64-layer model where 64 would do), " +
+			"or dropping the per-head decay, which is a different model. Closing " +
+			"it is one rank check: `[tokens]` keeps meaning every head shares a " +
+			"token's gate, so nothing existing moves. The checkpoint's " +
+			"`in_proj_ba` width is not yet read directly — the model is a 50 GiB " +
+			"download — so [024-D4](024-qwen3-5-architecture.md) states the shape " +
+			"the architecture describes and says which half is unconfirmed",
 	}}
 	return rows
 }
