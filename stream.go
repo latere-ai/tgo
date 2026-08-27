@@ -234,9 +234,10 @@ func (st *Stream) advance() {
 			st.usage.CachedPromptTokens = st.reused
 			// After the step and never before: offering a block whose
 			// key/value state is not yet written hands another sequence a
-			// block holding whatever was there. The lease already covers the
-			// prompt, so there is nothing to reserve here.
-			s.publish()
+			// block holding whatever was there. The prompt is already in the
+			// lease -- Acquire took it -- so nothing is committed here and
+			// what publishes is bounded by the length this step just set.
+			err = s.publish()
 		}
 		phase, count = bench.Prefill, len(suffix)
 	} else {
@@ -250,7 +251,9 @@ func (st *Stream) advance() {
 		if err == nil {
 			s.history = append(s.history, st.feed)
 			s.length++
-			s.publish()
+			// The token is recorded here and not before the step, so a step
+			// that failed leaves no hash chained over a token nobody computed.
+			err = s.publish(st.feed)
 		}
 		phase, count = bench.Decode, 1
 	}

@@ -134,7 +134,19 @@ func (e *modelEngine) CacheBytesPerSession() int64 { return e.m.Info().CacheByte
 func (e *modelEngine) CheckSchema(schema []byte) error { return e.m.CheckSchema(schema) }
 
 func (e *modelEngine) NewSession(_ context.Context, spec SessionSpec) (Session, error) {
-	opts := []tgo.SessionOption{tgo.WithThinking(spec.Thinking)}
+	opts := []tgo.SessionOption{
+		tgo.WithThinking(spec.Thinking),
+		// The request's cache_salt, which this engine used to drop.
+		//
+		// A session of its own shares nothing with another session, so under
+		// [tgo.CacheSession] the salt reached nothing and dropping it was
+		// invisible. Under [tgo.CacheProcess] every session draws from one
+		// block pool, and a salt that does not reach it means two tenants with
+		// the same system prompt seed identically: the second one's first token
+		// arrives fast, which is a membership test over the first one's prompt
+		// (016 §7.1). §4's loss report told both of them it had been honoured.
+		tgo.WithCacheSalt(spec.Key),
+	}
 	if len(spec.Tools) > 0 {
 		opts = append(opts, tgo.WithTools(spec.Tools...))
 	}
@@ -149,7 +161,10 @@ func (e *modelEngine) NewSession(_ context.Context, spec SessionSpec) (Session, 
 }
 
 // modelSession forwards to a [tgo.Session].
-type modelSession struct{ s *tgo.Session }
+type modelSession struct {
+	s  *tgo.Session
+	st *tgo.Stream
+}
 
 func (s *modelSession) Chat(ctx context.Context, msgs []chat.Message, p tgo.Policy) (Stream, error) {
 	// The nil check is not ceremony: a typed nil in an interface is not nil,
@@ -159,6 +174,7 @@ func (s *modelSession) Chat(ctx context.Context, msgs []chat.Message, p tgo.Poli
 	if err != nil {
 		return nil, err
 	}
+	s.st = st
 	return st, nil
 }
 
@@ -167,7 +183,22 @@ func (s *modelSession) Complete(ctx context.Context, prompt string, p tgo.Policy
 	if err != nil {
 		return nil, err
 	}
+	s.st = st
 	return st, nil
+}
+
+// Reused is how many leading prompt positions came from a cache rather than
+// from a forward pass, the same quantity [leasedSession.Reused] reports.
+//
+// Both engines answer it, because it is the number that says whether a request
+// was isolated from another one's work, and an engine that could not be asked
+// was an engine whose isolation could not be tested. server.Wrap dropped the
+// request's cache_salt for a week and nothing noticed.
+func (s *modelSession) Reused() int {
+	if s.st == nil {
+		return 0
+	}
+	return s.st.Usage().CachedPromptTokens
 }
 
 func (s *modelSession) Close() error { return s.s.Close() }

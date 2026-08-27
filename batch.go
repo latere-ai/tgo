@@ -403,9 +403,11 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	v := b.m.cfg.VocabSize
 	for i, w := range work {
 		s := b.slots[w.Slot]
+		if err := s.commit(w.Tokens); err != nil {
+			return nil, fmt.Errorf("tgo: slot %d: %w", w.Slot, err)
+		}
 		s.history = append(s.history, w.Tokens...)
 		s.length += len(w.Tokens)
-		s.publish()
 		if s.out == nil {
 			s.out = make([]float32, v)
 		}
@@ -500,23 +502,24 @@ func (b *Batch) Close() error {
 	return errors.Join(errs...)
 }
 
-// reserve records tokens against the slot's lease, allocating blocks as the
-// positions need them, and takes the page table those blocks give.
+// reserve makes sure the slot's blocks cover the positions this step will
+// write, and takes the page table they give.
 //
-// Only the tokens the lease does not already cover. [Batch.Admit] leases the
-// whole prompt, so a prefill's tokens are already in it, and appending them a
-// second time would give the lease twice the sequence: twice the blocks, and --
-// worse -- block hashes chained over `prompt+prompt`. Those hashes name blocks
-// holding only `prompt`, so a later request whose prompt genuinely is the
-// doubled one would match them and attend to a cache that holds something else.
-// Silently, and fluently.
+// It records no tokens. What a step's tokens *are* is not settled until the
+// step lands: a submission that fails is one whose tokens the caller may
+// replace, and a hash chained over a token nobody computed names a block
+// holding something else. [batchSlot.commit] is the other half and runs after
+// the step.
+//
+// Only the positions the lease does not already cover. [Batch.Admit] leases the
+// whole prompt, so a prefill needs nothing more, and growing for it a second
+// time would give the lease twice the sequence.
 func (s *batchSlot) reserve(toks []int) error {
 	if s.lease == nil {
 		return errors.New("holds no blocks; admit it before stepping it")
 	}
 	if need := s.length + len(toks); need > s.lease.Len() {
-		fresh := need - s.lease.Len()
-		if err := s.lease.Append(toks[len(toks)-fresh:]...); err != nil {
+		if err := s.lease.Grow(need - s.lease.Len()); err != nil {
 			return err
 		}
 	}
@@ -524,11 +527,26 @@ func (s *batchSlot) reserve(toks []int) error {
 	return nil
 }
 
-// publish offers every block whose key/value state the last step computed.
-func (s *batchSlot) publish() {
-	if s.lease != nil {
-		s.pages = s.lease.Publish()
+// commit records the tokens a step computed and offers every block that step
+// completed, and it runs only after the step landed.
+//
+// The published extent is the slot's own length and not the lease's. A lease
+// covers the positions the slot *may* write -- Admit takes the whole prompt so
+// admission is a promise -- so publishing on its extent offers another sequence
+// a block holding nothing, which it reads as context. A chunked prefill 32
+// tokens into a 192-token prompt published all six blocks, and the next request
+// with the same prefix reused 192 positions of which 160 were never written.
+func (s *batchSlot) commit(toks []int) error {
+	if s.lease == nil {
+		return nil
 	}
+	if need := s.length + len(toks); need > s.lease.Len() {
+		if err := s.lease.Commit(toks[len(toks)-(need-s.lease.Len()):]...); err != nil {
+			return err
+		}
+	}
+	s.pages = s.lease.Publish(s.length + len(toks))
+	return nil
 }
 
 // release gives the slot's blocks back. Idempotent.

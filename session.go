@@ -557,7 +557,10 @@ func (s *Session) reserve(toks ...int) error {
 	if !s.shared || s.lease == nil {
 		return nil
 	}
-	if err := s.lease.Append(toks...); err != nil {
+	// Blocks only. What the tokens are is settled by the step, and a hash
+	// chained over a token nobody computed names a block holding something
+	// else -- [Session.publish] records them once the step lands.
+	if err := s.lease.Grow(len(toks)); err != nil {
 		return fmt.Errorf("tgo: extending a sequence by %d token(s): %w", len(toks), err)
 	}
 	s.pages = s.lease.Blocks()
@@ -571,11 +574,18 @@ func (s *Session) reserve(toks ...int) error {
 // one prefix concurrently, compute it twice and both publish: the pool keeps one
 // block and the loser drops its own and takes the winner's, so the two end up
 // sharing a block rather than leaking one.
-func (s *Session) publish() {
+func (s *Session) publish(toks ...int) error {
 	if !s.shared || s.lease == nil {
-		return
+		return nil
 	}
-	s.pages = s.lease.Publish()
+	if err := s.lease.Commit(toks...); err != nil {
+		return fmt.Errorf("tgo: recording %d computed token(s): %w", len(toks), err)
+	}
+	// The session's own length and not the lease's: the lease covers what this
+	// conversation may write, and only what a step has written may be offered
+	// to another sequence.
+	s.pages = s.lease.Publish(s.length)
+	return nil
 }
 
 // release gives this request's blocks back. Idempotent.

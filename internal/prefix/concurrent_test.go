@@ -50,7 +50,7 @@ func TestConcurrentMissesOnOnePrefixKeepOneBlock(t *testing.T) {
 			}
 			acquired.Done()
 			acquired.Wait()
-			pages[i] = l.Publish()
+			pages[i] = l.Publish(l.Len())
 			leases[i] = l
 			_ = p.Stats() // a reader racing the writers
 			l.Release()
@@ -122,12 +122,12 @@ func TestConcurrentTrafficLeavesEveryBlockAccountedFor(t *testing.T) {
 					}
 					continue
 				}
-				l.Publish()
+				l.Publish(l.Len())
 				if err := l.Append(700+r, 701+r, 702+r); err != nil &&
 					!errors.Is(err, ErrExhausted) {
 					t.Errorf("worker %d: Append = %v", w, err)
 				}
-				l.Publish()
+				l.Publish(l.Len())
 				l.Release()
 				l.Release() // idempotent, and racing nothing
 			}

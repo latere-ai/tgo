@@ -489,4 +489,66 @@ func TestAReservedSlotGrowsWithoutAskingAgain(t *testing.T) {
 		t.Fatalf("growing into the reserve took the pool from %d blocks to %d; the "+
 			"reserve is what makes admission a promise", held, got)
 	}
+	// The assertion above cannot fail on an exhausted pool -- there is nothing
+	// left to take, so InUse cannot rise -- and a review caught that. What
+	// makes it mean something is that the growth *succeeded*: a slot without
+	// its reserve would have been refused by the steps above, so this checks
+	// the pool is genuinely full and that the slot reached its whole reserve.
+	if free := m.blocks.pool.Stats().Free; free != 0 {
+		t.Fatalf("%d blocks are free, so nothing above was constrained", free)
+	}
+	if got, want := b.Length(0), CacheBlock+CacheBlock+3; got != want {
+		t.Fatalf("the slot is %d positions in, want %d: the prompt and the whole "+
+			"reserve it was admitted with", got, want)
+	}
+}
+
+// TestStepReturnsResultsInTheOrderTheWorkNamed pins what Batch.Step documents:
+// "each one's logits, in the order work names them".
+//
+// Every other test passes work already in slot order, so a Step that returned
+// results in *slot* order would have satisfied all of them. The two orders are
+// the same until a caller has a reason to submit otherwise -- a scheduler that
+// placed prefills first, for instance -- and then a caller reading out[i] for
+// work[i] gets another slot's distribution and samples from it.
+func TestStepReturnsResultsInTheOrderTheWorkNamed(t *testing.T) {
+	t.Parallel()
+	m := batchModel(t)
+	b := newBatch(t, m, 2)
+
+	prompts := [][]int{promptIDs(1, 12), promptIDs(2, 5)}
+	for i, p := range prompts {
+		if _, err := b.Admit(i, p, "", 0); err != nil {
+			t.Fatalf("Admit(%d): %v", i, err)
+		}
+	}
+
+	// Slot 1 first, which is what makes this test different from the others.
+	out, err := b.Step([]Work{
+		{Slot: 1, Tokens: prompts[1]},
+		{Slot: 0, Tokens: prompts[0]},
+	})
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+
+	// Each sequence's own logits, taken from a run where it is alone, so the
+	// comparison is against a value and not against the other entry.
+	for i, p := range prompts {
+		alone := newBatch(t, m, 2)
+		if _, err := alone.Admit(i, p, "solo", 0); err != nil {
+			t.Fatal(err)
+		}
+		want, err := alone.Step([]Work{{Slot: i, Tokens: p}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// out[0] is slot 1's and out[1] is slot 0's, because that is the order
+		// the work named.
+		got := out[1]
+		if i == 1 {
+			got = out[0]
+		}
+		compareLogits(t, "work order", i, got, want[0])
+	}
 }

@@ -131,7 +131,7 @@ func TestAppendCompletesABlockWithoutAllocatingOne(t *testing.T) {
 	p := testPool(t)
 	l := acquire(t, p, Request{IDs: run(100, 5)})
 	defer l.Release()
-	l.Publish()
+	l.Publish(l.Len())
 	if got := p.Stats().Publishes; got != 1 {
 		t.Fatalf("Publishes = %d after the prompt, want 1", got)
 	}
@@ -141,7 +141,7 @@ func TestAppendCompletesABlockWithoutAllocatingOne(t *testing.T) {
 	if got := len(l.Blocks()); got != 2 {
 		t.Fatalf("filling the tail block allocated one: %d blocks, want 2", got)
 	}
-	l.Publish()
+	l.Publish(l.Len())
 	if got := p.Stats().Publishes; got != 2 {
 		t.Fatalf("Publishes = %d after the block was filled, want 2", got)
 	}
@@ -164,7 +164,7 @@ func TestAppendFillsTheLastBlockThePoolHas(t *testing.T) {
 	if got := l.Len(); got != 3*testBlock {
 		t.Fatalf("Len() = %d, want %d", got, 3*testBlock)
 	}
-	l.Publish()
+	l.Publish(l.Len())
 	if got := p.Stats().Publishes; got != 3 {
 		t.Fatalf("Publishes = %d, want 3: the pool learned every block", got)
 	}
@@ -192,11 +192,11 @@ func TestAGeneratedTailIsPublishedAndReusedByTheNextTurn(t *testing.T) {
 	p := testPool(t)
 	prompt := run(100, 5)
 	l := acquire(t, p, Request{IDs: prompt})
-	l.Publish() // one complete block
+	l.Publish(l.Len()) // one complete block
 	if err := l.Append(700, 701, 702, 703); err != nil {
 		t.Fatalf("Append = %v", err)
 	}
-	l.Publish() // the block the answer completed
+	l.Publish(l.Len()) // the block the answer completed
 	l.Release()
 	if got := p.Stats().Publishes; got != 2 {
 		t.Fatalf("Publishes = %d, want 2", got)
@@ -254,7 +254,7 @@ func TestAReleasedLeaseRefusesToGrow(t *testing.T) {
 	if err := l.Append(1); !errors.Is(err, ErrReleased) {
 		t.Fatalf("Append after Release = %v, want ErrReleased", err)
 	}
-	if got := l.Publish(); len(got) != 2 {
+	if got := l.Publish(l.Len()); len(got) != 2 {
 		t.Fatalf("Publish after Release = %v, want the blocks unchanged", got)
 	}
 	if got := p.Stats().Publishes; got != 0 {
@@ -268,7 +268,7 @@ func TestReleaseIsIdempotent(t *testing.T) {
 	p := testPool(t)
 	prompt := run(100, 9)
 	a := acquire(t, p, Request{IDs: prompt})
-	a.Publish()
+	a.Publish(a.Len())
 	b := acquire(t, p, Request{IDs: prompt})
 	defer b.Release()
 
@@ -286,8 +286,8 @@ func TestPublishingTwiceLearnsEachBlockOnce(t *testing.T) {
 	p := testPool(t)
 	l := acquire(t, p, Request{IDs: run(100, 9)})
 	defer l.Release()
-	first := l.Publish()
-	second := l.Publish()
+	first := l.Publish(l.Len())
+	second := l.Publish(l.Len())
 	if got := p.Stats().Publishes; got != 2 {
 		t.Fatalf("Publishes = %d after publishing twice, want 2", got)
 	}
@@ -303,7 +303,7 @@ func TestAnUnpublishedTailGoesStraightBackToTheFreeList(t *testing.T) {
 	// as cache it would be a block the pool cannot use and cannot hit.
 	p := testPool(t)
 	l := acquire(t, p, Request{IDs: run(100, 9)}) // two whole blocks and one partial
-	l.Publish()
+	l.Publish(l.Len())
 	l.Release()
 	s := p.Stats()
 	if s.Cached != 2 || s.Free != testBlocks-2 {

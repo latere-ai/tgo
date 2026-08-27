@@ -56,7 +56,7 @@ func acquire(t *testing.T, p *Pool, r Request) *Lease {
 func warm(t *testing.T, p *Pool, r Request) {
 	t.Helper()
 	l := acquire(t, p, r)
-	l.Publish()
+	l.Publish(l.Len())
 	l.Release()
 }
 
@@ -94,7 +94,7 @@ func TestAWarmPrefixIsReusedAndAColdOneIsNot(t *testing.T) {
 	if cold.Reused() != 0 {
 		t.Fatalf("a cold request reused %d positions, want 0", cold.Reused())
 	}
-	cold.Publish()
+	cold.Publish(cold.Len())
 	cold.Release()
 
 	warmed := acquire(t, p, Request{IDs: prompt})
@@ -138,7 +138,7 @@ func TestAnInteriorRunSharedByTwoPromptsIsNotSharedByTheirBlocks(t *testing.T) {
 	second = append(second, run(700, 1)...)
 
 	one := acquire(t, p, Request{IDs: first})
-	theirs := one.Publish()
+	theirs := one.Publish(one.Len())
 	one.Release()
 
 	l := acquire(t, p, Request{IDs: second})
@@ -155,7 +155,7 @@ func TestAnInteriorRunSharedByTwoPromptsIsNotSharedByTheirBlocks(t *testing.T) {
 	// prompt's block. From then on it attends to KV computed behind a
 	// different predecessor, and the output stays fluent.
 	mine := l.Blocks()
-	page := l.Publish()
+	page := l.Publish(l.Len())
 	if got := p.Stats().Adoptions; got != 0 {
 		t.Fatalf("the second prompt adopted %d blocks; the interior run was "+
 			"given one identity across two prompts", got)
@@ -225,7 +225,7 @@ func TestAFullHitOnAWholeNumberOfBlocksGivesUpOneBlock(t *testing.T) {
 	// Publishing the recomputed block finds the cached one already there. The
 	// pool must keep one block, not two.
 	before := l.Blocks()
-	after := l.Publish()
+	after := l.Publish(l.Len())
 	if before[1] == after[1] {
 		t.Fatalf("the recomputed block %d was not swapped for the cached one",
 			before[1])
@@ -283,7 +283,7 @@ func TestAnEvictedPrefixIsAMissRatherThanAStaleBlock(t *testing.T) {
 	if got := p.Stats().Evictions; got == 0 {
 		t.Fatal("the pool served three blocks under pressure without evicting one")
 	}
-	pressure.Publish()
+	pressure.Publish(pressure.Len())
 	pressure.Release()
 
 	l := acquire(t, p, Request{IDs: victim})
@@ -299,7 +299,7 @@ func TestABlockSharedByTwoSequencesSurvivesOneOfThemFinishing(t *testing.T) {
 	prompt := run(100, 9)
 
 	a := acquire(t, p, Request{IDs: prompt})
-	a.Publish()
+	a.Publish(a.Len())
 
 	b := acquire(t, p, Request{IDs: prompt})
 	if b.Matched() != 2 {

@@ -110,7 +110,16 @@ func (s *Scheduler) Admit(prompt []int, salt string) (int, error) {
 	reused := s.b.Length(free)
 	s.next++
 	s.slots[free] = schedState{
-		live: true, prompt: prompt, prefilled: reused, arrived: s.next,
+		// Copied, and this is not defensive style.
+		//
+		// [Scheduler.Feed] appends the generated token to this slice, and an
+		// append onto a caller's slice with spare capacity writes into the
+		// caller's array -- which for `all[:20]` out of a 40-element prompt
+		// buffer is `all[20]`, the first token of the request the caller is
+		// about to submit next. That is one request silently rewriting
+		// another's prompt, and both answers stay fluent.
+		live: true, prompt: append([]int(nil), prompt...),
+		prefilled: reused, arrived: s.next,
 	}
 	return free, nil
 }

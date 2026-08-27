@@ -56,7 +56,7 @@ func poolServer(t *testing.T, n int) (*server.Server, *recordingEngine) {
 	if got := pe.Sessions(); got != n {
 		t.Fatalf("the pool holds %d sessions, want %d", got, n)
 	}
-	eng := &recordingEngine{PoolEngine: pe}
+	eng := &recordingEngine{Engine: pe}
 	// The concurrency is the pool size and is not divided out a second time:
 	// two numbers that must agree is the bug shape 019 §4 is about.
 	s, err := server.New(eng, server.WithNotice(&strings.Builder{}),
@@ -75,14 +75,14 @@ func poolServer(t *testing.T, n int) (*server.Server, *recordingEngine) {
 // (019 §5). The answer is the same either way, so asserting the answer would
 // pass on a pool with no isolation at all.
 type recordingEngine struct {
-	*server.PoolEngine
+	server.Engine
 
 	mu     sync.Mutex
 	reused []int
 }
 
 func (e *recordingEngine) NewSession(ctx context.Context, spec server.SessionSpec) (server.Session, error) {
-	s, err := e.PoolEngine.NewSession(ctx, spec)
+	s, err := e.Engine.NewSession(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +482,7 @@ func processPoolServer(t *testing.T, n int) (*server.Server, *recordingEngine) {
 			t.Errorf("PoolEngine.Close: %v", err)
 		}
 	})
-	eng := &recordingEngine{PoolEngine: pe}
+	eng := &recordingEngine{Engine: pe}
 	srv, err := server.New(eng, server.WithNotice(&strings.Builder{}),
 		server.WithConcurrency(pe.Sessions()))
 	if err != nil {
@@ -538,6 +538,61 @@ func TestAProcessPoolSharesAcrossConversations(t *testing.T) {
 			t.Fatalf("%s reused nothing of an opening another conversation had already "+
 				"paid for; a process-scoped pool that shares nothing is a "+
 				"session-scoped one with a page table attached", c.what)
+		}
+	}
+}
+
+// TestTheUnpooledEngineCarriesTheSalt is the direction server.Wrap dropped.
+//
+// A session of its own shares nothing with another session, so under
+// [tgo.CacheSession] the salt reached nothing and losing it was invisible.
+// Under [tgo.CacheProcess] every session draws from one block pool: two tenants
+// with the same system prompt seeded identically, the second one's first token
+// arrived fast, and that timing is a membership test over the first one's
+// prompt. §4's loss report told both of them cache_salt had been honoured.
+func TestTheUnpooledEngineCarriesTheSalt(t *testing.T) {
+	m, err := tgo.Open(writeCheckpoint(t), tgo.WithDevice(tgo.CPU), tgo.WithContext(256),
+		tgo.WithPrefixCache(tgo.CacheProcess, 256))
+	if err != nil {
+		t.Fatalf("tgo.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Errorf("Model.Close: %v", err)
+		}
+	})
+	eng := &recordingEngine{Engine: server.Wrap(m, synthName)}
+	s, err := server.New(eng, server.WithNotice(&strings.Builder{}),
+		server.WithConcurrency(2))
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+
+	shared := strings.Repeat("the quick brown fox jumps over the lazy dog. ", 3)
+	body := func(salt, tail string) string {
+		return chatBody(`,"cache_salt":"`+salt+`"`, shared+tail)
+	}
+	for _, c := range []struct {
+		what, salt, tail, want string
+	}{
+		{"tenant a", "tenant-a", "one?", "cold"},
+		{"tenant a again", "tenant-a", "two?", "warm"},
+		{"tenant b on the same opening", "tenant-b", "three?", "cold"},
+	} {
+		w := do(t, s, http.MethodPost, "/v1/chat/completions", body(c.salt, c.tail))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d: %s", c.what, w.Code, w.Body.String())
+		}
+		got := eng.counts()
+		n := got[len(got)-1]
+		if c.want == "cold" && n != 0 {
+			t.Fatalf("%s reused %d positions of an opening computed under another "+
+				"salt; that hit is faster than a miss, so it is a membership test "+
+				"over the other tenant's prompt", c.what, n)
+		}
+		if c.want == "warm" && n == 0 {
+			t.Fatalf("%s reused nothing under its own salt, so the refusals above "+
+				"prove no separation", c.what)
 		}
 	}
 }

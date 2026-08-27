@@ -63,12 +63,51 @@ func (l *Lease) Row(t int) int {
 	return l.blocks[t/l.pool.block]*l.pool.block + t%l.pool.block
 }
 
-// Append extends the sequence with generated tokens, allocating blocks as the
-// positions need them.
+// Grow makes sure the lease's blocks cover n more positions than its ids do.
 //
-// It takes every id or none: a failure part way through would leave the
+// It is the half of [Lease.Append] a caller needs *before* the step that
+// computes those positions: a token needs a row to be written to. It records no
+// ids and chains no hashes, because what those tokens are is not settled until
+// the step lands -- a step that fails is a step whose tokens the caller may
+// replace, and a hash chained over a token nobody computed names a block
+// holding something else.
+//
+// It takes every position or none: a failure part way through would leave the
 // sequence's length disagreeing with the blocks that back it.
-func (l *Lease) Append(ids ...int) error {
+func (l *Lease) Grow(n int) error {
+	if l.released {
+		return ErrReleased
+	}
+	if n < 0 {
+		return fmt.Errorf("prefix: growing by %d positions", n)
+	}
+	if n == 0 {
+		return nil
+	}
+	p := l.pool
+	want := (len(l.ids) + n + p.block - 1) / p.block
+	if want > p.blocks {
+		return fmt.Errorf("prefix: %d positions need %d blocks and the pool holds %d: %w",
+			len(l.ids)+n, want, p.blocks, ErrExhausted)
+	}
+	if k := want - len(l.blocks); k > 0 {
+		p.mu.Lock()
+		fresh, err := p.alloc(k)
+		p.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		l.blocks = append(l.blocks, fresh...)
+	}
+	return nil
+}
+
+// Commit records tokens whose key/value state a step has computed, chaining the
+// hash of every block they completed.
+//
+// It is the other half of [Lease.Append], and it runs *after* the step. The
+// blocks must already cover the positions, which [Lease.Grow] is for.
+func (l *Lease) Commit(ids ...int) error {
 	if l.released {
 		return ErrReleased
 	}
@@ -76,19 +115,10 @@ func (l *Lease) Append(ids ...int) error {
 		return nil
 	}
 	p := l.pool
-	want := (len(l.ids) + len(ids) + p.block - 1) / p.block
-	if want > p.blocks {
-		return fmt.Errorf("prefix: %d positions need %d blocks and the pool holds %d: %w",
-			len(l.ids)+len(ids), want, p.blocks, ErrExhausted)
-	}
-	if n := want - len(l.blocks); n > 0 {
-		p.mu.Lock()
-		fresh, err := p.alloc(n)
-		p.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		l.blocks = append(l.blocks, fresh...)
+	if want := (len(l.ids) + len(ids) + p.block - 1) / p.block; want > len(l.blocks) {
+		return fmt.Errorf("prefix: committing %d tokens at position %d needs %d blocks "+
+			"and the lease holds %d; grow it before the step that computes them",
+			len(ids), len(l.ids), want, len(l.blocks))
 	}
 	l.ids = append(l.ids, ids...)
 	if l.scope != ScopeOff {
@@ -107,6 +137,15 @@ func (l *Lease) Append(ids ...int) error {
 	return nil
 }
 
+// Append is [Lease.Grow] and [Lease.Commit] in one call, for a caller whose
+// step cannot fail between them.
+func (l *Lease) Append(ids ...int) error {
+	if err := l.Grow(len(ids)); err != nil {
+		return err
+	}
+	return l.Commit(ids...)
+}
+
 // Publish offers every complete block the lease holds to the cache, so that a
 // later request with the same prefix reuses it. Call it once the KV for those
 // positions is computed, and never before: a published block is immutable and
@@ -120,14 +159,26 @@ func (l *Lease) Append(ids ...int) error {
 // (016-D10) made this lease decline a block that is already cached.
 //
 // Under [ScopeOff] it publishes nothing and returns the blocks unchanged.
-func (l *Lease) Publish() []int {
+func (l *Lease) Publish(written int) []int {
 	if l.released || l.scope == ScopeOff {
 		return l.Blocks()
 	}
 	p := l.pool
+	// Only blocks every position of which a step has actually computed.
+	//
+	// The parameter is the whole point and the reason this is not
+	// `Publish()`. A lease covers the positions a caller *may* write --
+	// [Pool.Acquire] leases the whole prompt so admission is a promise, and
+	// [Lease.Grow] takes blocks before the step that fills them -- so the
+	// blocks it holds run ahead of the blocks it has. Publishing on the lease's
+	// extent instead of on this offers another sequence a block holding
+	// nothing, and it reads that as context: a chunked prefill 32 tokens into a
+	// 192-token prompt published all six blocks, and the next request with the
+	// same prefix reused 192 positions of which 160 were never written.
+	complete := written / p.block
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for i := l.published; i < len(l.hashes); i++ {
+	for i := l.published; i < len(l.hashes) && i < complete; i++ {
 		h := l.hashes[i]
 		mine := l.blocks[i]
 		if theirs, ok := p.entry[h]; ok {

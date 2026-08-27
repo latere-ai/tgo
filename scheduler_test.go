@@ -42,7 +42,12 @@ func TestAChunkAndTheDecodesRunInOneDispatch(t *testing.T) {
 	s := newScheduler(t, m, 3, SchedulerOptions{Chunk: 8, Reserve: CacheBlock})
 
 	long := promptIDs(1, 20)
-	short := [][]int{promptIDs(2, 4), promptIDs(3, 4)}
+	// Six and five, not four and four. Equal prompts summing to the chunk make
+	// "the chunk is per sequence" and "the chunk is per step" the same
+	// prediction, so the assertion below could not tell them apart -- which is
+	// CONTRIBUTING's rule about two dimensions of a fixture being equal,
+	// applied to a sum rather than to a shape.
+	short := [][]int{promptIDs(2, 6), promptIDs(3, 5)}
 
 	// The two short ones first, so they are decoding by the time the long one
 	// is still being chunked.
@@ -59,14 +64,17 @@ func TestAChunkAndTheDecodesRunInOneDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the first step: %v", err)
 	}
-	if first.Decodes != 0 || first.PrefillTokens != 8 {
-		t.Fatalf("the first step carried %d prefill tokens and %d decodes, want 8 and 0",
+	// Eleven, which is both prompts whole and is not the chunk: each sequence
+	// gets up to Chunk of its own, and 6 and 5 are each under it.
+	if first.Decodes != 0 || first.PrefillTokens != 11 {
+		t.Fatalf("the first step carried %d prefill tokens and %d decodes, want 11 "+
+			"and 0; the chunk is per sequence, so two prompts under it are one step",
 			first.PrefillTokens, first.Decodes)
 	}
 	for _, p := range first.Produced {
 		if !p.Sampleable() {
-			t.Fatalf("slot %d's 4-token prompt is not scored after a step that "+
-				"carried 8 prefill tokens", p.Slot)
+			t.Fatalf("slot %d's prompt is not scored after a step that carried "+
+				"%d prefill tokens", p.Slot, first.PrefillTokens)
 		}
 		if err := s.Feed(p.Slot, greedyOf(p.Logits)); err != nil {
 			t.Fatal(err)
