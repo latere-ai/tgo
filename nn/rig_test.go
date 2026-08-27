@@ -58,6 +58,35 @@ func newRig(t *testing.T, eps float32) *rig {
 	}
 }
 
+// reuse records a second graph against the SAME device, runtime and bound
+// buffers, which is what lets a second step read a state the first one wrote.
+//
+// The two plans are different shapes and the state is caller-owned, so sharing
+// it across submissions is exactly what tensor.State is for.
+func (r *rig) reuse(t *testing.T, keep ...string) *rig {
+	t.Helper()
+	next := &rig{
+		t: t, dev: r.dev, rt: r.rt,
+		bufs:    map[string]accel.BufferView{},
+		buffers: map[string]*accel.Buffer{},
+		scalars: map[string]tensor.ScalarValue{},
+	}
+	// Only the named buffers, which in practice is the state. accel refuses a
+	// binding for a port the plan does not declare, so carrying the first
+	// step's inputs into a second plan of a different shape is an error rather
+	// than a harmless extra.
+	for _, k := range keep {
+		if v, ok := r.bufs[k]; ok {
+			next.bufs[k] = v
+		}
+		if v, ok := r.buffers[k]; ok {
+			next.buffers[k] = v
+		}
+	}
+	next.g = &nn.Graph{B: r.rt.NewBuilder("nn"), Eps: r.g.Eps, Prefix: r.g.Prefix}
+	return next
+}
+
 func (r *rig) bind(name string, dtype accel.DType, count int, data any) {
 	r.t.Helper()
 	buf, err := r.dev.NewBuffer(accel.BufferDescriptor{
@@ -67,10 +96,27 @@ func (r *rig) bind(name string, dtype accel.DType, count int, data any) {
 	if err != nil {
 		r.t.Fatalf("buffer %s: %v", name, err)
 	}
-	r.t.Cleanup(func() { _ = buf.Close() })
+	// The close error is reported and not discarded. A buffer with a batched
+	// write still outstanding refuses to close, and swallowing that left every
+	// test which binds a buffer and never submits leaking it -- surfacing as
+	// accel refusing to close the device, from a cleanup, about something the
+	// test was not testing.
+	r.t.Cleanup(func() {
+		if err := buf.Close(); err != nil {
+			r.t.Errorf("closing %q: %v", name, err)
+		}
+	})
 	if data != nil {
 		if err := r.dev.Queue().WriteBuffer(buf, 0, data); err != nil {
 			r.t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	// The write is batched, so it is finished here. A test that submits gets
+	// this for free from the submission; one that only records does not, and
+	// the buffer it bound cannot be closed until the write lands.
+	if data != nil {
+		if err := r.dev.Queue().Flush().Wait(); err != nil {
+			r.t.Fatalf("staging %s: %v", name, err)
 		}
 	}
 	view, err := buf.View(0, count)

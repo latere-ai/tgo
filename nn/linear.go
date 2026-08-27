@@ -119,3 +119,127 @@ func shapeOf(x *tensor.Tensor) tensor.Shape {
 	}
 	return x.Shape()
 }
+
+// ConvState is the rolling window a depthwise causal convolution reads.
+//
+// [slots, K-1+T, C]: the K−1 rows before this step, then this step's own.
+// [C26](../specs/010-conformance.md) is why it is a state and not a padded
+// operand — `tensor` joins no two tensors along an axis, and the rows a
+// convolution needs in front of a decode step are the *previous step's*
+// anyway, not zeros.
+type ConvState struct {
+	// State is the window, [slots, K-1+T, C].
+	State *tensor.State
+
+	// Write is where this step's rows go: K-1+i for row i, a [T] u32 port.
+	Write *tensor.Tensor
+
+	// Carry is which rows become the next step's leading K-1, a [K-1] u32
+	// port holding T..T+K-2 — the last K-1 of the window once this step's rows
+	// are in it.
+	Carry *tensor.Tensor
+
+	// CarryWrite is where those rows go for the next step: 0..K-2, a [K-1]
+	// u32 port.
+	CarryWrite *tensor.Tensor
+}
+
+// DepthwiseCausalConv convolves each channel of x with its own K taps, over the
+// K−1 rows before it.
+//
+// specs/018-hybrid-models.md §4.1. taps is [K, C]: one row of weights per tap,
+// one column per channel, so a channel never mixes with another.
+// `linear_conv_kernel_dim: 4` in Qwen3.8's config is K.
+//
+// # Causality is structural, not checked
+//
+// Tap i reads the window starting at K−1−i of a buffer whose first K−1 rows are
+// what came *before* this step. Position t therefore sees t−K+1 through t and
+// nothing after, because there is nothing after to slice — no operator has to
+// know the convolution is causal, and none can get it wrong.
+//
+// # The carry is written after the window is read, and the versions say so
+//
+// The step scatters its rows into the window, reads it, and then scatters the
+// window's last K−1 rows to the front for the next step. Those are two writes
+// to one state with an order that matters, which is exactly what
+// [tensor.State]'s versions express: the read names the version between them.
+//
+// It returns the window's next version, which the caller binds for the step
+// after this one.
+//
+// # What it costs
+//
+// K windows, each a slice made contiguous and multiplied by a broadcast tap
+// row, summed — plus two scatters and a gather. Roughly 3K+5 dispatches for
+// what one kernel would do, and K−1 packing copies of a [T, C] tensor per
+// layer. Over 48 linear layers that is real, and it is one less kernel to be
+// *blocked on* rather than one less kernel to *want*.
+func DepthwiseCausalConv(g *Graph, x, taps *tensor.Tensor, w ConvState,
+	k int) (*tensor.Tensor, *tensor.State) {
+
+	fail := func(format string, args ...any) (*tensor.Tensor, *tensor.State) {
+		g.fail("DepthwiseCausalConv", format, args...)
+		return nil, nil
+	}
+	t, c, ok := rows(x)
+	if !ok {
+		return fail("x is %v; the input is [T, C]", shapeOf(x))
+	}
+	if !f32(x) {
+		return fail("x is %v and this composition is f32", x.DType())
+	}
+	if k <= 1 {
+		return fail("the kernel is %d taps; a causal convolution this composition can "+
+			"express has at least two, and one tap is an elementwise scale", k)
+	}
+	if kt, kc, ok := rows(taps); !ok || kt != k || kc != c {
+		return fail("the taps are %v; they are [K, C] = [%d, %d], one row of weights "+
+			"per tap and one column per channel", shapeOf(taps), k, c)
+	}
+	if w.State == nil || w.Write == nil || w.Carry == nil || w.CarryWrite == nil {
+		return fail("the window needs a state and three index ports; the rows before " +
+			"this step are the previous step's and there is nothing else to pad with " +
+			"(specs/018-hybrid-models.md §4.1.1)")
+	}
+
+	// This step's rows into the window, after the K-1 that were already there.
+	filled := tensor.ScatterRows(g.B, w.State, x, w.Write)
+	window := tensor.ReadState(g.B, filled)
+
+	var acc *tensor.Tensor
+	for i := range k {
+		// Tap i reads the window starting i rows in, so tap K-1 lands on the
+		// current row and tap 0 on the one K-1 back:
+		//
+		//	y[t] = sum_i taps[i] * x[t-K+1+i]
+		//
+		// which is the convention the weights are trained under. Reversing it
+		// runs, produces plausible numbers, and convolves the window backwards.
+		lo := i
+		rowsOf := tensor.Contiguous(g.B, tensor.Slice(g.B, window, 0, lo, lo+t))
+		// Contiguous twice, and each one is for a different reason.
+		//
+		// The tap row first: a slice at row i is a view at an offset, and a
+		// broadcast starts from a contiguous run. Then the broadcast itself,
+		// because Mul takes operands and not views — accel's refusal says
+		// "make it contiguous in the shape you want", and this is that shape.
+		//
+		// It costs a [T, C] copy per tap. One kernel would cost none, which is
+		// [C26](../specs/010-conformance.md)'s point restated in dispatches.
+		tap := tensor.Contiguous(g.B, tensor.Slice(g.B, taps, 0, i, i+1))
+		wide := tensor.Contiguous(g.B, tensor.Broadcast(g.B, tap, tensor.Shape{t, c}))
+		term := tensor.Mul(g.B, rowsOf, wide)
+		if acc == nil {
+			acc = term
+			continue
+		}
+		acc = tensor.Add(g.B, acc, term)
+	}
+
+	// The last K-1 rows of the window become the next step's leading ones.
+	// After the read, because a write before it would convolve rows this step
+	// has not produced.
+	carried := tensor.GatherRows(g.B, window, w.Carry)
+	return acc, tensor.ScatterRows(g.B, filled, carried, w.CarryWrite)
+}

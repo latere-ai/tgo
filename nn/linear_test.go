@@ -200,3 +200,168 @@ func linearReference(q, k, v, alpha, beta, s0 []float32, extents []int) []float6
 	}
 	return out
 }
+
+const (
+	convK = 3
+	convC = 4
+	convT = 5
+)
+
+// convRig binds the window state and the three index ports a step needs.
+func convPorts(r *rig, t, k, c int) (nn.ConvState, []float32) {
+	w := k - 1 + t
+	st := tensor.NewState(r.g.B, tensor.StateDesc{
+		Name: "w", DType: accel.F32, Shape: tensor.Shape{w, c},
+	})
+	write := make([]uint32, t)
+	for i := range write {
+		write[i] = uint32(k - 1 + i)
+	}
+	carry := make([]uint32, k-1)
+	carryTo := make([]uint32, k-1)
+	for i := range carry {
+		carry[i] = uint32(t + i)
+		carryTo[i] = uint32(i)
+	}
+	zero := make([]float32, w*c)
+	r.f32("w", zero)
+	r.u32("write", write)
+	r.u32("carry", carry)
+	r.u32("carryTo", carryTo)
+	return nn.ConvState{
+		State:      st,
+		Write:      r.input("write", accel.U32, tensor.Shape{t}),
+		Carry:      r.input("carry", accel.U32, tensor.Shape{k - 1}),
+		CarryWrite: r.input("carryTo", accel.U32, tensor.Shape{k - 1}),
+	}, zero
+}
+
+// TestADepthwiseCausalConvMatchesAReferenceComputedBeside is
+// specs/018-hybrid-models.md §4.1 over a rolling window: the composition, with
+// the K-1 rows before this step supplied by the state rather than by a pad
+// nothing can build.
+//
+// The reference is written from the definition — position t reads t-K+1 through
+// t, each tap scaling its own channel — and not from the composition.
+func TestADepthwiseCausalConvMatchesAReferenceComputedBeside(t *testing.T) {
+	r := newRig(t, 1e-6)
+	x := r.input("x", accel.F32, tensor.Shape{convT, convC})
+	taps := r.input("taps", accel.F32, tensor.Shape{convK, convC})
+	xv := ramp(convT*convC, 7)
+	tv := ramp(convK*convC, 23)
+	r.f32("x", xv)
+	r.f32("taps", tv)
+	w, _ := convPorts(r, convT, convK, convC)
+
+	out, next := nn.DepthwiseCausalConv(r.g, x, taps, w, convK)
+	if next == nil {
+		t.Fatal("the block returned no next window")
+	}
+	got, _ := r.run(out)
+
+	// A first step sees zeros before it, which is what an empty window holds.
+	want := convReference(xv, tv, make([]float32, (convK-1)*convC))
+	closeTo(t, got, want, 1e-6, "depthwise causal conv")
+}
+
+// TestADepthwiseCausalConvCarriesAcrossSteps is the half a padded operand could
+// never have: a decode step has no earlier rows in its own tensor, so the
+// window is where they live.
+//
+// One five-token step, then a one-token step, against a reference that convolves
+// all six at once. If the carry were dropped the second step would see zeros
+// before it and the two would part.
+func TestADepthwiseCausalConvCarriesAcrossSteps(t *testing.T) {
+	r := newRig(t, 1e-6)
+	tv := ramp(convK*convC, 23)
+	both := ramp((convT+1)*convC, 7)
+
+	// Step one: the first convT rows.
+	x1 := r.input("x", accel.F32, tensor.Shape{convT, convC})
+	taps := r.input("taps", accel.F32, tensor.Shape{convK, convC})
+	r.f32("x", both[:convT*convC])
+	r.f32("taps", tv)
+	w, _ := convPorts(r, convT, convK, convC)
+	out1, _ := nn.DepthwiseCausalConv(r.g, x1, taps, w, convK)
+	r.run(out1)
+
+	// Step two reuses the same device and the same window buffer, which is
+	// what a State is for: the carry step one wrote is still in it.
+	r2 := r.reuse(t, "w", "taps")
+	x2 := r2.input("x2", accel.F32, tensor.Shape{1, convC})
+	taps2 := r2.input("taps", accel.F32, tensor.Shape{convK, convC})
+	r2.f32("x2", both[convT*convC:])
+	w2 := nn.ConvState{
+		State: tensor.NewState(r2.g.B, tensor.StateDesc{
+			Name: "w", DType: accel.F32, Shape: tensor.Shape{convK - 1 + convT, convC},
+		}),
+		Write:      r2.input("write2", accel.U32, tensor.Shape{1}),
+		Carry:      r2.input("carry2", accel.U32, tensor.Shape{convK - 1}),
+		CarryWrite: r2.input("carryTo2", accel.U32, tensor.Shape{convK - 1}),
+	}
+	r2.u32("write2", []uint32{convK - 1})
+	r2.u32("carry2", []uint32{1, 2})
+	r2.u32("carryTo2", []uint32{0, 1})
+	out2, _ := nn.DepthwiseCausalConv(r2.g, x2, taps2, w2, convK)
+	got, _ := r2.run(out2)
+
+	// The last row of a reference over all six tokens.
+	whole := convReference(both, tv, make([]float32, (convK-1)*convC))
+	want := whole[convT*convC:]
+	closeTo(t, got, want, 1e-6, "a one-token step after a five-token one")
+}
+
+// TestDepthwiseCausalConvRefusals: each names the field.
+func TestDepthwiseCausalConvRefusals(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		k     int
+		tapsR int
+		state bool
+		want  string
+	}{
+		{"one tap", 1, convK, true, "at least two"},
+		{"taps that are not [K, C]", convK, convK + 1, true, "one row of weights per tap"},
+		{"no window", convK, convK, false, "nothing else to pad with"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t, 1e-6)
+			x := r.input("x", accel.F32, tensor.Shape{convT, convC})
+			taps := r.input("taps", accel.F32, tensor.Shape{c.tapsR, convC})
+			var w nn.ConvState
+			if c.state {
+				w, _ = convPorts(r, convT, convK, convC)
+			}
+			out, _ := nn.DepthwiseCausalConv(r.g, x, taps, w, c.k)
+			r.refuses(out, c.want)
+		})
+	}
+}
+
+// convReference is the definition: y[t][c] = sum_i taps[i][c] * x[t-K+1+i][c],
+// with the rows before the step taken from the carry.
+func convReference(x, taps, carry []float32) []float64 {
+	t := len(x) / convC
+	out := make([]float64, t*convC)
+	at := func(row, ch int) float64 {
+		if row >= 0 {
+			return float64(x[row*convC+ch])
+		}
+		// -1 is the newest carried row, -2 the one before it.
+		i := len(carry)/convC + row
+		if i < 0 {
+			return 0
+		}
+		return float64(carry[i*convC+ch])
+	}
+	for row := range t {
+		for ch := range convC {
+			acc := 0.0
+			for i := range convK {
+				acc += float64(taps[i*convC+ch]) * at(row-convK+1+i, ch)
+			}
+			out[row*convC+ch] = acc
+		}
+	}
+	return out
+}
