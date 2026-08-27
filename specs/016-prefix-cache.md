@@ -1,6 +1,6 @@
 ---
 title: "Prefix caching: reusing the KV of a prompt somebody already paid for"
-status: implemented
+status: complete
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -143,6 +143,41 @@ not for speed:
 tgo takes the same split and the same reasoning. The earlier draft of this spec
 wrote $H$ and said nothing about it, which is how the property gets lost.
 
+### 3.3 The chain's seed, and why every field carries its length
+
+$H$ being SHA-256 says nothing about what is fed to it, and the encoding is
+where the scope boundary of §7 becomes real or does not.
+
+The chain is seeded once per lease, not per block:
+
+$$
+h_{-1} = H(\texttt{"tgo/prefix/v1"} \parallel \mathrm{u64}(\text{scope}) \parallel
+          \mathrm{len}(d) \parallel d \parallel \mathrm{len}(s) \parallel s)
+\qquad
+h_i = H(h_{i-1} \parallel \text{ids}_{iB \ldots (i+1)B})
+$$
+
+with $d$ the scope's domain (the session id under `ScopeSession`, empty
+otherwise) and $s$ the request's salt. Seeding once is what §7.1 means by *"the
+chain propagates it"*: the salt reaches $h_0$, $h_0$ reaches $h_1$, and no block
+after the first pays for it again.
+
+**Every variable-length field is length-prefixed**, and that is the section's
+point rather than a detail of the encoding. A plain concatenation makes the
+domain and the salt one string, so a session named `a` with salt `b` produces
+the seed of a session named `ab` with no salt — the two leases match each
+other's blocks, and the isolation §7 exists to provide is gone through the
+encoding rather than through the rule. It is the same confusion the scope
+prevents, arriving by a different door.
+
+**The label is a version, not decoration.** A change to the encoding above
+changes `tgo/prefix/v1`, so blocks hashed under the old rule can never match
+under the new one. Without it an encoding change is a silent cross-version
+collision: two processes on one cache, one of them upgraded, matching hashes
+that mean different things.
+
+`internal/prefix/hash.go:14,28`. Tested at `internal/prefix/hash_test.go`.
+
 ## 4. The structure: a hash map, not a trie
 
 vLLM hashes chained blocks into a map; sglang keeps a radix trie of token
@@ -186,6 +221,108 @@ holds another sequence's KV, and attends to somebody else's context.
 That is the single most dangerous bug in this design, and it is silent: the
 output stays fluent. §8 tests it directly rather than by exercising the paths
 that would happen to produce it.
+
+### 5.1 The reserve: blocks held for an answer nobody has written
+
+`Request.Reserve` is how many positions **beyond the prompt** to hold blocks
+for, and the lease takes them at `Acquire`, before a single token is generated.
+
+It is [008 §3](008-scheduler.md)'s $R$, and admitting without it is how a server
+deadlocks: every slot occupied by a sequence that fits its prompt, the pool
+empty, and no sequence able to grow — so nothing finishes, and nothing finishing
+means nothing can be evicted into progress. Holding the reserve up front makes
+admission a promise rather than a hope: **a request that was admitted has
+already been shown to fit.**
+
+The rounding is once, over the sum:
+
+$$
+\text{blocks} = \left\lceil \frac{T + R}{B} \right\rceil
+\qquad\text{not}\qquad
+\left\lceil \frac{T}{B} \right\rceil + \left\lceil \frac{R}{B} \right\rceil
+$$
+
+Rounding the parts separately costs up to one extra block per lease, which over
+a full batch is a block per sequence held against nothing. §3's arithmetic is
+the left-hand side, and `internal/prefix/prefix.go:274` computes it that way.
+
+Zero is a caller saying it will grow by nothing. That is right for a one-shot
+scoring pass and wrong for generation, and the field is documented as such
+rather than defaulted, because a default here would be a guess about the
+caller's loop.
+
+### 5.2 Grow, Commit and Publish: three verbs, because a step can fail
+
+A lease holds three different quantities and they are not the same number:
+
+| | what it counts | grown by |
+| --- | --- | --- |
+| blocks | positions the sequence **may** write | `Acquire`, `Grow` |
+| ids | positions whose tokens are **settled** | `Commit` |
+| published | complete blocks offered to the cache | `Publish(written)` |
+
+They separate because a forward pass can fail between reserving a row and
+filling it.
+
+```mermaid
+sequenceDiagram
+  participant C as caller
+  participant L as Lease
+  participant P as Pool
+  C->>L: Grow(n)
+  L->>P: alloc, all n or none
+  Note over L: blocks cover the positions,<br/>no ids and no hashes
+  C->>C: the step runs
+  C->>L: Commit(ids...)
+  Note over L: ids settled, the chain<br/>extends over completed blocks
+  C->>L: Publish(written)
+  L->>P: offer floor(written/B) blocks
+  P-->>L: page table, with the winner's<br/>block where two sequences raced
+```
+
+**`Grow` records no ids and chains no hash.** What those tokens are is not
+settled until the step lands, and a step that fails is a step whose tokens the
+caller may replace. A hash chained over a token nobody computed names a block
+holding something else — the §5 invariant, reached from the other side.
+
+**`Publish` takes `written` rather than publishing the lease's extent**, and
+that parameter is the reason it is not `Publish()`. The lease's blocks run ahead
+of the lease's content by construction: `Acquire` takes the whole prompt so
+admission is a promise, and `Grow` takes blocks before the step that fills them.
+Publishing on the extent offers another sequence a block holding nothing, and
+that sequence reads it as context — a chunked prefill 32 tokens into a 64-token
+block would hand out the other 32 as zeros, fluently.
+
+**Two sequences may publish the same block.** They miss on one prefix
+concurrently, compute it twice, and both offer it; the pool keeps one, and the
+loser drops its own and adopts the winner's, so the two end up sharing rather
+than leaking. `Publish` returns the page table for that reason — the caller must
+adopt what comes back, not keep what it had. The same swap happens with no
+concurrency at all, when §3.1's cap made this lease decline a block that was
+already cached.
+
+`internal/prefix/lease.go:77,110,162`. `Append` is `Grow` then `Commit` for a
+caller whose step cannot fail between them.
+
+### 5.3 Batch: several sequences, one pool, one forward pass
+
+`Batch` gives each slot its own lease against the one shared pool, so sequences
+that step together lease, grow and publish independently
+([016-D11](#decision-record)).
+
+The pool has to be shared and not partitioned, and that is the mechanism rather
+than a convenience: the reuse a slot gets is **not only its own**. A slot that
+has never seen these tokens still finds most of them, because the map is keyed
+on chained block hashes and every slot publishes into it. Partitioning the pool
+per slot would make a hit conditional on which slot the scheduler picked, which
+is a scheduling artifact leaking into what gets recomputed.
+
+It also requires paging. Sequences that step together have different lengths, so
+a contiguous cache pads every one of them to the longest — the allocation paging
+exists to avoid — which is why `Batch` needs `WithPrefixCache(CacheProcess, ...)`
+and says so rather than degrading quietly.
+
+`batch.go:45,233,263`.
 
 ## 6. Correctness: two subtleties, one of which is real
 
@@ -599,37 +736,29 @@ a hundred tests cover it across `internal/prefix`, `prefixcache_test.go`,
   sized from `--sessions`. A framework that changes what an answer says and
   takes device memory without being asked has made the operator's decision.
   §7, §7.2, §10.4 and [016-D7](#decision-record) are corrected to match.
-- **§6's divergence is asserted, not reported.** `prefixcache_test.go:153` fails
-  on a mismatch and names the first differing token index, which is stricter
-  than a number in a table and cheaper to keep green — but
-  [010 §3](010-conformance.md) has no cold-against-warm row, so the measurement
-  §6 promised does not exist.
-- **Four mechanisms carry the design and no section names them.**
-  `Request.Reserve` holds blocks for the answer at admission and rounds once
-  over prompt plus reserve (`internal/prefix/prefix.go:131,274`), which is what
-  stops [008 §3](008-scheduler.md)'s deadlock. The `Grow`/`Commit`/
-  `Publish(written)` split bounds publication by what a step actually wrote
-  (`internal/prefix/lease.go:77,110,162`), without which a chunked prefill
-  offers another sequence blocks holding nothing. `Batch` lets several sequences
-  lease and publish independently inside one forward pass
-  (`batch.go:45,233,263`), which is [016-D11](#decision-record)'s consumer.
-  The hash seed is length-prefixed under the version label `tgo/prefix/v1`
-  (`internal/prefix/hash.go:14,28`), which is what makes the scope boundary
-  real: an unprefixed concatenation would let session "a" with salt "b" collide
-  with session "ab" and no salt. Each is built and tested; each is undocumented
-  here.
+- **§6's divergence is asserted, not reported**, and as of 2026-08-28 that is
+  the decision rather than a gap. `prefixcache_test.go:153` fails on a mismatch
+  and names the first differing token index, which is stricter than a number in
+  a table and cheaper to keep green. §6 says why [010 §3](010-conformance.md)
+  gets no cold-against-warm row and what would falsify the assertion.
+- **Four mechanisms carried the design with no section naming them**, and four
+  sections were written on 2026-08-28: [§5.1](#51-the-reserve-blocks-held-for-an-answer-nobody-has-written)
+  for `Request.Reserve`, [§5.2](#52-grow-commit-and-publish-three-verbs-because-a-step-can-fail)
+  for the `Grow`/`Commit`/`Publish(written)` split,
+  [§5.3](#53-batch-several-sequences-one-pool-one-forward-pass) for `Batch`, and
+  [§3.3](#33-the-chains-seed-and-why-every-field-carries-its-length) for the
+  hash encoding. Each was built and tested before it was described, which is the
+  order [011](011-sequencing.md) warns about and the reason this bullet stayed
+  open for a milestone.
 
-**Not built.** One thing, and it is not the pool: sections in this spec for the
-four undocumented mechanisms above — `Reserve`, the `Grow`/`Commit`/`Publish(written)` split,
-`Batch`, and the hash encoding — which is what stands between this status and
-`complete`.
-
-Two items left this paragraph on 2026-08-28. §8's uncovered row is covered:
-`TestPartialHitAttentionAtANonzeroBase` asserts a partial hit's attention
-**output** against `internal/oracle.Attention` at causal base 9, and against a
-cold prefill of the whole prompt. And §6's cold-against-warm divergence is
-decided rather than open — it stays asserted here and does not become a row in
-[010 §3](010-conformance.md), for the reason §6 now gives.
+**Not built.** Nothing. Three items left this paragraph on 2026-08-28. §8's
+uncovered row is covered: `TestPartialHitAttentionAtANonzeroBase` asserts a
+partial hit's attention **output** against `internal/oracle.Attention` at causal
+base 9, and against a cold prefill of the whole prompt. §6's cold-against-warm
+divergence is decided rather than open — it stays asserted here and does not
+become a row in [010 §3](010-conformance.md), for the reason §6 now gives. And
+the four mechanisms that carried the design with no section have §3.3, §5.1,
+§5.2 and §5.3.
 
 Owned elsewhere: [025](025-recurrent-snapshot.md) extends this
 design to a state that has no positions, which the hybrid model of
