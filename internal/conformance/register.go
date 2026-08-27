@@ -379,10 +379,15 @@ func Register() []Row {
 			"`[T]` gate (3072 dispatches for a 64-layer model where 64 would do), " +
 			"or dropping the per-head decay, which is a different model. Closing " +
 			"it is one rank check: `[tokens]` keeps meaning every head shares a " +
-			"token's gate, so nothing existing moves. The checkpoint's " +
-			"`in_proj_ba` width is not yet read directly — the model is a 50 GiB " +
-			"download — so [024-D4](024-qwen3-5-architecture.md) states the shape " +
-			"the architecture describes and says which half is unconfirmed",
+			"token's gate, so nothing existing moves. The shape was unconfirmed " +
+			"when the row was filed, because the checkpoint is a 50 GiB download. " +
+			"It is confirmed now without one: ollama's public `qwen3_5` loader " +
+			"permutes `in_proj_ba` through a permutation of length `2*valueHeads` " +
+			"and names the native layout as beta then alpha per key head " +
+			"(`x/models/qwen3_5/gdn_projections.go:64`, ollama/ollama `bd3f22e2`), " +
+			"and its forward pass hands the whole width to the gated delta kernel " +
+			"rather than reducing it (`qwen3_5.go:1091,1116`). Two independent " +
+			"readings of the architecture now say the gate has a head axis",
 	}}
 	return rows
 }
@@ -502,6 +507,20 @@ func Validate(rows []Row) []string {
 		if r.Cannot == "" || r.Cost == "" {
 			bad = append(bad, r.ID+" leaves a cell empty; a row with no "+
 				"capability or no cost is not a row")
+		}
+		// A pipe splits a cell, including inside a code span: the table renders
+		// with an extra column and every cell after it shifts. The drift test
+		// compares the generated line against the file, so both sides agree and
+		// the only thing that notices is a reader looking at the rendered spec.
+		for name, cell := range map[string]string{
+			"cannot": r.Cannot, "cost": r.Cost,
+			"issue note": r.IssueNote, "state note": r.StateNote,
+		} {
+			if strings.Contains(cell, "|") {
+				bad = append(bad, r.ID+"'s "+name+" cell contains a pipe, which "+
+					"splits the row into an extra column. Markdown breaks it "+
+					"inside a code span too; write the layout without one")
+			}
 		}
 	}
 	return bad

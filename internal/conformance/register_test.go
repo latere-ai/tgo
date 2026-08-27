@@ -245,6 +245,20 @@ func TestValidateCatchesABrokenRow(t *testing.T) {
 			r.Specs = nil
 			return r
 		}(), "names no accel spec"},
+		// The one a reader finds and no test did: a pipe inside a cell splits
+		// the row. It reached §2 once, in a code span, where markdown breaks
+		// it just the same -- and the drift test could not see it, because it
+		// compares the generated line against the file and both carried it.
+		{"a cost cell that splits its own row", func() Row {
+			r := sound
+			r.Cost = "the native layout is `[beta | alpha]` per key head"
+			return r
+		}(), "contains a pipe"},
+		{"a capability cell that splits its own row", func() Row {
+			r := sound
+			r.Cannot = "a gate of shape [tokens | heads]"
+			return r
+		}(), "contains a pipe"},
 		{"a row with no capability", func() Row {
 			r := sound
 			r.Cannot = ""
