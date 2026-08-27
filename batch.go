@@ -184,10 +184,13 @@ func (m *Model) NewBatch(n int) (*Batch, error) {
 
 // batchRows is the largest query-row count one step may carry.
 //
-// A step's rows are bounded by the pool, not by a slot: every row writes one
-// position of key and value state, and the pool is what holds them. Capping at
-// the pool rather than at the largest bucket keeps the plan set small — one
-// bucket ladder rather than a ladder per slot count.
+// The pool's positions, which is an upper bound rather than a tight one: a
+// step's rows are what the slots contribute, and the pool holds every slot's
+// whole cache rather than one step's queries. The looseness costs nothing,
+// because [batchBuckets] compiles a plan per rung actually used and not per
+// rung named, and the alternative would be a bound derived from what a
+// scheduler intends to contribute -- a number this type does not have, and one
+// 008 section 5's chunk size is free to change.
 func (m *Model) batchRows(n int) (int, error) {
 	rows := m.blocks.positions
 	if rows < n {
@@ -200,14 +203,34 @@ func (m *Model) batchRows(n int) (int, error) {
 // Slots is how many sequences this batch holds.
 func (b *Batch) Slots() int { return len(b.slots) }
 
-// Admit gives a slot the blocks for a prompt and reports how many leading
-// positions the pool already holds.
+// Admit gives a slot the blocks for a prompt **and for the answer it will
+// generate**, and reports how many leading positions the pool already holds.
 //
-// The reuse is another conversation's as readily as this slot's: the pool is
-// keyed on chained block hashes and shared across every slot, so a slot that
-// has never seen these tokens can still find most of them
+// # Why the reserve is not optional
+//
+// specs/008-scheduler.md §3: a request admitted on a free slot alone is how a
+// server deadlocks. Every slot occupied, the pool empty, no sequence able to
+// grow -- so nothing finishes and nothing can be evicted into progress. The
+// blocks for
+//
+//	ceil((T_prompt + R) / B_block)
+//
+// are taken together or not at all, so a slot that was admitted has been shown
+// to fit. reserve of zero says the sequence will not grow, which is right for a
+// scoring pass and wrong for generation.
+//
+// R is policy and not a derived number. Setting it to the request's max_tokens
+// is safe and admits too little; setting it to zero maximises occupancy and
+// deadlocks. This takes it from the caller and refuses loudly, because a server
+// that quietly admits fewer requests than it could is indistinguishable from a
+// slow one.
+//
+// # The reuse is not only this slot's
+//
+// The pool is keyed on chained block hashes and shared across every slot, so a
+// slot that has never seen these tokens can still find most of them
 // (specs/016-prefix-cache.md §4).
-func (b *Batch) Admit(slot int, ids []int, salt string) (int, error) {
+func (b *Batch) Admit(slot int, ids []int, salt string, reserve int) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.usable(slot); err != nil {
@@ -218,10 +241,12 @@ func (b *Batch) Admit(slot int, ids []int, salt string) (int, error) {
 	}
 	s := b.slots[slot]
 	s.release()
-	l, err := b.m.blocks.pool.Acquire(prefix.Request{IDs: ids, Session: salt, Salt: salt})
+	l, err := b.m.blocks.pool.Acquire(prefix.Request{
+		IDs: ids, Session: salt, Salt: salt, Reserve: reserve,
+	})
 	if err != nil {
-		return 0, fmt.Errorf("tgo: admitting a %d-token prompt to slot %d: %w",
-			len(ids), slot, err)
+		return 0, fmt.Errorf("tgo: admitting a %d-token prompt with a reserve of %d "+
+			"to slot %d: %w", len(ids), reserve, slot, err)
 	}
 	s.lease, s.pages = l, l.Blocks()
 	s.length = l.Reused()

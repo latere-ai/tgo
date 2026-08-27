@@ -127,6 +127,19 @@ type Request struct {
 	// layer that knows who the caller is supplies it; tgo has no notion of a
 	// tenant (009 §7).
 	Salt string
+
+	// Reserve is how many positions beyond the prompt to hold blocks for, so
+	// that the sequence can grow without asking again.
+	//
+	// It is specs/008-scheduler.md §3's R, and admitting without it is how a
+	// server deadlocks: every slot occupied, the pool empty, and no sequence
+	// able to grow -- so nothing finishes and nothing can be evicted into
+	// progress. The blocks are held from the moment the lease is taken, which
+	// is the point: a request that is admitted has already been shown to fit.
+	//
+	// Zero is the caller saying it will grow by nothing, which is right for a
+	// one-shot scoring pass and wrong for generation.
+	Reserve int
 }
 
 // Stats is a snapshot of what the pool has done and what it currently holds.
@@ -250,11 +263,19 @@ func (p *Pool) Acquire(r Request) (*Lease, error) {
 		return nil, errors.New("prefix: the scope is session and the request names no " +
 			"session; an unnamed session would share with every other unnamed one")
 	}
+	if r.Reserve < 0 {
+		return nil, fmt.Errorf("prefix: the reserve is %d; it is positions to hold "+
+			"beyond the prompt", r.Reserve)
+	}
 	n := len(r.IDs)
-	need := (n + p.block - 1) / p.block
+	// The prompt *and* its reserve, taken together or not at all. Rounding once
+	// over the sum rather than twice over the parts is what makes the
+	// arithmetic §3's ceil((T+R)/B) rather than a block more than it.
+	need := (n + r.Reserve + p.block - 1) / p.block
 	if need > p.blocks {
-		return nil, fmt.Errorf("prefix: a %d-token prompt needs %d blocks and the pool "+
-			"holds %d: %w", n, need, p.blocks, ErrExhausted)
+		return nil, fmt.Errorf("prefix: a %d-token prompt with a reserve of %d needs "+
+			"%d blocks and the pool holds %d: %w", n, r.Reserve, need, p.blocks,
+			ErrExhausted)
 	}
 
 	l := &Lease{

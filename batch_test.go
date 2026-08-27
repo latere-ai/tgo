@@ -5,6 +5,8 @@ package tgo
 
 import (
 	"errors"
+
+	"github.com/latere-ai/tgo/internal/prefix"
 	"strings"
 	"testing"
 )
@@ -65,7 +67,7 @@ func TestABatchStepEqualsTheSessionsItBatches(t *testing.T) {
 	b := newBatch(t, m, 2)
 	work := make([]Work, len(prompts))
 	for i, p := range prompts {
-		reused, err := b.Admit(i, p, "")
+		reused, err := b.Admit(i, p, "", 0)
 		if err != nil {
 			t.Fatalf("Admit(%d): %v", i, err)
 		}
@@ -160,7 +162,7 @@ func TestABatchDoesNotLetOneSlotSeeAnother(t *testing.T) {
 
 	b := newBatch(t, m, 2)
 	for i, p := range [][]int{long, short} {
-		if _, err := b.Admit(i, p, ""); err != nil {
+		if _, err := b.Admit(i, p, "", 0); err != nil {
 			t.Fatalf("Admit(%d): %v", i, err)
 		}
 	}
@@ -195,7 +197,7 @@ func TestABatchSharesBlocksBetweenItsSlots(t *testing.T) {
 
 	b := newBatch(t, m, 2)
 	first := extend(system, 7, 6, 0)
-	if _, err := b.Admit(0, first, ""); err != nil {
+	if _, err := b.Admit(0, first, "", 0); err != nil {
 		t.Fatalf("Admit(0): %v", err)
 	}
 	if _, err := b.Step([]Work{{Slot: 0, Tokens: first}}); err != nil {
@@ -204,7 +206,7 @@ func TestABatchSharesBlocksBetweenItsSlots(t *testing.T) {
 
 	// A different conversation, into a slot that has never held these tokens.
 	second := extend(system, 11, 6, 0)
-	reused, err := b.Admit(1, second, "")
+	reused, err := b.Admit(1, second, "", 0)
 	if err != nil {
 		t.Fatalf("Admit(1): %v", err)
 	}
@@ -241,7 +243,7 @@ func TestBatchRefusals(t *testing.T) {
 	m := batchModel(t)
 	b := newBatch(t, m, 2)
 	ids := promptIDs(1, 8)
-	if _, err := b.Admit(0, ids, ""); err != nil {
+	if _, err := b.Admit(0, ids, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -264,7 +266,7 @@ func TestBatchRefusals(t *testing.T) {
 			}
 		})
 	}
-	if _, err := b.Admit(9, ids, ""); err == nil {
+	if _, err := b.Admit(9, ids, "", 0); err == nil {
 		t.Error("Admit on a slot outside the batch was accepted")
 	}
 	if err := b.Evict(9); err == nil {
@@ -279,7 +281,7 @@ func TestEvictDropsASlotsBlocksAndItsHistory(t *testing.T) {
 	m := batchModel(t)
 	b := newBatch(t, m, 2)
 	ids := promptIDs(1, 2*CacheBlock)
-	if _, err := b.Admit(0, ids, ""); err != nil {
+	if _, err := b.Admit(0, ids, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.Step([]Work{{Slot: 0, Tokens: ids}}); err != nil {
@@ -305,7 +307,7 @@ func TestEvictDropsASlotsBlocksAndItsHistory(t *testing.T) {
 	}
 	// Not freed outright: the published blocks are the cache, so readmitting
 	// the same prompt recomputes nothing.
-	reused, err := b.Admit(0, ids, "")
+	reused, err := b.Admit(0, ids, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +328,7 @@ func TestASlotsLogitsSurviveAnotherSlotsStep(t *testing.T) {
 	m := batchModel(t)
 	b := newBatch(t, m, 2)
 	for i, p := range [][]int{promptIDs(1, 10), promptIDs(2, 6)} {
-		if _, err := b.Admit(i, p, ""); err != nil {
+		if _, err := b.Admit(i, p, "", 0); err != nil {
 			t.Fatalf("Admit(%d): %v", i, err)
 		}
 	}
@@ -367,7 +369,7 @@ func TestAdmitAndStepDoNotLeaseTheSamePromptTwice(t *testing.T) {
 	m := batchModel(t)
 	b := newBatch(t, m, 2)
 	prompt := promptIDs(1, 2*CacheBlock+5)
-	if _, err := b.Admit(0, prompt, ""); err != nil {
+	if _, err := b.Admit(0, prompt, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := b.slots[0].lease.Len(); got != len(prompt) {
@@ -394,5 +396,97 @@ func TestAdmitAndStepDoNotLeaseTheSamePromptTwice(t *testing.T) {
 	if got := b.Length(0); got != len(prompt)+1 {
 		t.Fatalf("the slot holds %d positions and the lease covers %d", got,
 			b.slots[0].lease.Len())
+	}
+}
+
+// TestAdmissionRefusesWhatThePoolCannotHoldWithItsAnswer is 008 §3, and the
+// difference between it and admitting on a free slot alone.
+//
+// Two slots are free. The pool can hold the second prompt. It cannot hold the
+// second prompt *and* the answer that prompt is going to generate, and that is
+// the case a scheduler must refuse: admitting it fills both slots with
+// sequences that cannot grow, so nothing finishes and there is nothing to
+// evict into progress.
+func TestAdmissionRefusesWhatThePoolCannotHoldWithItsAnswer(t *testing.T) {
+	t.Parallel()
+	m := batchModel(t)
+	b := newBatch(t, m, 2)
+	blocks := m.blocks.positions / CacheBlock
+
+	// The first slot takes most of the pool, prompt and reserve together.
+	first := promptIDs(1, (blocks-2)*CacheBlock)
+	if _, err := b.Admit(0, first, "", CacheBlock); err != nil {
+		t.Fatalf("Admit(0): %v", err)
+	}
+
+	// The second prompt fits on its own: one block is left over.
+	second := promptIDs(2, CacheBlock)
+	if _, err := b.Admit(1, second, "", 0); err != nil {
+		t.Fatalf("a prompt that fits the pool on its own was refused: %v", err)
+	}
+	if err := b.Evict(1); err != nil {
+		t.Fatal(err)
+	}
+
+	// With an answer to write, it does not, and the refusal says so rather
+	// than admitting a sequence that cannot grow.
+	_, err := b.Admit(1, second, "", 4*CacheBlock)
+	if err == nil {
+		t.Fatal("a prompt whose answer the pool cannot hold was admitted; a slot " +
+			"filled with a sequence that cannot grow is 008 §3's deadlock")
+	}
+	if !errors.Is(err, prefix.ErrExhausted) {
+		t.Fatalf("the refusal is not ErrExhausted: %v", err)
+	}
+	for _, want := range []string{"reserve of", "exhausted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+}
+
+// TestAReservedSlotGrowsWithoutAskingAgain: the blocks were taken at
+// admission, so generating into them cannot fail for want of a pool.
+func TestAReservedSlotGrowsWithoutAskingAgain(t *testing.T) {
+	t.Parallel()
+	m := batchModel(t)
+	b := newBatch(t, m, 2)
+
+	prompt := promptIDs(1, CacheBlock)
+	if _, err := b.Admit(0, prompt, "", 2*CacheBlock); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Step([]Work{{Slot: 0, Tokens: prompt}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fill the pool with the other slot, so nothing is left to allocate.
+	rest := promptIDs(2, m.blocks.positions-3*CacheBlock)
+	if _, err := b.Admit(1, rest, "", 0); err != nil {
+		t.Fatalf("filling the pool: %v", err)
+	}
+	if free := m.blocks.pool.Stats().Free; free != 0 {
+		t.Fatalf("%d blocks are still free; this test needs an exhausted pool", free)
+	}
+	held := m.blocks.pool.Stats().InUse
+
+	// Slot 0 grows into its reserve, across a block boundary, on a pool with
+	// nothing left to allocate. Two steps rather than sixty-four one-token
+	// ones: what is under test is the reserve, not the decode, and a batched
+	// step over a real forward pass is what CONTRIBUTING's CPU budget is spent
+	// on.
+	grow := make([]int, CacheBlock+2)
+	for i := range grow {
+		grow[i] = 7
+	}
+	if _, err := b.Step([]Work{{Slot: 0, Tokens: grow}}); err != nil {
+		t.Fatalf("growing into a reserve on an exhausted pool: %v", err)
+	}
+	if _, err := b.Step([]Work{{Slot: 0, Tokens: []int{7}}}); err != nil {
+		t.Fatalf("one more token into the reserve: %v", err)
+	}
+	if got := m.blocks.pool.Stats().InUse; got != held {
+		t.Fatalf("growing into the reserve took the pool from %d blocks to %d; the "+
+			"reserve is what makes admission a promise", held, got)
 	}
 }

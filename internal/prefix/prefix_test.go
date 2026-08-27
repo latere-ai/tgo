@@ -536,3 +536,77 @@ func TestARefusedAcquireGivesBackTheBlocksItMatched(t *testing.T) {
 			hit.Matched())
 	}
 }
+
+// TestAReserveIsHeldFromAdmission is specs/008-scheduler.md §3.
+//
+// A sequence admitted on its prompt alone is a sequence that may not be able to
+// grow, and a pool of those deadlocks: every slot occupied, the pool empty, and
+// nothing able to finish. The reserve is what makes "admitted" mean "shown to
+// fit", so it is held from the moment the lease is taken rather than asked for
+// later.
+func TestAReserveIsHeldFromAdmission(t *testing.T) {
+	p, err := New(Config{Block: 4, Blocks: 4, Scope: ScopeProcess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four tokens is one block; a reserve of eight takes two more.
+	l, err := p.Acquire(Request{IDs: []int{1, 2, 3, 4}, Reserve: 8})
+	if err != nil {
+		t.Fatalf("Acquire with a reserve: %v", err)
+	}
+	if got := len(l.Blocks()); got != 3 {
+		t.Fatalf("a 4-token prompt with a reserve of 8 holds %d blocks over a block "+
+			"size of 4, want 3", got)
+	}
+	if got := p.Stats().InUse; got != 3 {
+		t.Fatalf("the pool reports %d blocks in use, want 3; a reserve that is not "+
+			"held is not a reserve", got)
+	}
+
+	// Growing into the reserve asks the pool for nothing.
+	before := p.Stats().InUse
+	if err := l.Append(5, 6, 7, 8); err != nil {
+		t.Fatalf("Append into the reserve: %v", err)
+	}
+	if got := p.Stats().InUse; got != before {
+		t.Fatalf("growing into the reserve took %d more blocks; the whole point is "+
+			"that it was already taken", got-before)
+	}
+
+	// And a second request that would not fit beside it is refused rather than
+	// admitted into a pool that cannot hold it.
+	if _, err := p.Acquire(Request{IDs: []int{9, 10}, Reserve: 8}); !errors.Is(err, ErrExhausted) {
+		t.Fatalf("a request needing 3 blocks of a pool with 1 free = %v, want "+
+			"ErrExhausted", err)
+	}
+	l.Release()
+}
+
+// TestAReserveIsRoundedOnceOverTheSum: ceil((T+R)/B), not ceil(T/B)+ceil(R/B).
+func TestAReserveIsRoundedOnceOverTheSum(t *testing.T) {
+	p, err := New(Config{Block: 4, Blocks: 8, Scope: ScopeProcess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 + 2 = 4 is one block. Rounding the parts would take two.
+	l, err := p.Acquire(Request{IDs: []int{1, 2}, Reserve: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(l.Blocks()); got != 1 {
+		t.Fatalf("a 2-token prompt with a reserve of 2 over blocks of 4 holds %d "+
+			"blocks, want 1", got)
+	}
+	l.Release()
+}
+
+// TestANegativeReserveIsRefused.
+func TestANegativeReserveIsRefused(t *testing.T) {
+	p, err := New(Config{Block: 4, Blocks: 4, Scope: ScopeProcess})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Acquire(Request{IDs: []int{1}, Reserve: -1}); err == nil {
+		t.Fatal("a negative reserve was accepted")
+	}
+}
