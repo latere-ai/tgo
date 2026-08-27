@@ -91,16 +91,20 @@ swapped.
 > is not one. Recorded rather than silently rewritten, because the order was
 > argued from vLLM's and the argument was not wrong so much as weaker.
 
-> **The code selects the top $k$ on the logits, and this arrow is what it must
-> select on.** `sample/stages.go:108` calls `topN` on the logits, before any
-> exponential is taken; only top-$p$ reads the weights. The two orders differ
-> exactly when two distinct f32 logits map to one f32 weight: selecting on
-> logits, the larger logit wins whatever its id; selecting on weights, the two
-> values tie and the (value, index) rule keeps the **lower** id. The boundary
-> entry at $k$ is then a different token on the host than on the device. That
-> case is reachable at the deep tail, which is where a $k = 128$ boundary over a
-> 152k vocabulary sits. It is a defect, not a preference, and moving the
-> selection onto the weights is 006's remaining work.
+> **Fixed 2026-08-27: the top $k$ is selected on the weights**, which is what
+> this arrow says and what the code did not do until then. `topN` ran on the
+> logits, before any exponential; only top-$p$ read the weights.
+>
+> The two orders differ exactly when two distinct f32 logits map to one f32
+> weight. Selecting on logits, the larger logit wins whatever its id; selecting
+> on weights, the two values tie and accel's (value, index) rule keeps the
+> **lower** id. The boundary entry at $k$ is then a different token on the host
+> than on the device, and 006-D1 makes the host the reference, so the reference
+> was the one that was wrong. `TestTopKSelectsWhereAccelSelects` pins it: it
+> searches the denormal range for a colliding pair rather than hard-coding one,
+> because which logits collapse depends on where the denormals fall — on this
+> platform $-95$ and $-95.0001$ do. It costs a whole-vocabulary exp pass the
+> logit selection avoided, which is the pass the top-$p$ branch already took.
 
 - **Bias first.** `logit_bias` is a caller's absolute statement about a token; a
   penalty computed on a biased logit still means what it says, while biasing a
@@ -290,14 +294,15 @@ logits row read back from the device.
 
 **What diverged** from the design, and why the code is right:
 
-- **Top-$k$ selects on the logits, not on the weights** (`sample/stages.go:108`).
-  The code is **not** right here. Two distinct f32 logits can map to one f32
-  weight; the host then keeps the higher id at the $k$ boundary and the device,
-  ordering the tied weights on (value, index), keeps the lower one. A $k = 128$
-  boundary over a 152k vocabulary sits in the deep tail, which is where that
-  collision happens, so the reference and the device can select different
-  candidate sets on real data. The fix is to move the selection onto the
-  weights.
+- **Top-$k$ selected on the logits and now selects on the weights**, fixed
+  2026-08-27. It was the one entry in this list where the code was wrong rather
+  than right: two distinct f32 logits can map to one f32 weight, and the host
+  then kept the higher id at the $k$ boundary while the device, ordering the
+  tied weights on (value, index), kept the lower one. A $k = 128$ boundary over
+  a 152k vocabulary sits in the deep tail where that collision happens, so the
+  reference and the device could select different candidate sets on real data.
+  `pick` now gathers a candidate's weight out of the same vector it was selected
+  from, so the number a token is chosen by is the number it is weighted by.
 - **A nucleus wider than 128 is capped, not refused** (`sample/stages.go:277`).
   §3 asked for a refusal for both bounds. accel's `TopPMask` caps and its
   `TopKMask` refuses, so the host reference matches each kernel rather than
@@ -314,11 +319,12 @@ logits row read back from the device.
 - **The draw stream lives for one request**, not one session: `stream.go:148`
   builds a `sample.New(p.Seed)` per stream and `Policy.Seed` defaults to zero.
 
-**Not built.** Selecting the top $k$ on the softmax weights, with the test that
-pins the boundary case above, is 006's own remaining work and the reason it is
-not `complete`. A test for a stop string straddling a UTF-8 boundary, and the
-penalties checked against an independent reference rather than the
-hand-computed constants at `sample/stages_test.go:78`, are 006's as well. The
+**Not built.** Two tests, both 006's own and both the reason it is not
+`complete`: a stop string straddling a UTF-8 boundary, and the penalties checked
+against an independent reference rather than the hand-computed constants at
+`sample/stages_test.go:78`. Selecting the top $k$ on the softmax weights was
+the third item here until 2026-08-27; it shipped with
+`TestTopKSelectsWhereAccelSelects`, which is what §3's amended note records. The
 CPU-versus-Metal greedy divergence measurement §4.1 defers to
 [010 §3](010-conformance.md) is 010's, and waits on a Metal device in the loop.
 Moving the policy onto `tensor.Sample`, which removes the per-token logits

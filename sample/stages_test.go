@@ -5,6 +5,7 @@ package sample
 
 import (
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/latere-ai/tgo/internal/oracle"
@@ -385,4 +386,68 @@ func TestLogitBiasBansAToken(t *testing.T) {
 	if got[0] != 0 || got[1] != 1 {
 		t.Fatalf("probs = %v, want the banned token at zero", got)
 	}
+}
+
+// TestTopKSelectsWhereAccelSelects pins the one case where selecting on the
+// logits and selecting on the softmax weights disagree.
+//
+// exp is monotonic, so the two rules agree everywhere it is injective in f32.
+// It is not injective at the tail: two logits that differ as f32 can round to
+// one f32 weight, and there the rules diverge. On logits the larger one wins;
+// accel's TopKMask runs after the softmax, sees two equal values, and breaks
+// the tie on the index, keeping the smaller id.
+//
+// Put the larger logit at the higher id and the boundary between them, and the
+// two rules pick different tokens. A k = 128 boundary over a 152k vocabulary
+// sits deep in this range, which is why the case is worth a test rather than a
+// note.
+func TestTopKSelectsWhereAccelSelects(t *testing.T) {
+	// Find the pair by search rather than by asserting a constant: which
+	// logits collapse depends on where the denormals fall, and a hard-coded
+	// pair would be a test that passes for the wrong reason if that moves.
+	hi, lo, ok := collapsingPair()
+	if !ok {
+		t.Skip("no two f32 logits on this platform share one f32 weight")
+	}
+	if hi <= lo {
+		t.Fatalf("the pair is not ordered: %v, %v", hi, lo)
+	}
+	if expf(hi) != expf(lo) {
+		t.Fatalf("the pair does not collapse: exp(%v)=%v, exp(%v)=%v",
+			hi, expf(hi), lo, expf(lo))
+	}
+	if expf(hi) == 0 {
+		t.Fatalf("the shared weight is zero, so the choice cannot be observed")
+	}
+
+	// ids 0 and 1 take the first two slots; the third is contested between id 2
+	// (the smaller logit) and id 3 (the larger). Weights are exp(l - 0).
+	logits := []float32{0, -1, lo, hi}
+	d := policyDist(logits, nil, Policy{Temperature: 1, TopK: 3},
+		make([]float32, len(logits)))
+
+	got := append([]int(nil), d.ids...)
+	slices.Sort(got)
+	want := []int{0, 1, 2}
+	if !slices.Equal(got, want) {
+		t.Errorf("top-3 over %v = %v, want %v\n"+
+			"id 3 has the larger logit and id 2 the smaller, and the two share "+
+			"one f32 weight; accel breaks that tie on the index, so the set "+
+			"keeps id 2", logits, got, want)
+	}
+}
+
+// collapsingPair returns two distinct f32 logits whose f32 weights are equal
+// and nonzero, searching the denormal range where exp stops being injective.
+func collapsingPair() (hi, lo float32, ok bool) {
+	// Below about -87 an f32 exp result is denormal, and denormals are spaced
+	// far more coarsely in relative terms than the logits that produce them.
+	for x := float32(-88); x > -103; x -= 0.5 {
+		for d := float32(1e-4); d < 1; d *= 2 {
+			if y := x - d; expf(x) == expf(y) && expf(x) != 0 && x != y {
+				return x, y, true
+			}
+		}
+	}
+	return 0, 0, false
 }

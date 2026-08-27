@@ -102,11 +102,25 @@ func policyDist(logits []float32, history []int, p Policy, scratch []float32) di
 		// Top-k before top-p: k is a hard cap on the candidate count and p
 		// then trims within it. The reverse order lets p admit more than k.
 		//
-		// The selection is on the logits, per section 3, and ties break
-		// lexicographically on (value, id) as accel's TopKMask does, so "the k
-		// largest" is a set of exactly k entries whatever the data.
-		cand := topN(logits, min(p.TopK, len(logits)))
-		w, total := weightsOf(logits, cand)
+		// The selection is on the softmax **weights**, which is where accel
+		// makes it: TopKMask runs after the softmax, so its (value, index) tie
+		// rule compares exp(l - m) rather than l.
+		//
+		// Selecting on the logits gives the same set almost everywhere,
+		// because exp is monotonic -- but not at the tail, where it is
+		// many-to-one in f32. Two logits that differ as f32 can share one f32
+		// weight, and there the rules disagree: on logits the larger one wins,
+		// and accel, seeing two equal values, keeps the smaller id. A k = 128
+		// boundary over a 152k vocabulary sits deep in that tail, so the case
+		// is reachable rather than theoretical, and [006-D1] makes this path
+		// the reference the device is checked against.
+		//
+		// It costs a whole-vocabulary exp pass that selecting on the logits
+		// did not. That is the same pass the top-p branch below already takes,
+		// and correctness against the reference is what it buys.
+		all, _ := weightsAll(logits, scratch)
+		cand := topN(all, min(p.TopK, len(all)))
+		w, total := pick(all, cand)
 		if p.TopP > 0 {
 			// The nucleus is a fraction of its input's own total, which here
 			// is the top-k set: accel's TopPMask sums what it is given.
@@ -118,9 +132,9 @@ func policyDist(logits []float32, history []int, p Policy, scratch []float32) di
 		// No top-k, so the nucleus is a fraction of the whole vocabulary's
 		// mass -- but it can still only be as wide as accel's kernel walks.
 		// The 128 largest candidates are therefore enough to build it.
-		cand := topN(logits, min(TopMaxRounds, len(logits)))
-		_, total := weightsAll(logits, scratch)
-		w, _ := weightsOf(logits, cand)
+		all, total := weightsAll(logits, scratch)
+		cand := topN(all, min(TopMaxRounds, len(all)))
+		w, _ := pick(all, cand)
 		cand, w, total = nucleus(cand, w, total, p.TopP)
 		return keep(cand, w, total)
 
@@ -245,14 +259,18 @@ func weightsAll(logits, buf []float32) ([]float32, float32) {
 	return buf, total
 }
 
-// weightsOf returns exp(l - max) for the candidates, parallel to ids, with
-// their total. ids are in descending order, so ids[0] carries the maximum.
-func weightsOf(logits []float32, ids []int) ([]float32, float32) {
-	m := logits[ids[0]]
+// pick gathers the candidates' weights out of the whole-vocabulary vector,
+// parallel to ids, with their total.
+//
+// It reads weights rather than recomputing exp from the logits, so the number a
+// candidate is selected by is the number it is then weighted by. Recomputing
+// them is where the two could disagree, and a set chosen on one quantity and
+// weighted by another is the defect this file just fixed, one step further on.
+func pick(all []float32, ids []int) ([]float32, float32) {
 	w := make([]float32, len(ids))
 	total := float32(0)
 	for i, id := range ids {
-		w[i] = expf(logits[id] - m)
+		w[i] = all[id]
 		total += w[i]
 	}
 	return w, total

@@ -134,7 +134,7 @@ where the code is, what diverged, and what is open.
 | [003](003-chat-template.md) | implemented | chat rendering, and why user text cannot forge a turn | **003-D2 has no code path**: nothing reads a checkpoint's `chat_template` |
 | [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass | — |
 | [005](005-kv-cache.md) | implemented | the KV cache, contiguous and paged, and what each costs | `cacheBytes` drops the width term, so `Info` reports f32 for an f16 pool; two §7 tests |
-| [006](006-sampling.md) | implemented | composition order, and reproducibility as a stream | **top-*k* selects on logits** where accel selects on softmax weights |
+| [006](006-sampling.md) | implemented | composition order, and reproducibility as a stream | two tests: a stop string across a UTF-8 boundary, penalties against an independent reference |
 | [007](007-engine.md) | complete | sessions, plans, buckets, the decode loop | — |
 | [008](008-scheduler.md) | complete | continuous batching: slots, admission, eviction, chunked prefill | — |
 | [009](009-server.md) | implemented | three wire dialects over one neutral request | `logprobs` reported as a loss rather than served; 009-D14's footprint gate |
@@ -185,16 +185,14 @@ Ordered, with what blocks what. Sizes are effort, not importance.
 
 The code runs. What is left is two defects, proof, and throughput.
 
-**Correctness** — both blocked by nothing, both one file and one test:
+**Correctness.** Two of the three defects the audit found are fixed: an int4
+load could not be staged onto a device without unified memory, and top-*k*
+selected on the logits where accel selects on the softmax weights. One is left:
 
-1. **Fix top-*k*.** Select on the softmax weights, matching accel's
-   `(value, index)` tie rule. Reachable at the deep tail, which is where a
-   *k* = 128 boundary over a 152k vocabulary sits.
-   [020](020-device-sampling.md) needs the host path right before it can be the
-   oracle.
-2. **Build 003-D2's warning.** Read `chat_template` from the checkpoint, hash
-   it, warn naming both checksums, render anyway. Also closes
-   [014](014-jinja.md) §1's second trigger, which is undetectable without it.
+1. **Build 003-D2's warning.** Read `chat_template` from the checkpoint, hash
+   it, warn naming both checksums, render anyway. One file and one test, blocked
+   by nothing. Also closes [014](014-jinja.md) §1's second trigger, which is
+   undetectable without it.
 
 **Proof:**
 
@@ -213,7 +211,7 @@ idle one, and today `server/` imports no `Scheduler`:
    blocked by nothing — C3 and C6 are closed, so the device path exists to
    measure against.
 6. **Device-side sampling** ([020](020-device-sampling.md)). *Large*, blocked on
-   5 and on 1.
+   5. Its oracle is 006's host path, which is why the top-*k* fix came first.
 7. **The admission queue** ([021](021-admission-queue.md)). *Medium*, blocked by
    nothing and independent of 5 and 6, so it can run in parallel.
 8. **The server drives the scheduler** ([022](022-batched-serving.md)). *Large*,
@@ -227,8 +225,7 @@ idle one, and today `server/` imports no `Scheduler`:
 
 ```mermaid
 flowchart LR
-  K["1 fix top-k"] --> S["6 020 device sampling"]
-  M["5 measure sampling"] --> S
+  M["5 measure sampling"] --> S["6 020 device sampling"]
   Q["7 021 admission queue"] --> V["8 022 batched serving"]
   S --> V
   V --> B["9 027 + 028 bench and gate"]
