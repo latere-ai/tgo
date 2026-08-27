@@ -241,14 +241,17 @@ int4 storage shipped, so the footprint is 13.4 GiB, and `nn.LinearAttention` and
 `nn.DepthwiseCausalConv` both exist with value tests that pass. Most of what is
 left is a graph tgo has not written.
 
-**One upstream question comes first.** Writing
+**One upstream gap comes first, and it is now reported.** Writing
 [024](024-qwen3-5-architecture.md) found that accel's `tensor.LinearAttention`
 takes one gate per token with no head axis, while a gated delta network gives
 each value head its own decay. accel refuses the per-head shape rather than
-broadcasting it, which is the good answer — but it means the layer is
-inexpressible if the checkpoint is what it appears to be. Settle it against a
-real `config.json` before starting item 2: a day at the front, a rewrite at the
-end.
+broadcasting it, which is the good answer — but the layer is inexpressible if
+the checkpoint is what it appears to be. Filed as
+[C27](010-conformance.md) / [accel#27](https://github.com/golang-design/accel/issues/27)
+with a skipping probe. **The half tgo can settle itself is one safetensors
+header read**: `in_proj_ba`'s width, 96 or 2, decides whether C27 blocks the
+graph or is moot. Do that before item 2 — a header read at the front, or a
+rewrite at the end.
 
 1. **A rotary width below `head_dim`, and the output gate.** `nn.Attention`
    passes `cfg.HeadDim` as the rotary width, so `partial_rotary_factor` is

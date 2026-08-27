@@ -285,9 +285,18 @@ head, accel's operator cannot express the layer, and
 
 So this is a report before it is a build: a test that names it, a new row in
 [010 §2](010-conformance.md), and an issue on accel citing this spec — which is
-[000 D1](000-decisions.md)'s sequence, unchanged. The row has no number yet
-because the register numbers rows when they are added and this spec does not
-edit 010.
+[000 D1](000-decisions.md)'s sequence, unchanged.
+
+**Reported on 2026-08-27 as [C27](010-conformance.md), filed as
+[accel#27](https://github.com/golang-design/accel/issues/27).** The probe is
+`TestTheGatedDeltaGateHasNoHeadAxis` in `internal/conformance/linear_test.go`,
+which binds α and β at `[tokens, heads]` and records what accel does with them.
+It **refuses**, and that is the good answer: the alternative — reading the first
+heads-worth of the tensor as though it were `[tokens]` — would be a wrong decay
+on 47 heads in 48, computed silently, which is the class
+[010 §5](010-conformance.md) exists for. The ask is one rank check, because
+`[tokens]` keeps meaning every head shares a token's gate and nothing existing
+moves.
 
 **What must be established first is whether the gates are per head at all.**
 `in_proj_ba`'s width is the evidence and it is an unconfirmed name
