@@ -199,8 +199,25 @@ This is the same class as the CPU/Metal divergence [006 §4.1](006-sampling.md)
 already refuses to bound and instead measures. What shipped **asserts** it
 rather than reporting it: `prefixcache_test.go:153` runs one greedy prompt cold
 and warm and names the first differing token index on a mismatch.
-[010 §3](010-conformance.md) carries no cold-against-warm row, so the divergence
-is checked in tgo's own tests and is not one of the numbers tgo reports back.
+
+**Settled 2026-08-28: it stays asserted, and [010 §3](010-conformance.md) gets no
+cold-against-warm row.** Every row in that table measures something accel
+asserts or provides — its two backends agreeing, `Int8ErrorBound`, its planner's
+compile time, `Plan.Memory()`'s aliasing claim. A prefill reshaped by a cache
+hit is a consequence of *this* design under non-associative float, not a
+property accel claims and not a defect accel could fix, so reporting it upstream
+would tell accel nothing it could act on. That is the line §3's own column asks
+about: whether accel can answer the question about itself.
+
+**What would falsify the assertion, and where it goes.** The test runs at
+fixture scale, where 24 layers of accumulation are not enough to separate two
+GEMM shapes. A tier-3 run ([010 §4](010-conformance.md)) on a real checkpoint is
+where a first differing token index would appear, and it turns the assertion
+into a failure with a number rather than into a widened tolerance
+([010-D3](010-conformance.md)). If that happens, the fix is not to loosen the
+test: it is to record the divergence in [011 §4](011-sequencing.md) beside the
+other dated tier-3 results, and to amend the note below, because the claim the
+note makes is the thing that would have been falsified.
 
 > It is worth saying plainly that this makes a cache hit **observable**, and
 > therefore that "prefix caching is transparent" is not quite true. It is
@@ -602,18 +619,19 @@ a hundred tests cover it across `internal/prefix`, `prefixcache_test.go`,
   with session "ab" and no salt. Each is built and tested; each is undocumented
   here.
 
-**Not built.** Two things, and neither is the pool. §8's uncovered row is
-covered as of 2026-08-28: `TestPartialHitAttentionAtANonzeroBase` asserts a
-partial hit's attention **output** against `internal/oracle.Attention` at
-causal base 9, and against a cold prefill of the whole prompt.
-
-First, §6's cold-against-warm divergence measurement, which is still an open
-decision: either a new row in [010 §3](010-conformance.md), or
-an amendment to §6 saying the property is asserted in `prefixcache_test.go`
-rather than reported. Second, sections in this spec for the four undocumented
-mechanisms above — `Reserve`, the `Grow`/`Commit`/`Publish(written)` split,
+**Not built.** One thing, and it is not the pool: sections in this spec for the
+four undocumented mechanisms above — `Reserve`, the `Grow`/`Commit`/`Publish(written)` split,
 `Batch`, and the hash encoding — which is what stands between this status and
-`complete`. Owned elsewhere: [025](025-recurrent-snapshot.md) extends this
+`complete`.
+
+Two items left this paragraph on 2026-08-28. §8's uncovered row is covered:
+`TestPartialHitAttentionAtANonzeroBase` asserts a partial hit's attention
+**output** against `internal/oracle.Attention` at causal base 9, and against a
+cold prefill of the whole prompt. And §6's cold-against-warm divergence is
+decided rather than open — it stays asserted here and does not become a row in
+[010 §3](010-conformance.md), for the reason §6 now gives.
+
+Owned elsewhere: [025](025-recurrent-snapshot.md) extends this
 design to a state that has no positions, which the hybrid model of
 [018](018-hybrid-models.md) needs — a gated delta layer's state is identified by
 how many tokens it absorbed rather than by an address, so it is snapshotted and

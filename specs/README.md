@@ -142,7 +142,7 @@ where the code is, what diverged, and what is open.
 | [011](011-sequencing.md) | record | build order, what landed, and where a measurement goes | — |
 | [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
 | [015](015-structured-output.md) | implemented | schema-constrained decoding | `json_object` is accepted and reaches no grammar |
-| [016](016-prefix-cache.md) | implemented | reusing the KV of a prompt somebody already paid for | §6's divergence measurement is an open decision; four mechanisms the code has and the spec does not describe |
+| [016](016-prefix-cache.md) | implemented | reusing the KV of a prompt somebody already paid for | four mechanisms the code has and the spec does not describe |
 | [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly | 017-D5's batch curve, and the vLLM row 011 M13 gates |
 | [018](018-hybrid-models.md) | implemented | the two linear-attention blocks, and what a hybrid still needs | the graph: 023–026 below |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
