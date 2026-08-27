@@ -152,6 +152,8 @@ func livePrecision(p weights.Precision) tgo.Precision {
 		return tgo.F16
 	case weights.Int8:
 		return tgo.Int8
+	case weights.Int4:
+		return tgo.Int4
 	default:
 		return tgo.AutoPrecision
 	}
