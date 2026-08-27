@@ -386,6 +386,7 @@ GET routes are live.
 | 1 | the four POST routes and the three GET routes, each POST round-tripping one golden request | `server/server.go:87-93`, `server/dialect_test.go:20` |
 | 2 | `ir` meets `chat.Message` and `Policy` in one file, and the root module imports no `llmdialect` package | `server/adapt.go:16-19` |
 | 2.1 | the measurement still holds at `latere.ai/x/pkg v0.41.0`: one require, `go.sum` at two lines, a stdlib-only build list | `go.mod`, `go.sum` |
+| 2.1 | [009-D14](#decision-record)'s footprint gate: `go list -deps ./server` against an allowlist that carries a reason per prefix, run in CI and pinned both ways -- a module nobody allowed fails, and an allowance the build stopped using fails too | `internal/depcheck/main.go:44`, `internal/depcheck/main_test.go:17,49`, `.github/workflows/ci.yml:108` |
 | 3 | blocks as a strict subset: `ir.BlockImage` is refused rather than dropped, redacted thinking is dropped with the reason stated | `chat/chat.go:49-67`, `server/adapt.go:162-228` |
 | 3.1 | thinking is dropped by block type, so the forgeable textual boundary does not exist | `chat/qwen3.go:261-266`, `server/dialect_test.go:121` |
 | 3.2 | typed stream events, one to one with `ir.Event` | `stream.go:20-70,163-192`, `server/generate.go:247-268` |
@@ -419,10 +420,7 @@ GET routes are live.
 advisory loss rather than served: `sample.Sampler.Probs` exists and nothing in
 `server/` calls it, and the legacy encoder answers `logprobs: null` on every
 choice (`server/loss_test.go:273`, `server/legacy.go:193`). Serving them is
-009's. [009-D14](#decision-record)'s CI footprint gate is the one decision row
-with nothing behind it: no `go list -deps` step and no allowlist in
-`.github/workflows/` or the `Makefile`, so the property D10 rests on is
-unguarded, and building the gate is 009's. `stopReason` reaches two of the IR's
+009's. `stopReason` reaches two of the IR's
 five values, so a completion that ended on a stop string is answered as
 `end_turn`; closing it needs `Stream.StopReason`, filed upstream, and the row
 is 009's (`server/generate.go:297-309`). Six pieces of shipped surface have no

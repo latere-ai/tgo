@@ -137,7 +137,7 @@ where the code is, what diverged, and what is open.
 | [006](006-sampling.md) | complete | composition order, and reproducibility as a stream | — |
 | [007](007-engine.md) | complete | sessions, plans, buckets, the decode loop | — |
 | [008](008-scheduler.md) | complete | continuous batching: slots, admission, eviction, chunked prefill | — |
-| [009](009-server.md) | implemented | three wire dialects over one neutral request | `logprobs` reported as a loss rather than served; 009-D14's footprint gate |
+| [009](009-server.md) | implemented | three wire dialects over one neutral request | `logprobs` reported as a loss rather than served |
 | [010](010-conformance.md) | implemented | **what tgo proves about accel**, and the register of gaps | §3's five measurements are named and none is run |
 | [011](011-sequencing.md) | record | build order, what landed, and where a measurement goes | — |
 | [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
