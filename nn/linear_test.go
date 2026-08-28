@@ -4,7 +4,9 @@
 package nn_test
 
 import (
+	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"golang.design/x/accel"
@@ -207,33 +209,47 @@ const (
 	convT = 5
 )
 
-// convRig binds the window state and the three index ports a step needs.
+// convPorts binds the window state and the index ports a step needs, for one
+// slot contributing every row.
 func convPorts(r *rig, t, k, c int) (nn.ConvState, []float32) {
-	w := k - 1 + t
+	return convSlots(r, []int{t}, t, k, c, 0)
+}
+
+// convSlots is convPorts over several slots: counts[j] is what slot j
+// contributes and rows is the step's padded row count.
+//
+// Every index is [nn.ConvIndex]'s, so a test cannot pass against arithmetic
+// written twice.
+func convSlots(r *rig, counts []int, rows, k, c, capacity int) (nn.ConvState, []float32) {
+	idx, err := nn.ConvIndex(counts, rows, k, capacity)
+	if err != nil {
+		r.t.Fatalf("ConvIndex(%v, %d, %d, %d): %v", counts, rows, k, capacity, err)
+	}
 	st := tensor.NewState(r.g.B, tensor.StateDesc{
-		Name: "w", DType: accel.F32, Shape: tensor.Shape{w, c},
+		Name: "w", DType: accel.F32, Shape: tensor.Shape{idx.Rows, c},
 	})
-	write := make([]uint32, t)
-	for i := range write {
-		write[i] = uint32(k - 1 + i)
+	zero := make([]float32, idx.Rows*c)
+	// Only if this rig has not carried the buffer over from a previous step:
+	// binding it again would zero the carry, which is the state the second
+	// step exists to read.
+	if _, held := r.buffers["w"]; !held {
+		r.f32("w", zero)
 	}
-	carry := make([]uint32, k-1)
-	carryTo := make([]uint32, k-1)
-	for i := range carry {
-		carry[i] = uint32(t + i)
-		carryTo[i] = uint32(i)
-	}
-	zero := make([]float32, w*c)
-	r.f32("w", zero)
-	r.u32("write", write)
-	r.u32("carry", carry)
-	r.u32("carryTo", carryTo)
-	return nn.ConvState{
+	r.u32("write", idx.Write)
+	r.u32("carry", idx.Carry)
+	r.u32("carryTo", idx.CarryWrite)
+	w := nn.ConvState{
 		State:      st,
-		Write:      r.input("write", accel.U32, tensor.Shape{t}),
-		Carry:      r.input("carry", accel.U32, tensor.Shape{k - 1}),
-		CarryWrite: r.input("carryTo", accel.U32, tensor.Shape{k - 1}),
-	}, zero
+		Write:      r.input("write", accel.U32, tensor.Shape{rows}),
+		Carry:      r.input("carry", accel.U32, tensor.Shape{len(idx.Carry)}),
+		CarryWrite: r.input("carryTo", accel.U32, tensor.Shape{len(idx.CarryWrite)}),
+	}
+	for i, tap := range idx.Taps {
+		name := fmt.Sprintf("tap%d", i)
+		r.u32(name, tap)
+		w.Taps = append(w.Taps, r.input(name, accel.U32, tensor.Shape{rows}))
+	}
+	return w, zero
 }
 
 // TestADepthwiseCausalConvMatchesAReferenceComputedBeside is
@@ -291,17 +307,9 @@ func TestADepthwiseCausalConvCarriesAcrossSteps(t *testing.T) {
 	x2 := r2.input("x2", accel.F32, tensor.Shape{1, convC})
 	taps2 := r2.input("taps", accel.F32, tensor.Shape{convK, convC})
 	r2.f32("x2", both[convT*convC:])
-	w2 := nn.ConvState{
-		State: tensor.NewState(r2.g.B, tensor.StateDesc{
-			Name: "w", DType: accel.F32, Shape: tensor.Shape{convK - 1 + convT, convC},
-		}),
-		Write:      r2.input("write2", accel.U32, tensor.Shape{1}),
-		Carry:      r2.input("carry2", accel.U32, tensor.Shape{convK - 1}),
-		CarryWrite: r2.input("carryTo2", accel.U32, tensor.Shape{convK - 1}),
-	}
-	r2.u32("write2", []uint32{convK - 1})
-	r2.u32("carry2", []uint32{1, 2})
-	r2.u32("carryTo2", []uint32{0, 1})
+	// The same window buffer, so the same declared row count: a decode step is
+	// a smaller bucket over the shared allocation, not a smaller window.
+	w2, _ := convSlots(r2, []int{1}, 1, convK, convC, convK-1+convT)
 	out2, _ := nn.DepthwiseCausalConv(r2.g, x2, taps2, w2, convK)
 	got, _ := r2.run(out2)
 
@@ -364,4 +372,144 @@ func convReference(x, taps, carry []float32) []float64 {
 		}
 	}
 	return out
+}
+
+// TestADepthwiseCausalConvCarriesPerSlot is specs/023-cache-kinds.md §10's
+// row, and it is the one the single-slot carry test cannot fail on: a carry
+// indexed without the slot term passes that test and fails this one.
+//
+// Two slots step together, then step again. Each slot's second step must
+// convolve over its **own** earlier tokens, so the reference is two independent
+// convolutions and not one over the flat step.
+func TestADepthwiseCausalConvCarriesPerSlot(t *testing.T) {
+	const c = convC
+	// Five and three, not four and four: equal counts make "the carry is per
+	// slot" and "the carry is the last K-1 rows of the step" the same
+	// prediction, so the assertion could not tell them apart.
+	first := []int{5, 3}
+	// Different ramps, so a row read from the wrong slot is a wrong number and
+	// not a coincidence.
+	a := ramp(6*c, 7)
+	b := ramp(4*c, 31)
+	tv := ramp(convK*c, 23)
+
+	// Step one: slot 0's first five, then slot 1's first three, in slot order.
+	step1 := append(append([]float32(nil), a[:5*c]...), b[:3*c]...)
+	r := newRig(t, 1e-6)
+	x1 := r.input("x", accel.F32, tensor.Shape{len(step1) / c, c})
+	taps := r.input("taps", accel.F32, tensor.Shape{convK, c})
+	r.f32("x", step1)
+	r.f32("taps", tv)
+	w1, _ := convSlots(r, first, len(step1)/c, convK, c, 0)
+	out1, _ := nn.DepthwiseCausalConv(r.g, x1, taps, w1, convK)
+	r.run(out1)
+
+	// Step two: one token each, into the same window buffer.
+	capacity := len(first)*(convK-1) + len(step1)/c
+	step2 := append(append([]float32(nil), a[5*c:6*c]...), b[3*c:4*c]...)
+	r2 := r.reuse(t, "w", "taps")
+	x2 := r2.input("x2", accel.F32, tensor.Shape{2, c})
+	taps2 := r2.input("taps", accel.F32, tensor.Shape{convK, c})
+	r2.f32("x2", step2)
+	w2, _ := convSlots(r2, []int{1, 1}, 2, convK, c, capacity)
+	out2, _ := nn.DepthwiseCausalConv(r2.g, x2, taps2, w2, convK)
+	got, _ := r2.run(out2)
+
+	// Two independent convolutions, each over its own slot's whole history.
+	wantA := convReference(a, tv, make([]float32, (convK-1)*c))[5*c : 6*c]
+	wantB := convReference(b, tv, make([]float32, (convK-1)*c))[3*c : 4*c]
+	closeTo(t, got[:c], wantA, 1e-6, "slot 0's sixth token")
+	closeTo(t, got[c:], wantB, 1e-6, "slot 1's fourth token")
+}
+
+// TestADepthwiseCausalConvPadRowReadsZeros is §3's "two properties this layout
+// inherits for free", asserted rather than assumed.
+//
+// A bucketed step's rows past the last slot's tokens carry an index of R for
+// both the read and the write. GatherRows writes zeros for an index at or above
+// the table's rows and ScatterRows drops a write at or above capacity, so a pad
+// row needs no mask.
+//
+// Two claims, and only one of them is observable. The **read** is: a pad row
+// gathers zeros, so its output is zero and the real rows beside it are what an
+// exact step produces. The **write** is not observable in this layout and the
+// test says so rather than pretending: a pad row's write index, were the
+// sentinel dropped, would land past every row any tap or carry reads, so there
+// is no value to catch it with. What the sentinel buys there is that the window
+// holds no row nothing wrote — which matters to a reader of a dump and to
+// nothing the graph computes.
+func TestADepthwiseCausalConvPadRowReadsZeros(t *testing.T) {
+	const c = convC
+	tv := ramp(convK*c, 23)
+	all := ramp(4*c, 7)
+
+	// Exact: three tokens in a step of three rows.
+	exact := runConvStep(t, [][]float32{all[:3*c]}, []int{3}, 3, tv, c)
+	// Padded: the same three tokens in a step of five rows, the last two of
+	// which are whatever the bucket's buffer held.
+	padded := runConvStep(t, [][]float32{all[:3*c], ramp(2*c, 99)}, []int{3}, 5, tv, c)
+
+	want := make([]float64, len(exact))
+	for i, v := range exact {
+		want[i] = float64(v)
+	}
+	closeTo(t, padded[:3*c], want, 1e-6,
+		"a padded step's real rows against an exact step's")
+	// And the pad rows themselves are zero, which is the read half: a gather at
+	// or above the window's rows writes zeros, and zero times any tap is zero.
+	for i, v := range padded[3*c:] {
+		if v != 0 {
+			t.Errorf("pad element %d is %v, want 0: a pad row gathers no window row",
+				i, v)
+		}
+	}
+}
+
+// runConvStep runs one convolution step and returns its output. parts are
+// concatenated into x, counts is what each slot contributes, and rows is the
+// step's padded row count.
+func runConvStep(t *testing.T, parts [][]float32, counts []int, rows int,
+	taps []float32, c int) []float32 {
+
+	t.Helper()
+	var xv []float32
+	for _, p := range parts {
+		xv = append(xv, p...)
+	}
+	r := newRig(t, 1e-6)
+	x := r.input("x", accel.F32, tensor.Shape{rows, c})
+	tp := r.input("taps", accel.F32, tensor.Shape{len(taps) / c, c})
+	r.f32("x", xv)
+	r.f32("taps", taps)
+	w, _ := convSlots(r, counts, rows, len(taps)/c, c, 0)
+	out, _ := nn.DepthwiseCausalConv(r.g, x, tp, w, len(taps)/c)
+	got, _ := r.run(out)
+	return got
+}
+
+// TestConvIndexRefusesWhatItCannotAddress: each names the number.
+func TestConvIndexRefusesWhatItCannotAddress(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		counts       []int
+		rows, k, cap int
+		want         string
+	}{
+		{"one tap", []int{2}, 2, 1, 0, "at least two"},
+		{"no slots", nil, 2, 3, 0, "convolves nothing"},
+		{"a negative count", []int{2, -1}, 2, 3, 0, "contributes -1 rows"},
+		{"more tokens than rows", []int{3, 3}, 4, 3, 0, "cannot carry 6 tokens"},
+		{"a window too small", []int{2}, 2, 3, 3, "holds 3 rows and this step needs 4"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := nn.ConvIndex(c.counts, c.rows, c.k, c.cap)
+			if err == nil {
+				t.Fatalf("ConvIndex(%v, %d, %d, %d) was accepted", c.counts, c.rows,
+					c.k, c.cap)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("the refusal %q does not say %q", err, c.want)
+			}
+		})
+	}
 }

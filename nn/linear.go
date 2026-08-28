@@ -122,31 +122,31 @@ func shapeOf(x *tensor.Tensor) tensor.Shape {
 
 // ConvState is the rolling window a depthwise causal convolution reads.
 //
-// [K-1+T, C]: the K−1 rows before this step, then this step's own.
-// [C26](../specs/010-conformance.md) is why it is a state and not a padded
-// operand — `tensor` joins no two tensors along an axis, and the rows a
-// convolution needs in front of a decode step are the *previous step's*
-// anyway, not zeros.
+// **Flat**: [R, C] with R = B(K-1) + T, holding every slot's carry rows and
+// then this step's tokens. [C26](../specs/010-conformance.md) is why it is a
+// state and not a padded operand — `tensor` joins no two tensors along an axis,
+// and the rows a convolution needs in front of a decode step are the *previous
+// step's* anyway, not zeros.
 //
-// One sequence. Axis 0 is time, because that is the axis the taps slide along,
-// and a state has one row axis — so a slot axis in front of it would make one
-// row a whole sequence and a token write inexpressible. Addressing several
-// slots is specs/023-cache-kinds.md's, as arithmetic in the index ports below.
+// Axis 0 is time and there is no slot axis, because a state has one row axis:
+// a slot axis in front of it would make one row a whole sequence and a token
+// write inexpressible (specs/023-cache-kinds.md §3). The slot is arithmetic in
+// the index ports instead, which [ConvIndex] computes.
 type ConvState struct {
-	// State is the window, [K-1+T, C].
+	// State is the window, [R, C].
 	State *tensor.State
 
-	// Write is where this step's rows go: K-1+i for row i, a [T] u32 port.
+	// Write is where this step's rows go, a [T] u32 port.
 	Write *tensor.Tensor
 
-	// Carry is which rows become the next step's leading K-1, a [K-1] u32
-	// port holding T..T+K-2 — the last K-1 of the window once this step's rows
-	// are in it.
-	Carry *tensor.Tensor
+	// Taps is one [T] u32 port per tap: Taps[i] holds the row tap i reads for
+	// each output row. There are K of them and they are what makes the slot a
+	// number rather than an axis.
+	Taps []*tensor.Tensor
 
-	// CarryWrite is where those rows go for the next step: 0..K-2, a [K-1]
-	// u32 port.
-	CarryWrite *tensor.Tensor
+	// Carry is which rows become the next step's leading K-1 per slot, and
+	// CarryWrite is where they go: both [B(K-1)] u32 ports.
+	Carry, CarryWrite *tensor.Tensor
 }
 
 // DepthwiseCausalConv convolves each channel of x with its own K taps, over the
@@ -175,11 +175,14 @@ type ConvState struct {
 //
 // # What it costs
 //
-// K windows, each a slice made contiguous and multiplied by a broadcast tap
-// row, summed — plus two scatters and a gather. Roughly 3K+5 dispatches for
-// what one kernel would do, and K−1 packing copies of a [T, C] tensor per
-// layer. Over 48 linear layers that is real, and it is one less kernel to be
-// *blocked on* rather than one less kernel to *want*.
+// K gathers, each multiplied by a broadcast tap row, summed — plus two scatters
+// and a gather. Roughly 3K+5 dispatches for what one kernel would do, and K
+// copies of a [T, C] tensor per layer. Over 48 linear layers that is real, and
+// it is one less kernel to be *blocked on* rather than one less kernel to
+// *want*.
+//
+// A gather where a slice and a contiguous used to be: the same bytes through an
+// index, and the index is what carries the slot (specs/023-cache-kinds.md §3).
 func DepthwiseCausalConv(g *Graph, x, taps *tensor.Tensor, w ConvState,
 	k int) (*tensor.Tensor, *tensor.State) {
 
@@ -207,6 +210,18 @@ func DepthwiseCausalConv(g *Graph, x, taps *tensor.Tensor, w ConvState,
 			"this step are the previous step's and there is nothing else to pad with " +
 			"(specs/018-hybrid-models.md §4.1.1)")
 	}
+	if len(w.Taps) != k {
+		return fail("the window has %d tap index ports and the kernel is %d taps; "+
+			"each tap reads its own rows and the slot is arithmetic in the index "+
+			"(specs/023-cache-kinds.md §3)", len(w.Taps), k)
+	}
+	for i, idx := range w.Taps {
+		sh := shapeOf(idx)
+		if len(sh) != 1 || sh[0] != t {
+			return fail("tap %d's index port is %v; it is [T] = [%d], one row per "+
+				"output row", i, sh, t)
+		}
+	}
 
 	// This step's rows into the window, after the K-1 that were already there.
 	filled := tensor.ScatterRows(g.B, w.State, x, w.Write)
@@ -214,15 +229,16 @@ func DepthwiseCausalConv(g *Graph, x, taps *tensor.Tensor, w ConvState,
 
 	var acc *tensor.Tensor
 	for i := range k {
-		// Tap i reads the window starting i rows in, so tap K-1 lands on the
-		// current row and tap 0 on the one K-1 back:
+		// Tap i reads the rows its own index port names, which for output row
+		// r is r's position minus K-1-i — so tap K-1 lands on the current row
+		// and tap 0 on the one K-1 back:
 		//
 		//	y[t] = sum_i taps[i] * x[t-K+1+i]
 		//
 		// which is the convention the weights are trained under. Reversing it
 		// runs, produces plausible numbers, and convolves the window backwards.
-		lo := i
-		rowsOf := tensor.Contiguous(g.B, tensor.Slice(g.B, window, 0, lo, lo+t))
+		// [ConvIndex] is where that convention lives now.
+		rowsOf := tensor.GatherRows(g.B, window, w.Taps[i])
 		// Contiguous twice, and each one is for a different reason.
 		//
 		// The tap row first: a slice at row i is a view at an offset, and a
