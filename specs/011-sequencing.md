@@ -305,6 +305,49 @@ it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
 remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
 and it blocks no milestone.
 
+### 2026-08-28 — Wave 13: a full batch defers rather than refuses
+
+[021](021-admission-queue.md) is built, and it is the second of
+[008 §9](008-scheduler.md)'s three. `Scheduler.Admit` refuses when every slot is
+live or when the block pool cannot hold the prompt and its reserve. A refusal is
+the right answer to a caller who can retry and the wrong answer to an HTTP
+request, so `server` grew its own semaphore and its own queue in front of a pool
+it does not share with the scheduler. `tgo.Queue` is the one queue in front of
+admission: a request that cannot be admitted now waits, and
+`tgo_queue_wait_seconds` will report a number that includes both reasons a
+request waits rather than one of them.
+
+**Two decisions did the work.**
+
+The **door** is arithmetic, not error classification (021-D3).
+`prefix.ErrExhausted` means two things — "the pool is too small for this
+prompt", which never resolves, and "live sequences hold the blocks", which
+resolves when one finishes — and `Scheduler.Admit` returns whichever it got.
+`Scheduler.Feasible` computes $\lceil (T+R)/B \rceil$ against the pool's own
+block size and count before anything is enqueued, so the two cannot drift and
+§3's head-of-line bound is finite: every waiter at the head is admissible
+eventually.
+
+**One goroutine drives the whole waiter list.** §3's rules — arrival order, the
+head tried first, the overtake count, the monotone reserving flag — are global
+state, and a waiter looping on `Capacity()` by itself can see none of them; a
+capacity channel with N readers also loses wakeups, because the reader that wins
+the signal may be the one the rule forbids admitting. The driver never holds the
+queue's lock across an admission, because `Scheduler.Step` holds the scheduler's
+own lock for a whole device dispatch (021-D2).
+
+**What the tests caught that the design did not.** Section 5's cancel-after-admit
+race has *two* winners, and the spec named one. The driver releasing a slot it
+won for a caller who had already left is 021-D10 and has a deterministic test. A
+caller leaving *after* the driver won must release the slot it is refusing to
+return, and that window is between a waiter's select returning and its next lock
+acquisition — narrow enough that `TestQueueUnderRace` passed with the release
+deleted. It now has a test that constructs the state instead of racing for it.
+Either omission leaks a slot **and its blocks** for the life of the process.
+
+**Nothing in `server/` imports it yet.** That is
+[022](022-batched-serving.md)'s first pass, and 021 §10 says so.
+
 ### 2026-08-28 — Wave 12: the specs say what the code does
 
 No new capability. This wave closed the gap between what shipped and what is

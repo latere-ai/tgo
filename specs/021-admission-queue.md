@@ -1,6 +1,6 @@
 ---
 title: "A queue in front of admission: what a full batch does with the next request"
-status: drafted
+status: complete
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -384,6 +384,86 @@ gains `Feasible` and a capacity channel touched in `Finish`, `Evict` and
 `Step`; `Admit` is unchanged, so no call site moves. `batch.go` is unchanged. `server` is
 unchanged, because 022 owns it. Every test in §9 but the last runs against a
 fake.
+
+## Outcome
+
+Shipped 2026-08-28. `queue.go` holds `Admitter`, `Queue`, `QueueOptions`,
+`QueueStats` and `Ticket`; `scheduler.go` gains `Feasible` and `Capacity` and a
+`signal` that `Finish`, `Evict` and `Step` call. `Admit` is unchanged, so no
+call site moved. `queue_test.go` is the §9 table plus four rows §9 did not name.
+
+**What shipped**, section by section. §1's conjunction is evaluated in one place
+(`Scheduler.Feasible` and `Scheduler.Admit`); §2's third object is
+`tgo.Queue` over the `Admitter` interface, with one driver goroutine that never
+holds the queue's lock across an admission; §3's FIFO with a bounded overtake
+and a monotone reserving head is `Queue.drive`; §4's $D = 8N$ and $W$ are
+`QueueOptions` defaults and `Queue.Wait` is what a `Retry-After` is derived
+from; §5's single-winner state machine is `waiting → resolved | gone` under one
+lock; §6 passes the salt through untouched; §7's snapshot is `Queue.Stats`.
+
+**What diverged**, and why the code is right.
+
+- **§2's `Admitter` was incomplete as printed.** §5 and 021-D10 both require the
+  queue to call `Finish` on a slot it won for a caller who had left, and
+  `Finish` was not on the interface. It is now, and so is `Slots`, because §4's
+  $D = 8N$ and §3's $K = N$ are stated as multiples of the slot count and the
+  queue has no other way to read $N$.
+- **`NewQueue` returns an error.** §2 printed `*Queue` alone. Three options are
+  refusable — a depth below one, a negative budget, a negative overtake — and a
+  constructor that cannot refuse them either panics or silently substitutes a
+  number the deployment did not ask for.
+- **`Queue.Admit` takes a `Ticket`.** §3 requires an evicted sequence to
+  re-enter *at its original arrival stamp*, and a queue that stamped arrival
+  itself could not tell a resubmission from a new request. A caller takes one
+  ticket per request and passes the same one to every admission for it, so the
+  ordering rule is stated in the caller's terms rather than inferred.
+- **`QueueOptions.Overtake` is a pointer.** §3 makes $K = 0$ strict FIFO and a
+  meaningful setting, so the "zero takes the default" convention cannot express
+  both it and "unset takes $N$".
+- **`QueueStats.Refused` has a fourth reason, `infeasible`**, which is §8's
+  first refusal exit. §7 listed the three `server/admit.go` already emits and
+  omitted the one 021-D3 creates.
+- **`Queue.Stats` drains.** §7 called it a snapshot. Every field but `Depth` is
+  since the last read, so a caller adds deltas to its own counters and two
+  callers do not each see the whole history — which is what a Prometheus
+  `_total` needs and what a growing `Waits` slice would otherwise leak.
+- **A no-wait admission observes zero because it was never deferred**, not
+  because a clock said so. §7 asks for a zero rather than an absence, and
+  `time.Since` is never exactly zero; the queue records `0` when the waiter's
+  deferral count is `0`, which is a fact about the queue.
+
+**Both winners of §5's race release, and the second one needed its own test.**
+The driver releases a slot won for a waiter that had already left; a waiter that
+leaves after the driver won releases the slot it is refusing to return. Dropping
+either leaks a slot and its blocks for the life of the process. The first is
+`TestQueueCancelAfterAdmitReleasesTheSlot`, made deterministic by a hook that
+opens the window rather than racing for it. The second lives between a waiter's
+select returning and its next lock acquisition — narrow enough that a racing
+test passes by never reaching it — so
+`TestQueueLeavingAWaiterTheDriverAlreadyWonReleasesItsSlot` constructs the state
+and asserts the release. `TestQueueUnderRace` covered the first and not the
+second, which is how the gap was found.
+
+**Four rows §9 did not name**, each pinning something the table left implicit:
+`TestQueueStrictFIFOAdmitsNobodyBeforeTheHead` ($K = 0$),
+`TestQueueDepthDefaultsToEightPerSlot` ($D = 8N$ as a multiple),
+`TestQueueReturnsARefusalWaitingCannotFix` (a refusal that is neither
+`ErrNoSlot` nor an exhausted pool is the request's answer, not a wait), and
+`TestNewQueueRefusesWhatItCannotHonour`.
+
+**Coming, and named here so it is not a surprise:** [022-D7](022-batched-serving.md)
+makes the reserve an argument to `Scheduler.Admit`, taken from the request's
+effective `max_tokens`. That changes `Admitter.Admit` and `Feasible`, which take
+§1's single deployment $R$ today. §1 is right that a per-request reserve is a
+different design; 022 is where it is made.
+
+**Not built.** Nothing in this spec's scope. The server rewrite that consumes
+the queue — replacing `server/admit.go`'s semaphore, deleting the second
+semaphore [019 §8.6](019-session-affinity.md) describes, wiring `QueueStats`
+into `metrics`, fixing `metrics.go:169`'s help text and adding
+`tgo_admission_deferred_total` to [009 §6](009-server.md)'s list — is
+[022](022-batched-serving.md)'s, as §10 says. Nothing in `server/` imports
+`Queue` yet, which is that spec's first pass rather than a gap in this one.
 
 ## Decision record
 

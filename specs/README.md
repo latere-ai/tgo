@@ -146,16 +146,17 @@ where the code is, what diverged, and what is open.
 | [017](017-benchmarks.md) | complete | measuring where a token's time goes, and comparing honestly | — |
 | [018](018-hybrid-models.md) | complete | the two linear-attention blocks, and what a hybrid still needs | — |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
+| [021](021-admission-queue.md) | complete | one queue in front of admission, so a full batch defers rather than refuses | — |
 | [030](030-logprobs.md) | implemented | reporting the distribution a token was drawn from | the three `llmdialect` routes, whose IR has no field for a logprob |
 
-**What is next.** Ten specs written on 2026-08-27, each scoped to be finished in
-one pass. Six are the residue of a spec above that was scoped too large: 008 shed
-three, 018 shed four, 017 shed two, 015 shed one.
+**What is next.** Nine specs, each scoped to be finished in one pass. Five are
+the residue of a spec above that was scoped too large: 008 shed three of which
+[021](021-admission-queue.md) is built, 018 shed four, 017 shed two, 015 shed
+one.
 
 | spec | status | what it owns | from |
 | --- | --- | --- | --- |
 | [020](020-device-sampling.md) | drafted | the sampling policy on `tensor.Sample`, single and batched | 006, 008 |
-| [021](021-admission-queue.md) | drafted | a queue in front of admission, so a full batch defers rather than refuses | 008 |
 | [022](022-batched-serving.md) | drafted | the server drives a scheduler; batched serving becomes the default | 008 |
 | [023](023-cache-kinds.md) | drafted | three state shapes in one forward pass, and what a block reserves | 018 |
 | [024](024-qwen3-5-architecture.md) | drafted | the `qwen3_5` config, weight map and hybrid graph | 018 |
@@ -211,10 +212,13 @@ idle one, and today `server/` imports no `Scheduler`:
    measure against.
 4. **Device-side sampling** ([020](020-device-sampling.md)). *Large*, blocked on
    3. Its oracle is 006's host path, which is why the top-*k* fix came first.
-5. **The admission queue** ([021](021-admission-queue.md)). *Medium*, blocked by
-   nothing and independent of 3 and 4, so it can run in parallel.
+5. **The admission queue** ([021](021-admission-queue.md)). **Built**, Wave 13.
 6. **The server drives the scheduler** ([022](022-batched-serving.md)). *Large*,
-   blocked on 4 and 5.
+   and three passes ([022 §14](022-batched-serving.md)). **Pass 1 is blocked by
+   nothing**: 022-D4 takes the host sampling path deliberately and names the
+   seam 020 replaces, so the scheduler engine, the driver goroutine and the
+   channel-backed stream do not wait on 4. Pass 3 is what flips the default and
+   is where 4 lands.
 7. **Instrument the batched path** ([027](027-batched-benchmarks.md)), then the
    **performance gate** ([028](028-performance-gate.md)), which needs a baseline
    worth committing.
@@ -225,10 +229,11 @@ idle one, and today `server/` imports no `Scheduler`:
 ```mermaid
 flowchart LR
   M["3 measure sampling"] --> S["4 020 device sampling"]
-  Q["5 021 admission queue"] --> V["6 022 batched serving"]
-  S --> V
+  Q["5 021 admission queue<br/>built"] --> V["6 022 pass 1 and 2<br/>scheduler engine, host sampling"]
+  V --> D["6c 022 pass 3<br/>the default flips"]
+  S --> D
   V --> B["7 027 + 028 bench and gate"]
-  V --> C["8 vLLM comparison"]
+  D --> C["8 vLLM comparison"]
 ```
 
 ### Qwen3.8-27B hybrid
