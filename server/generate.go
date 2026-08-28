@@ -61,12 +61,11 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, front llmdiale
 	if err != nil {
 		if ctx.Err() != nil {
 			// The client hung up while a pooled engine was waiting for a free
-			// session. Nothing has been written, and writeError has no body
-			// for a client that is gone, so the status is written here: a bare
-			// return would let the runtime synthesize 200 with an empty body,
-			// which a proxy reads as a completion that produced nothing.
-			s.metrics.reject("client_gone")
-			w.WriteHeader(errClientGone.status())
+			// session. The engine's own error may be anything, so the class is
+			// taken from the context rather than from it; writeError writes the
+			// status and no body.
+			s.fail(w, req.dialect, &apiError{kind: errClientGone,
+				reason: "client_gone", msg: "tgo: the client hung up while queued"})
 			return
 		}
 		s.fail(w, req.dialect, s.sessionError(err))
@@ -402,8 +401,10 @@ func (s *Server) sessionError(err error) *apiError {
 		return &apiError{kind: errClientGone, reason: "client_gone",
 			msg: fmt.Sprintf("tgo: %v", err)}
 	case errors.Is(err, tgo.ErrContextExhausted):
-		return badRequest("tgo: %v: the request does not fit this session's context, and is "+
-			"refused rather than truncated", err)
+		// The engine's error already names itself, so this does not prefix it
+		// again.
+		return badRequest("%v: the request does not fit, and is refused rather "+
+			"than truncated", err)
 	}
 	return &apiError{kind: errInternal, reason: "internal", msg: fmt.Sprintf("tgo: %v", err)}
 }

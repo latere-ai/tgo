@@ -160,7 +160,12 @@ func nullableField(field string) any {
 // writeError answers a request that never started streaming.
 func writeError(w http.ResponseWriter, d ir.Dialect, e *apiError) {
 	if e.kind == errClientGone {
-		return // nobody is reading
+		// No body -- nobody is reading one -- but the status, because a bare
+		// return lets the runtime synthesize 200 with an empty body, which a
+		// proxy reads as a completion that produced nothing
+		// (specs/022-batched-serving.md §10's 499 rule).
+		w.WriteHeader(e.kind.status())
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if e.retryAfter != "" {

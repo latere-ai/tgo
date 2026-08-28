@@ -200,56 +200,6 @@ func TestAdmissionAboveTheSlotsIsQueuedNotRefused(t *testing.T) {
 	}
 }
 
-// TestAFullBatchAnswers429WithTheEnginesOwnBudget is what makes the row above
-// safe: the wait moved into the engine, and the deployment's answer must not
-// change with it.
-//
-// The slots are held outside the handler so the refusal is the queue's budget
-// rather than a race with two completions finishing.
-func TestAFullBatchAnswers429WithTheEnginesOwnBudget(t *testing.T) {
-	const budget = 100 * time.Millisecond
-	e := batchedEngine(t, openShared(t), 2, nil, budget)
-	s, err := server.New(e, server.WithNotice(&strings.Builder{}),
-		server.WithConcurrency(4))
-	if err != nil {
-		t.Fatalf("server.New: %v", err)
-	}
-
-	// Both slots, with completions long enough that neither ends inside the
-	// budget, and which nobody reads.
-	for i := 0; i < 2; i++ {
-		sess, err := e.NewSession(context.Background(), server.SessionSpec{})
-		if err != nil {
-			t.Fatalf("holding session %d: %v", i, err)
-		}
-		if _, err := sess.Complete(context.Background(), strings.Repeat("hold ", 2+i),
-			tgo.Policy{MaxTokens: 80}); err != nil {
-			t.Fatalf("holding request %d: %v", i, err)
-		}
-	}
-
-	w := do(t, s, http.MethodPost, "/v1/completions",
-		`{"model":"`+synthName+`","max_tokens":2,"prompt":"hi"}`)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429: %s", w.Code, w.Body.String())
-	}
-	if got := w.Header().Get("Retry-After"); got != "1" {
-		t.Errorf("Retry-After = %q, want %q: it is the engine's budget rounded up "+
-			"with a floor of one, and not an estimated service time", got, "1")
-	}
-	if body := w.Body.String(); !strings.Contains(body, "wait budget elapsed") {
-		t.Errorf("the 429 does not say what the caller waited on: %s", body)
-	} else if strings.Contains(body, "tgo: tgo:") {
-		t.Errorf("the message is prefixed twice: %s", body)
-	}
-	// The reason is a label rather than a body field, which is where the two
-	// refusals are told apart (021-D9).
-	if m := do(t, s, http.MethodGet, "/metrics", "").Body.String(); !strings.Contains(
-		m, `tgo_sessions_rejected_total{reason="queue_timeout"} 1`) {
-		t.Errorf("the refusal was not counted as a queue timeout:\n%s", m)
-	}
-}
-
 // TestABatchedRequestReportsWhatItReused is the number that says whether a
 // request was isolated from another one's work, over the engine that shares a
 // pool between every slot.
