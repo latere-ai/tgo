@@ -1,6 +1,6 @@
 ---
 title: "The KV cache: addressing, what a contiguous cache costs, and what paging changes"
-status: implemented
+status: complete
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -122,6 +122,57 @@ flowchart LR
 
 Only the **last** block of a sequence is partly used, so waste is bounded by
 $B-1$ positions per sequence rather than $C - T$.
+
+### 2.4 A shared pool needs two numbers, not one
+
+[016](016-prefix-cache.md)'s process-scoped cache puts every session's blocks in
+one pair of states, and that breaks an assumption §2.2 does not state: a single
+"capacity" answered both *how far can this sequence address* and *which index
+does `ScatterRows` drop*. Sharing splits them (`plan.go:145-150`):
+
+| | means | used for |
+| --- | --- | --- |
+| `rows` | positions the **bound states** hold, whoever owns them | the sentinel a dropped write uses |
+| `limit` | positions **this session** may occupy | whether a position is addressable at all |
+
+The sentinel is the reason it matters. [007-D3](007-engine.md) pads a bucketed
+prefill's unused rows by giving them a slot at or above the state's capacity,
+which `tensor.ScatterRows` drops by its own contract — no mask, no scratch row.
+Under one number, the sentinel would be this session's limit, which in a shared
+pool is **a real row inside another conversation's block**. The write lands, the
+operator reports nothing, and it reads back later as a fluent answer to somebody
+else's prompt. `rows` is the state's own extent, so the sentinel is out of range
+for the whole pool and not merely for this session.
+
+A contiguous cache is the same structure with an identity table and $B = 1$, and
+`cacheLayout.row` says so by returning $p$ when `pages` is nil rather than by
+indexing a table it would have to build (`plan.go:161-167`).
+
+**The block size is a constant, not an option.** `CacheBlock = 32`
+(`blocks.go:28`). accel folds the block size into a plan's attributes, so two
+block sizes are two compiled graphs of *every* shape — a knob nobody can
+evaluate that doubles the plan cache. And a capacity that is not a multiple of
+it is **refused** (`model/graph.go:317-321`): a page table addresses whole
+blocks, so the remainder names positions no entry reaches.
+
+### 2.5 The pool is f16, and it costs two casts a layer
+
+The shared pool is allocated `accel.F16` (`blocks.go:88`), which halves the
+largest allocation a serving process has after the weights and the only one that
+scales with concurrency *and* context (§3). By [008 §1](008-scheduler.md) that
+is twice the blocks, twice the prefixes worth keeping, and twice the batch size
+worth reaching.
+
+It is not free. The projected rows are f32, and one kernel reads the rows and
+writes the state — accel refuses the pair split apart — so the key and value
+rows are narrowed **before** `ScatterRows`, two `Cast` nodes per layer
+(`nn/attention.go:214-226`).
+
+The width comes from a config field rather than from the state, because a
+`tensor.State` does not report its dtype and the block cannot tell which case it
+is in. The caller knows: it allocated the buffer. That is also why
+`cacheBytes` takes a `DType` — it hardcoded 4 until 2026-08-27, and under
+`--prefix-cache process` it reported twice the memory the process actually used.
 
 ### 2.3 The ceiling that used to be here
 
@@ -270,8 +321,24 @@ one, against the signatures accel has, and rebinds.
   test lives here too.
 - **The §3 arithmetic is a function**, and a table test checks it against the
   numbers above. A memory model nobody executes is a comment.
-- **Capacity refusal.** Asking for a context the device cannot hold fails at
-  session creation with the number, not at the first token.
+- **Capacity refusal**, which is two refusals at two layers
+  ([005-D8](#decision-record)):
+  - the **device** cannot hold the requested context times the requested session
+    count. That is the server's, in `kvAdmission` (`cmd/tgo/serve.go:329`), at
+    startup, and it names the pool, the weights, what is left and what one
+    session costs. It cannot be the library's: `NewSession` knows the capacity
+    and not how many sessions will exist beside it, and the whole point is to
+    refuse before any of them is allocated (019-D2 reserves every session's
+    cache up front).
+  - the **request** does not fit the session it was submitted to. That is the
+    library's, `ErrContextExhausted` at `session.go:487,496`, and it names the
+    prompt length, `MaxTokens` and the capacity. It is checked before the
+    prefill rather than after one that would have to be undone, which is what
+    makes exhaustion unreachable from inside the decode loop.
+
+  The library **prints and does not refuse** at `Open` ([005-D3](#decision-record),
+  `model.go:212`), for the same reason: it has the per-session number and not
+  the operator's plan for it.
 
 ## Outcome
 
@@ -339,19 +406,24 @@ tree existing.
   model's shared pool, the dtype flips to f16, and addressing splits into `rows`
   and `limit`. §2 describes neither, which is open work below.
 
-**Not built.** Deciding where §7's capacity refusal lives: today the number-carrying refusal is
-the server's, in `kvAdmission` (`cmd/tgo/serve.go:329`), and the library's is
-`ErrContextExhausted` at request admission — either move that arithmetic behind
-`NewSession` or amend §7 and the decision record to say the server owns it. Documenting the
-shared-pool addressing in §2, as addressing rather than as caching policy: the
-`rows`/`limit` split and the pad-row sentinel it protects (`plan.go:139-195`),
-the f16 pool binding and the two casts per layer it costs (`blocks.go:88`,
-`nn/attention.go:214-226`), `CacheBlock = 32` (`blocks.go:28`), and the
-`Capacity % Block` refusal (`model/graph.go:317-321`). A cache that is per layer
-kind — a hybrid holding three state shapes in one forward pass — is
-[023](023-cache-kinds.md)'s, not this spec's: §2's shape is one shape for every
-layer, which holds for a dense transformer and not for a hybrid.
+**Not built.** Nothing. Two items left this paragraph on 2026-08-28.
 
+**Where §7's capacity refusal lives is decided**, as
+[005-D8](#decision-record): the device-memory refusal is the server's because
+the arithmetic needs the session count and the weight footprint, and the
+per-request refusal is the library's because it needs the request. §7 now states
+both, so neither layer assumes the other did it.
+
+**The shared-pool addressing is documented as addressing**, in
+[§2.4](#24-a-shared-pool-needs-two-numbers-not-one) and
+[§2.5](#25-the-pool-is-f16-and-it-costs-two-casts-a-layer) rather than as caching
+policy: the `rows`/`limit` split and the pad-row sentinel it protects, `CacheBlock
+= 32` as a plan parameter and the `Capacity % Block` refusal that follows from
+it, and the f16 pool with the two casts per layer it costs.
+
+Owned elsewhere: a cache that is per layer kind — a hybrid holding three state
+shapes in one forward pass — is [023](023-cache-kinds.md)'s. §2's shape is one
+shape for every layer, which holds for a dense transformer and not for a hybrid.
 ## Decision record
 
 | id | decision | rejected | consequence |
@@ -362,4 +434,5 @@ layer, which holds for a dense transformer and not for a hybrid.
 | 005-D4 | no paging, no f16 cache; both filed upstream | a private page table in tgo | forbidden by [000 D1](000-decisions.md); the arithmetic *was* the filing. **Amended 2026-08-24 (twice):** accel 043 adopted both, then landed both. tgo now builds a paged f16 cache and it pays today: the shared pool is allocated f16 (`blocks.go:88`), the projected rows are narrowed before `ScatterRows` (`nn/attention.go:214-226`), and the halving is measured by `kvBytesPerPosition` — 288 KB per position in f32 against 144 KB in f16 (`cmd/tgo/info_test.go:26-45`) |
 | 005-D5 | build one cache path against today's signatures and rebind | a paged path behind a flag, switched when 043 lands | **Vindicated.** Six of the seven changes in §6 landed within a day, all as binding changes. A flagged second path would have been written and deleted without ever running |
 | 005-D6 | follow the "use one state per layer" instruction rather than route around it | reshape the cache to hide the refusal | the noise was visible and filed, and the filing is what closed it. A hidden workaround would still be in the code |
+| 005-D8 | the **device**-memory refusal is the server's and the **per-request** one is the library's | one capacity check behind `NewSession` | the arithmetic needs the session count and the weight footprint, which only the process that plans the pool has; a library refusal would either guess the count or refuse nothing. §7 states both, so neither layer is left assuming the other did it |
 | 005-D7 | do not compose attention from primitives to beat the 128 ceiling | build score-MatMul / Softmax / value-MatMul in tgo | forbidden by [000 D1](000-decisions.md); accel 007 assigns the fallback to `Attention`, and composing it here would hide the register's most important row |

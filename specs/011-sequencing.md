@@ -312,7 +312,7 @@ written down, which [§1](#1-the-rule-that-fixes-the-order)'s rule makes a
 first-class piece of work rather than tidying: a spec that describes a design
 the code no longer has is worse than no spec, because a contributor trusts it.
 
-**Four specs reached `complete`**, each by writing what was already built rather
+**Five specs reached `complete`**, each by writing what was already built rather
 than by narrowing what was open:
 
 - [003](003-chat-template.md) carried seven rules the renderer followed and the
@@ -328,6 +328,13 @@ than by narrowing what was open:
   `Publish(written)` split, `Batch` and the hash encoding, and settled §6 — the
   cold-against-warm divergence stays asserted here rather than becoming a
   [010 §3](010-conformance.md) row, because accel could not act on the number.
+- [005](005-kv-cache.md) documented the shared-pool addressing as addressing:
+  the `rows`/`limit` split, which exists because a shared pool makes one
+  session's limit a real row inside another conversation's block, so a dropped
+  write's sentinel has to be the state's own extent. And 005-D8 decides where
+  §7's capacity refusal lives — the device-memory one is the server's because
+  the arithmetic needs the session count, the per-request one is the library's
+  because it needs the request.
 - [016 §8](016-prefix-cache.md)'s one uncovered row is covered:
   `TestPartialHitAttentionAtANonzeroBase` asserts a partial hit's attention
   **output** against the float64 oracle at causal base 9, and against a cold
