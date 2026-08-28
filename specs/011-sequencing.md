@@ -328,6 +328,18 @@ than by narrowing what was open:
   `Publish(written)` split, `Batch` and the hash encoding, and settled §6 — the
   cold-against-warm divergence stays asserted here rather than becoming a
   [010 §3](010-conformance.md) row, because accel could not act on the number.
+- [007](007-engine.md) gained `Stream.StopReason`, which is a capability and
+  not a description: [009](009-server.md) answered `end_turn` for a completion
+  cut on a stop string, on every route, because the matched text is never
+  emitted and the difference is invisible outside the decode loop. All three
+  endings were already distinguishable in there. `/v1/messages` now says
+  `stop_sequence` and names the string.
+- [009](009-server.md) got its six missing sections and stayed `implemented`,
+  because `logprobs` turned out **not to be 009's**. A logprob is per token and
+  a `tgo.Event` carries decoded text — the tokenizer holds back an incomplete
+  UTF-8 prefix, so one delta can be zero tokens or several — so serving them
+  needs a 007 change first. That is the same shape `json_object` had: an item
+  that reads as a spec's own debt and belongs to the layer below it.
 - [017](017-benchmarks.md) and [018](018-hybrid-models.md) reached it by having
   nothing of their own left. 018 is a design and the design is written; its four
   children carry the graph. 017's last own item was a pair of strings claiming

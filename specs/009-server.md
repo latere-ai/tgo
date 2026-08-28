@@ -182,6 +182,41 @@ func (s *Stream) Text() string   // the text delta, empty for non-text events
 These map onto `ir.Event` one to one, which is what makes §2's adapter a
 translation rather than a state machine.
 
+### 3.3 `/v1/completions` is a fourth Frontend, written here
+
+§1 attributes every dialect to `llmdialect`, which carries three. The legacy
+completions surface is the fourth and it is tgo's: `dialectLegacy`, the value
+`"openai-completions"`, is an `ir.Dialect` of the same type so that everything
+keyed by dialect keeps working, and it is not one of `ir`'s own
+(`server/legacy.go:27`).
+
+Writing it as a `Frontend` rather than as a fifth handler is what keeps it on
+one pipeline, one pair of loss tables and one error encoder instead of a fourth
+copy of each.
+
+**`legacyKeys` is the loss input.** The decoder holds an allowlist of the
+members it understands; anything else lands in the loss report, which is where
+the sampling knobs land too — they are subtracted back out by `lossReport`,
+exactly as on the other three surfaces ([§4.1](#41-irrequest-is-narrower-than-policy-so-the-loss-list-must-be-corrected)).
+`logprobs` is deliberately **absent** from the list, which is what puts it in
+the loss: the encoder answers `logprobs: null` on every choice, so the member is
+accepted and not acted on.
+
+**`prompt` is a string or an array, and the array is narrow.** An array of more
+than one prompt is `n > 1` under another name, and an array of token ids is a
+prompt this server cannot render back to the text `Session.Complete` takes. Both
+are refused rather than approximated (`server/legacy.go:111`). `stop` takes the
+same string-or-array shape and needs no such rule.
+
+**Three members are refused, not reported.** They change the answer, which is
+[009-D2](#decision-record)'s line:
+
+| member | why it cannot be advisory |
+| --- | --- |
+| `suffix` | filling in the middle is a different decode, not a knob |
+| `echo` | the response would carry text the model did not produce |
+| `best_of` | it asks for $n$ completions and a choice among them |
+
 ## 4. Unsupported fields: refuse what changes the answer, report what does not
 
 The earlier draft refused every unsupported field. That is right for a field
@@ -340,6 +375,43 @@ tgo_sessions_rejected_total       {reason}
 in a benchmark. `tgo_queue_wait_seconds` is what [008 §1](008-scheduler.md)
 costs, in the units callers care about.
 
+### 6.1 The exported seam, and its two constructors
+
+`server` takes an `Engine`, not a `*tgo.Model`. Four interfaces are the seam —
+`Engine`, `Session`, `Stream` and the `SessionSpec` that opens one — and
+[009-D4](#decision-record) is what they are for: every handler is tested against
+a fake engine with no device, and one end-to-end run covers the real one.
+
+Two constructors adapt a loaded model to it:
+
+| | what a request gets | when |
+| --- | --- | --- |
+| `Wrap(m, name)` | a session of its own, closed at the end of the request | `--prefix-cache session` and `off` |
+| `WrapPool(m, name, n)` | a session from a pool of $n$, returned with its history intact | `--prefix-cache process`, which is what lets the next request reuse it ([019-D2](019-session-affinity.md)) |
+
+`SessionSpec` carries what a session is opened with rather than what a request
+is: the tools rendered into the system turn, the thinking flag, the request's
+`Recorder`, and `Key` — the `cache_salt` that bounds what this request may reuse
+of another's key/value blocks ([016 §7.1](016-prefix-cache.md)).
+
+**Seven options configure the server**, and each one is a bound rather than a
+preference: `WithConcurrency`, `WithKVBudget`, `WithQueue`, `WithQueueWait`,
+`WithMaxBodyBytes`, `WithPublicBind` and `WithNotice` (`server/options.go`).
+
+### 6.2 Three operational numbers
+
+| | value | why |
+| --- | --- | --- |
+| `DefaultAddr` | `127.0.0.1:11434` | [009-D8](#decision-record): a server with no authentication is not exposed by omission, and the port is the one an ollama client already sends to |
+| `DefaultMaxBodyBytes` | 8 MiB | a prompt that does not fit the context is refused by §4 with a number; a body that does not fit memory has to be refused before it is read |
+| `maxLossLabels` | 256 (`server/metrics.go:40`) | a loss field name is **any top-level member a client sent**, so an unbounded map is a client-controlled memory series on a public bind. Past the bound, further names count under `other`: the counter's job is to say which field turns up constantly, and that survives folding the long tail |
+
+**A cancelled request answers 499, and writes nothing** (`server/errors.go:85`).
+499 is nginx's code and not RFC 9110's, and it is what every log pipeline
+already reads for a client that hung up. The alternative is an empty 200, which
+a proxy records as a success and a client cannot distinguish from a completion
+with no text.
+
 ## 7. Not in scope
 
 Authentication, per-key rate limiting, multi-model routing, and a model
@@ -417,34 +489,53 @@ GET routes are live.
   Metal, and not on linux. A gate that asks the host is a gate that sees
   whatever the developer runs, so it asks all ten pairs `cross` builds and takes
   the union — which is what caught this, on the gate's own first CI run.
+- `stopReason` reached two of the IR's five values until 2026-08-28, so a
+  completion that ended on a stop string was answered as `end_turn`. It needed
+  `Stream.StopReason`, which [007 §1](007-engine.md) now exports: the server
+  translates rather than recomputes, because the matched text is never emitted
+  and the difference is not visible out here. `stop_sequence` and the matched
+  string are carried on `/v1/messages`, and the OpenAI routes still say `stop`
+  because their vocabulary has no other value — which is why the gap was
+  invisible on three routes of four (`server/generate.go:309`,
+  `server/stream_test.go:262`). `StopToolUse` and `StopRefusal` stay
+  unreachable and neither is a gap: tgo emits a tool call as text
+  ([009-D6](#decision-record)) and has no refusal classifier.
 - §5's flush uses `http.NewResponseController` rather than an `http.Flusher`
   type assertion. It reports the failure a wrapped `ResponseWriter` would
   otherwise swallow, which is the trap the section names.
 
-**Not built.** `logprobs` and `top_logprobs` are accepted and reported as an
-advisory loss rather than served: `sample.Sampler.Probs` exists and nothing in
-`server/` calls it, and the legacy encoder answers `logprobs: null` on every
-choice (`server/loss_test.go:273`, `server/legacy.go:193`). Serving them is
-009's. `stopReason` reaches two of the IR's
-five values, so a completion that ended on a stop string is answered as
-`end_turn`; closing it needs `Stream.StopReason`, filed upstream, and the row
-is 009's (`server/generate.go:297-309`). Six pieces of shipped surface have no
-section, all of them 009's to write: the legacy codec's internals
-(`dialectLegacy`, the `legacyKeys` allowlist as the loss input, the
-prompt-as-string-or-array rule, and the `suffix`/`echo`/`best_of` refusals);
-the exported seam of `Engine`, `Session`, `Stream` and `SessionSpec`, with
-`Wrap` and `WrapPool` as its two constructors; the seven `With*` options; the
-operational defaults `DefaultAddr` (`127.0.0.1:11434`) and
-`DefaultMaxBodyBytes` (8 MiB); the rule that a cancelled request answers 499
-rather than an empty 200; and the loss counter's 256-label cardinality bound,
-which is what keeps a client-controlled label from growing memory on a public
-bind. Two items are not 009's: [022](022-batched-serving.md) makes a scheduler
-engine the default and leaves `WrapPool` behind `--prefix-cache session` and
-`off`, which is what makes concurrent requests go faster rather than interleave
-(§6); and [021](021-admission-queue.md) gives `tgo_queue_wait_seconds` a real
-number, counting the wait for cache blocks as well as the wait for a session
-slot.
+**Not built.** `logprobs` and `top_logprobs`, and the reason they are still here
+changed on 2026-08-28: **it is not 009's to build alone.**
 
+They are accepted and reported as an advisory loss. `sample.Sampler.Probs`
+returns the post-policy distribution without moving the stream and nothing in
+`server/` calls it; the legacy encoder answers `logprobs: null` on every choice
+(`server/loss_test.go:273`, `server/legacy.go:193`).
+
+What stands in the way is [007 §1](007-engine.md)'s surface, not this one. A
+logprob is **per token** and `tgo.Event` carries **decoded text**: the tokenizer
+holds back an incomplete UTF-8 prefix, so one delta can be zero tokens, one, or
+several, and there is no field on an `Event` for a token id or a probability.
+`Policy` has no `LogProbs` field either. So serving them needs an engine change
+first — a new field on `Event`, a second event kind, or a side channel — and
+that choice is 007's to make and this spec's to consume. Recorded here rather
+than built, which is [000 D1](000-decisions.md)'s shape applied one layer down.
+
+Three items left this paragraph on 2026-08-28. `stopReason` reaching two of
+five values is closed: [007 §1](007-engine.md) exports `Stream.StopReason` and
+`StopSequence`, and §3.2's vocabulary is served. And six pieces of shipped
+surface that had no section have one — [§3.3](#33-v1completions-is-a-fourth-frontend-written-here)
+for the legacy codec's internals,
+[§6.1](#61-the-exported-seam-and-its-two-constructors) for the exported seam and
+its two constructors and the seven options, and
+[§6.2](#62-three-operational-numbers) for the defaults, the 499 rule and the
+loss counter's cardinality bound.
+
+Owned elsewhere. [022](022-batched-serving.md) makes a scheduler engine the
+default and leaves `WrapPool` behind `--prefix-cache session` and `off`, which
+is what makes concurrent requests go faster rather than interleave (§6). And
+[021](021-admission-queue.md) gives `tgo_queue_wait_seconds` a real number,
+counting the wait for cache blocks as well as the wait for a session slot.
 ## Decision record
 
 | id | decision | rejected | consequence |

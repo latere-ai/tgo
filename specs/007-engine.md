@@ -68,6 +68,10 @@ func (s *Stream) Text() string      // the text delta; empty for non-text events
 func (s *Stream) Err() error
 func (s *Stream) Usage() Usage      // prompt and completion token counts
 
+// Why generation ended, read after Next has returned false.
+func (s *Stream) StopReason() StopReason  // StopEndTurn, StopSequence, StopMaxTokens
+func (s *Stream) StopSequence() string    // which stop string matched
+
 type Policy struct {
     Temperature       float32
     TopK              int
@@ -95,6 +99,16 @@ The rest of the package's surface exists and is owned elsewhere, spec by spec.
 `CacheBlock` are [016](016-prefix-cache.md)'s. `Policy.Schema` and
 `Model.CheckSchema` are [015](015-structured-output.md)'s. §1 lists what this
 spec owns and nothing else.
+
+**`StopReason` is on the stream because two of its three answers are not
+reconstructable outside it.** A caller can count tokens against `MaxTokens` and
+can see the end of the output, but a stop string need not align to a token
+boundary and the matched text is never emitted
+([006-D4](006-sampling.md)) — so from outside, a completion cut on a stop string
+and one the model chose to end are the same bytes. All three are already
+distinguishable inside the decode loop, one per terminating branch, and
+[009 §3.2](009-server.md)'s IR renders them differently. Added 2026-08-28; the
+server answered `end_turn` for both until then.
 
 `Stream` is an iterator rather than a channel in the public API: a channel
 obliges a caller to drain it or leak a goroutine, and an iterator makes early
