@@ -1,6 +1,6 @@
 ---
 title: "Logprobs: reporting the distribution a token was drawn from"
-status: drafted
+status: implemented
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -105,17 +105,34 @@ because the draw walks the kept set.
 
 ## 4. The wire, and the loss table
 
-`logprobs` comes **off** the loss tables: `server/loss.go`'s `honoured` set
-gains it, which `server/loss_test.go`'s reflect test pins against the `Policy`
-field. A field that is served and still reported as a loss is worse than one
-that was never claimed.
+`logprobs` comes off the loss table **for the route that serves it and no
+other**: `server/loss.go`'s `honoured` set gains it, and `honouredHere` lists it
+under `dialectLegacy` alone. A field reported as a loss where it is served is
+worse than one that was never claimed; a field subtracted where it is *not*
+served is [009-D12](009-server.md)'s defect, which is why the subtraction is per
+dialect.
 
-| route | shape |
-| --- | --- |
-| `/v1/chat/completions` | `choices[].logprobs.content[]`, one entry per token with `token`, `logprob`, `bytes`, `top_logprobs` |
-| `/v1/completions` | `choices[].logprobs` with the parallel `tokens`, `token_logprobs`, `top_logprobs` arrays it has always declared and answered `null` for |
-| `/v1/messages` | Anthropic's IR carries none, so it stays a loss **on that route only** — which is what [009-D12](009-server.md)'s per-dialect subtraction exists to express |
-| `/api/chat`, `/api/generate` | ollama carries none; a loss on those routes for the same reason |
+**Only one route can serve them, and finding out which is 000 D1's rule
+applied to a second upstream.** `latere.ai/x/pkg/llmdialect`'s `ir` carries no
+logprobs shape at all — not on `ir.Response`, not on `ir.Event` — so the three
+dialects it encodes cannot express one whatever tgo computes. The fourth is
+`/v1/completions`, which is tgo's own `Frontend`
+([009 §3.3](009-server.md)), and it can.
+
+| route | encoder | shape |
+| --- | --- | --- |
+| `/v1/completions` | tgo's | `choices[].logprobs` with the parallel `tokens`, `token_logprobs` and `top_logprobs` arrays it has always declared and answered `null` for |
+| `/v1/chat/completions` | `llmdialect` | **blocked**: the IR has no field. A loss on this route until it does |
+| `/v1/messages` | `llmdialect` | Anthropic's shape carries none either, so a loss for two reasons |
+| `/api/chat`, `/api/generate` | `llmdialect` | ollama carries none; a loss |
+
+**030-D5: the gap is reported, not worked around.** Reaching past the
+`Frontend` to append a `logprobs` member to a body `llmdialect` encoded would
+put tgo in the business of knowing that dialect's JSON, which is exactly what
+[009-D10](009-server.md) exists to prevent — and it would break the day
+`llmdialect` adds the field properly. So `/v1/chat/completions` keeps the loss
+entry and gets a report upstream, which is [000 D1](000-decisions.md)'s
+sequence with `latere.ai/x/pkg` in accel's place.
 
 **$-\infty$ encodes as JSON `null`.** Not as a large negative number, which a
 consumer would average; not as the string `"-Infinity"`, which is not JSON.
@@ -143,14 +160,16 @@ distribution the grammar had not yet cut.
 | test | what it catches |
 | --- | --- |
 | the drawn token's `LogProb` is $\ln$ of its post-policy probability, against a float64 oracle | §3, and the difference between the two distributions |
+| the reported top-*k* weights sum to one | §3's normalization over the kept set; the untruncated softmax sums to less |
 | a token top-*k* excluded reports $-\infty$, and the drawn token never does | §3's masked case |
 | under `Temperature: 0` the argmax reports $\ln 1 = 0$ and any other token $-\infty$ | the greedy branch, which is where a raw-softmax implementation would disagree most visibly |
 | a grammar-masked token reports $-\infty$ | §5's ordering: taking `Probs` before the mask would report a positive probability for a token the grammar forbids |
 | `Top` is descending, has length `TopLogProbs`, and its entries have nil `Top` | §2 |
 | `LogProbs()` is empty when `Policy.LogProbs` is false, and `Probs` is not called | §5 |
 | the same seed produces the same completion with and without `LogProbs` | [006-D7](006-sampling.md): an observation that perturbed what it describes would not be describing it |
-| `logprobs` is absent from `X-Tgo-Loss` on the two OpenAI routes and present on the other three | §4, and the per-dialect table |
-| a $-\infty$ encodes as `null` on both OpenAI routes | §4 |
+| `logprobs` is absent from `X-Tgo-Loss` on `/v1/completions` and present on the other three | §4, and the per-dialect table; subtracting it everywhere is 009-D12's defect |
+| a $-\infty$ encodes as `null` in the `token_logprobs` array | §4 |
+| a request with no `logprobs` still answers `logprobs: null`, not an empty object | the shape the route has always declared |
 
 ## Decision record
 
@@ -159,4 +178,54 @@ distribution the grammar had not yet cut.
 | 030-D1 | a side accessor on `Stream` | a field on `Event`; a new `EventKind` | `Event` keeps meaning one thing, and 009 §3.2's kind-to-block mapping stays one-to-one |
 | 030-D2 | report the **post-policy** distribution | the raw softmax over the untruncated vocabulary | the number describes the distribution the token was drawn from; a raw softmax describes one nothing sampled |
 | 030-D3 | $-\infty$ for a masked token, `null` on the wire | a floor, or omitting the entry | a floor is a number a consumer averages; omitting breaks the per-token parallel arrays the legacy shape declares |
+| 030-D5 | the three `llmdialect` routes keep the loss and the gap is **reported** | append the member to the encoded body from outside the `Frontend` | reaching past the codec puts tgo back in the business of knowing a dialect's JSON, which 009-D10 exists to prevent, and it breaks the day the field lands properly ([§4](#4-the-wire-and-the-loss-table)) |
 | 030-D4 | off by default, and the pass is skipped | always compute and let the caller ignore it | a whole-vocabulary `exp` per step is what [017-D3](017-benchmarks.md) calls an instrument that changes what it measures |
+
+## Outcome
+
+Built and running as of 2026-08-28. `Policy.LogProbs` and `Policy.TopLogProbs`
+ask for them, `Stream.LogProbs()` returns the last step's, and
+`/v1/completions` serves them whole-body and streaming.
+
+**What shipped**, section by section:
+
+| section | what landed | where |
+| --- | --- | --- |
+| 2 | `TokenProb`, `Stream.LogProbs()`, and the reused backing array | `stream.go:65,464`, `stream.go:130` |
+| 3 | `Probs` on a copy of the masked logits, before the draw | `stream.go:281`, `logprobs_test.go:22,63` |
+| 4 | the parallel-array shape with `text_offset`, and the loss subtracted on `dialectLegacy` alone | `server/legacy.go:198,222`, `server/loss.go:104` |
+| 5 | skipped entirely when off, and asked for only on the route that can encode it | `stream.go:281`, `server/adapt.go:288` |
+| 6 | every row, plus the two the ordering needed | `logprobs_test.go`, `sample/stages_test.go`, `server/legacy_test.go` |
+
+**What diverged** from the design, and why the code is right:
+
+- **§4 named two routes and there is one.** The draft said
+  `/v1/chat/completions` and `/v1/completions`. `latere.ai/x/pkg/llmdialect`'s
+  `ir` carries no logprobs shape at all — not on `ir.Response`, not on
+  `ir.Event` — so the three dialects it encodes cannot express one whatever tgo
+  computes. Corrected before a line was written, and it became
+  [030-D5](#decision-record).
+- **The engine is not asked for work no encoder can carry.** `mapPolicy` sets
+  `Policy.LogProbs` only for `dialectLegacy`, so a `logprobs` on the other three
+  routes costs nothing and is reported as a loss. Computing them there would
+  run a whole-vocabulary `exp` per step and throw the answer away, which is what
+  §5 exists to avoid.
+- **`TopLogProbs`'s wire name is `logprobs`, not `top_logprobs`.** The one route
+  that serves them spells the count in `logprobs` itself. `top_logprobs` reaches
+  no output and stays a loss everywhere, and `server/loss.go`'s per-dialect
+  table says so — `honoured` maps both `Policy` fields to the same member.
+- **Two tests in §6's table did not discriminate, and two more were added.** The
+  sampled cases pass whether `Probs` runs before the draw or after it: the
+  distribution is normalized over the kept set either way. What catches the
+  ordering is the grammar-masked case (`logprobs_test.go:200`), where taking
+  `Probs` before the mask reports a chance for a token that cannot be drawn —
+  and `sample/stages_test.go`'s `TestNextRewritesTheRowItWasGiven`, which states
+  why the order matters at all and fails if `Next` ever stops writing in place.
+
+**Not built.** `/v1/chat/completions`, `/v1/messages`, `/api/chat` and
+`/api/generate` keep the loss entry, because `llmdialect`'s IR has no field to
+put a logprob in. That is [030-D5](#decision-record) and it is a report rather
+than a workaround: reaching past the `Frontend` to append a member to a body tgo
+did not write is what [009-D10](009-server.md) exists to prevent, and it would
+break the day the field lands properly. Filing it against `latere.ai/x/pkg` is
+this spec's, and the loss report is what tells a caller in the meantime.

@@ -328,6 +328,23 @@ than by narrowing what was open:
   `Publish(written)` split, `Batch` and the hash encoding, and settled §6 — the
   cold-against-warm divergence stays asserted here rather than becoming a
   [010 §3](010-conformance.md) row, because accel could not act on the number.
+**[030](030-logprobs.md) was written and built in the same wave, and the spec
+was wrong before a line of code was.** The draft said logprobs would be served
+on the two OpenAI completion surfaces. `latere.ai/x/pkg/llmdialect`'s `ir`
+carries no logprobs shape at all — not on `ir.Response`, not on `ir.Event` — so
+the three dialects it encodes cannot express one whatever tgo computes.
+`/v1/completions` is the only `Frontend` tgo wrote and the only route that can.
+030-D5 reports that upstream rather than reaching past the codec to append a
+member to a body tgo did not write, which is 000 D1's sequence with
+`latere.ai/x/pkg` in accel's place.
+
+Two of the tests the spec's own §6 table asked for did not discriminate, which
+is worth recording because it is the second time this wave: a sampled draw's
+top-*k* weights sum to one whether `Probs` runs before the draw or after it,
+because the distribution is normalized over the kept set either way. What
+catches the ordering is the **grammar-masked** case, where taking `Probs` before
+the mask reports a chance for a token that cannot be drawn.
+
 - [002](002-tokenizer.md) had three package comments asserting what a test in
   the same file disproves: no dependency beyond the standard library, three
   waves after 002-D10 took `golang.org/x/text`; NFC not implemented, after it

@@ -146,6 +146,7 @@ where the code is, what diverged, and what is open.
 | [017](017-benchmarks.md) | complete | measuring where a token's time goes, and comparing honestly | — |
 | [018](018-hybrid-models.md) | complete | the two linear-attention blocks, and what a hybrid still needs | — |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
+| [030](030-logprobs.md) | implemented | reporting the distribution a token was drawn from | the three `llmdialect` routes, whose IR has no field for a logprob |
 
 **What is next.** Ten specs written on 2026-08-27, each scoped to be finished in
 one pass. Six are the residue of a spec above that was scoped too large: 008 shed
@@ -163,7 +164,6 @@ three, 018 shed four, 017 shed two, 015 shed one.
 | [027](027-batched-benchmarks.md) | drafted | the throughput curve 017-D5 designed and nothing measures | 017 |
 | [028](028-performance-gate.md) | drafted | a build that loses throughput fails like one that loses a test | 017 |
 | [029](029-grammar-front-ends.md) | drafted | EBNF and regex over the machine the schema path already built | 015 |
-| [030](030-logprobs.md) | drafted | reporting the distribution a token was drawn from | 006, 007, 009 |
 
 **Three of the ten judged themselves too large** and named their own passes:
 [022](022-batched-serving.md) §14 and [024](024-qwen3-5-architecture.md) §11 each
