@@ -328,6 +328,14 @@ than by narrowing what was open:
   `Publish(written)` split, `Batch` and the hash encoding, and settled §6 — the
   cold-against-warm divergence stays asserted here rather than becoming a
   [010 §3](010-conformance.md) row, because accel could not act on the number.
+- [002](002-tokenizer.md) had three package comments asserting what a test in
+  the same file disproves: no dependency beyond the standard library, three
+  waves after 002-D10 took `golang.org/x/text`; NFC not implemented, after it
+  was; and `Decoder` output always well-formed UTF-8, which
+  `TestDecoderDoesNotHoldAnImpossibleByte` refutes. `internal/depcheck` now
+  gates the first sentence rather than trusting it, and 002-D11 decides where
+  `add_prefix_space` applies. What is left there needs a machine with
+  huggingface `tokenizers`.
 - [007](007-engine.md) gained `Stream.StopReason`, which is a capability and
   not a description: [009](009-server.md) answered `end_turn` for a completion
   cut on a stop string, on every route, because the matched text is never
