@@ -194,10 +194,11 @@ func TestRoundTripNFCUnstable(t *testing.T) {
 	}
 }
 
-// TestNormalizerRunsFirst proves the seam is wired even though NFC itself is
-// not implemented: a normalizer supplied here must be applied before the
-// pre-tokenizer and before the added-token matcher, or a real NFC dropped in
-// later would silently do nothing.
+// TestNormalizerRunsFirst proves the seam is wired, independently of what NFC
+// does: a normalizer supplied here must be applied before the pre-tokenizer and
+// before the added-token matcher. A substitute normalizer is used so that the
+// ordering is asserted by a visible change rather than by NFC, which is the
+// identity on almost every input.
 func TestNormalizerRunsFirst(t *testing.T) {
 	tk := load(t)
 	if tk.normalize == nil {

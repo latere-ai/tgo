@@ -6,6 +6,7 @@ package tokenizer
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // byteID returns the id of the single-byte token for b, which the load-time
@@ -93,6 +94,34 @@ func TestDecoderDoesNotHoldAnImpossibleByte(t *testing.T) {
 	}
 	if len(d.buf) != 0 {
 		t.Fatalf("0xff was held back: %v", d.buf)
+	}
+}
+
+// TestDecoderOutputIsNotAlwaysValidUTF8 pins the guarantee Decode's doc
+// comment makes about this type.
+//
+// It said until 2026-08-28 that Decoder "trades exactness for output that is
+// always well-formed UTF-8", which the test above already disproved in the same
+// package: an impossible byte is emitted at once, because waiting cannot make
+// it valid. The real guarantee is narrower and is worth stating exactly --
+// truncated sequences are held, and a still-truncated one at end of stream is
+// replaced. A caller who needs valid UTF-8 has to check.
+func TestDecoderOutputIsNotAlwaysValidUTF8(t *testing.T) {
+	tk := load(t)
+	d := tk.NewDecoder()
+	if got := d.Push(byteID(t, tk, 0xff)); utf8.ValidString(got) {
+		t.Errorf("Push(0xff) = %q, which is valid UTF-8; the doc comment on "+
+			"Decode describes what this type actually promises, and a byte "+
+			"that cannot begin a code point is emitted rather than held", got)
+	}
+	// The half that is promised: a truncated sequence is held rather than
+	// emitted as bytes, and Flush replaces it.
+	d2 := tk.NewDecoder()
+	if got := d2.Push(byteID(t, tk, 0xe2)); got != "" {
+		t.Errorf("Push(0xe2) = %q, want it held: it can still become a code point", got)
+	}
+	if got := d2.Flush(); !utf8.ValidString(got) || got != string(utf8.RuneError) {
+		t.Errorf("Flush() = %q, want one replacement rune", got)
 	}
 }
 

@@ -6,8 +6,9 @@
 //
 // It implements the byte-level BPE serialised in a Hugging Face
 // tokenizer.json: a normalizer, a split pattern that cuts text into pieces, a
-// byte-level alphabet, and an ordered merge table. It has no device, no
-// network and no dependency beyond the standard library.
+// byte-level alphabet, and an ordered merge table. It has no device and no
+// network. Its one dependency outside the standard library is
+// golang.org/x/text, for NFC (002-D10), which is pure Go and reaches no cgo.
 //
 // Two things about it are worth knowing before you use it.
 //
@@ -16,9 +17,9 @@
 // produces different ids for the same text, silently, and there is nothing for
 // a human to read and check. See specs/002-tokenizer.md 002-D7.
 //
-// NFC normalization is declared by every Qwen checkpoint and is NOT
-// implemented here; see normalize.go. Text that is not already in NFC encodes
-// to the ids of its decomposed form.
+// NFC normalization is declared by every Qwen checkpoint and is applied here;
+// see normalize.go. It ran as an identity seam until 2026-08-24, which meant
+// text that was not already in NFC encoded to the ids of its decomposed form.
 package tokenizer
 
 import (
@@ -415,8 +416,14 @@ func (t *Tokenizer) encodePlain(s string, out []int) []int {
 //
 // It is byte-exact: an id sequence that came from Encode decodes to the exact
 // bytes that went in, including bytes that are not valid UTF-8. An id no table
-// claims contributes nothing. Compare Decoder, which trades that exactness for
-// output that is always well-formed UTF-8.
+// claims contributes nothing.
+//
+// Compare Decoder, which holds back a byte sequence that is a valid prefix of a
+// code point and not yet a whole one, and replaces one that is still truncated
+// at end of stream. That is narrower than "always well-formed UTF-8": a byte
+// that cannot begin any code point is emitted at once, because waiting cannot
+// make it valid. Concatenating every Push over a stream that ends on a complete
+// code point therefore gives byte-for-byte what this gives.
 func (t *Tokenizer) Decode(ids []int) string {
 	var b []byte
 	for _, id := range ids {
