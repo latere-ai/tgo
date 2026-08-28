@@ -62,6 +62,18 @@ type Config struct {
 	// RoPETheta is the rotary base: 10^6 for Qwen3, against Llama's 10^4.
 	RoPETheta float32
 
+	// LayerTypes is what each layer of the stack holds between steps, in model
+	// order. Nil is a dense stack: every layer is [LayerFullAttention].
+	//
+	// It is the one place [Declare] learns that a model is hybrid
+	// (specs/023-cache-kinds.md §2.1). Reading it from a checkpoint is
+	// specs/024-qwen3-5-architecture.md's.
+	LayerTypes LayerSchedule
+
+	// Recurrent is the geometry of the gated-delta layers, and is nil unless
+	// LayerTypes has some.
+	Recurrent *Recurrent
+
 	// TieWordEmbeddings reports whether the LM head is the embedding table
 	// transposed. When set, the checkpoint has no lm_head.weight and the loader
 	// uploads two planes from one file tensor (004-D7).

@@ -72,6 +72,32 @@ const (
 	PortKeys   = "k"
 	PortValues = "v"
 
+	// PortRecurrent is the gated-delta layers' recurrent state,
+	// [L_lin, B, H_lin, d_v, d_k] f32, sliced per layer by its kind-local
+	// ordinal (specs/023-cache-kinds.md §2).
+	//
+	// f32 and not a choice: tensor.LinearAttention refuses any other dtype, and
+	// [023-D4] is why the refusal is right — the state is an accumulator
+	// decayed and rewritten once per token, not an operand read once.
+	PortRecurrent = "rec"
+
+	// PortConvWindow is the depthwise convolution's rolling window,
+	// [L_lin, R, C_conv] f32 with R = B(K-1) + T. It is flat: the slot is
+	// arithmetic in the index ports below, because a state has one row axis and
+	// a slot axis in front of it would make one row a whole sequence
+	// ([023-D2]).
+	PortConvWindow = "conv"
+
+	// PortConvWrite, PortConvTap, PortConvCarry and PortConvCarryWrite are the
+	// window's index ports. They are one set for the whole stack rather than
+	// one per layer: every gated-delta layer's window has the same layout, so
+	// the indices are the same numbers and binding them once is one upload
+	// instead of forty-eight.
+	PortConvWrite      = "conv_write"
+	PortConvTap        = "conv_tap"
+	PortConvCarry      = "conv_carry"
+	PortConvCarryWrite = "conv_carry_to"
+
 	// PortLogits is the graph's output, [1, V] f32 — the last position only
 	// (§3.2).
 	PortLogits = "logits"
@@ -186,6 +212,33 @@ type Inputs struct {
 	// a decode step. It is carried rather than assumed so that a hand-built
 	// Inputs says which of the two plans it is for.
 	Base string
+
+	// FullLayers is how many layers of the stack have a key/value cache, which
+	// is the leading extent of Keys and Values. For a dense model it is every
+	// layer; for a hybrid it is one in four (specs/023-cache-kinds.md §2).
+	FullLayers int
+
+	// LinearLayers is how many gated-delta layers the stack has, and is zero
+	// for a dense model. It is the leading extent of Recurrent and ConvWindow.
+	LinearLayers int
+
+	// Recurrence is the geometry those two states were declared from, carried
+	// so that a caller sizing or binding them does not re-read the config.
+	Recurrence Recurrent
+
+	// Recurrent and ConvWindow are the two states a gated-delta layer holds,
+	// whole. [tensor.LayerState] takes each layer's window by its kind-local
+	// ordinal, which [LayerSchedule.Ordinal] is.
+	Recurrent, ConvWindow *tensor.State
+
+	// ConvRows is R, the window's row count: B(K-1) + T.
+	ConvRows int
+
+	// ConvWrite, ConvTaps, ConvCarry and ConvCarryWrite are the window's index
+	// ports, which [github.com/latere-ai/tgo/nn.ConvIndex] fills. One set for
+	// the whole stack: every gated-delta layer's window has the same layout.
+	ConvWrite, ConvCarry, ConvCarryWrite *tensor.Tensor
+	ConvTaps                             []*tensor.Tensor
 }
 
 // Declare records specs/004-model-graph.md §3's ports, scalars and cache
@@ -222,13 +275,35 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 		in.Pages = tensor.Input(b, tensor.ValueDesc{Name: PortPages, DType: accel.U32,
 			Shape: tensor.Shape{batch, s.Capacity / s.Block}})
 	}
-	if batch > 1 {
+	if err := c.LayerTypes.check(c.NumLayers); err != nil {
+		return Inputs{}, err
+	}
+	hybrid := c.LayerTypes.Hybrid()
+	// tensor.LinearAttention requires QueryExtents at every batch size, where
+	// softmax attention over one sequence does not need them. So a hybrid
+	// declares the port at B = 1 as well (specs/023-cache-kinds.md §2.1).
+	if batch > 1 || hybrid {
 		in.Extents = input(b, PortExtents, accel.U32, batch)
+	}
+	if batch > 1 {
 		in.Last = input(b, PortLast, accel.U32, batch)
 	}
-	shape := tensor.Shape{c.NumLayers, s.Capacity, c.NumKVHeads, c.HeadDim}
+	// The leading axis is the count of the layers that *have* a key/value
+	// cache, and a gated-delta layer has none. Sizing it at NumLayers would
+	// allocate four times the state for rows nothing writes ([023-D3]).
+	full := c.NumLayers
+	if hybrid {
+		full = c.LayerTypes.Count(LayerFullAttention)
+	}
+	in.FullLayers = full
+	shape := tensor.Shape{full, s.Capacity, c.NumKVHeads, c.HeadDim}
 	in.Keys = tensor.NewState(b, tensor.StateDesc{Name: PortKeys, DType: s.Cache, Shape: shape})
 	in.Values = tensor.NewState(b, tensor.StateDesc{Name: PortValues, DType: s.Cache, Shape: shape})
+	if hybrid {
+		if err := declareRecurrent(b, c, s, batch, &in); err != nil {
+			return Inputs{}, err
+		}
+	}
 
 	tensor.Scalar(b, tensor.ScalarDesc{Name: ScalarRoPEBase, Kind: tensor.ScalarF32})
 	tensor.Scalar(b, tensor.ScalarDesc{Name: ScalarScale, Kind: tensor.ScalarF32})
@@ -237,6 +312,56 @@ func Declare(b *tensor.Builder, c *Config, s GraphSpec) (Inputs, error) {
 		in.Base = ScalarBase
 	}
 	return in, nil
+}
+
+// declareRecurrent declares the two states a gated-delta layer holds and the
+// index ports that address the second of them.
+//
+// Three states and not one union. tensor.LinearAttention checks the state's
+// shape against [slots, heads, valueDim, keyDim] exactly and its dtype against
+// f32, so a union carrying a tag and the widest shape would be reshaped and
+// re-typed at every call site — and a tag read at record time is a branch the
+// graph does not need, because the layer schedule is known when the graph is
+// recorded ([023-D1]).
+func declareRecurrent(b *tensor.Builder, c *Config, s GraphSpec, batch int,
+	in *Inputs) error {
+
+	if c.Recurrent == nil {
+		return fmt.Errorf("model: the stack has %d gated-delta layer(s) and the "+
+			"config carries no recurrent geometry; a layer built without one has no "+
+			"state shape (specs/023-cache-kinds.md §2)",
+			c.LayerTypes.Count(LayerGatedDelta))
+	}
+	if err := c.Recurrent.check(); err != nil {
+		return err
+	}
+	r := *c.Recurrent
+	lin := c.LayerTypes.Count(LayerGatedDelta)
+	in.LinearLayers, in.Recurrence = lin, r
+
+	// The slot count is the plan's batch exactly, and not a pool B sequences
+	// index into: LinearAttention requires the state's leading extent to equal
+	// the number of entries in QueryExtents (§2.1). So a hybrid's concurrency
+	// ceiling is B, and 1.13 GiB of recurrent state at B = 8 is charged whether
+	// the slots are busy or idle — which is the cost §4 describes.
+	in.Recurrent = tensor.NewState(b, tensor.StateDesc{
+		Name: PortRecurrent, DType: accel.F32,
+		Shape: tensor.Shape{lin, batch, r.Heads, r.ValueDim, r.KeyDim},
+	})
+	rows := batch*(r.Taps-1) + s.Tokens
+	in.ConvRows = rows
+	in.ConvWindow = tensor.NewState(b, tensor.StateDesc{
+		Name: PortConvWindow, DType: accel.F32,
+		Shape: tensor.Shape{lin, rows, r.ConvWidth},
+	})
+	in.ConvWrite = input(b, PortConvWrite, accel.U32, s.Tokens)
+	in.ConvCarry = input(b, PortConvCarry, accel.U32, batch*(r.Taps-1))
+	in.ConvCarryWrite = input(b, PortConvCarryWrite, accel.U32, batch*(r.Taps-1))
+	for i := range r.Taps {
+		in.ConvTaps = append(in.ConvTaps,
+			input(b, fmt.Sprintf("%s%d", PortConvTap, i), accel.U32, s.Tokens))
+	}
+	return nil
 }
 
 // NewPagedStep is [NewStep] over a cache addressed through a page table.

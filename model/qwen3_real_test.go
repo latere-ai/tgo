@@ -6,6 +6,7 @@ package model
 import (
 	"errors"
 	"os"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -47,7 +48,9 @@ func TestQwen3RealCheckpoint(t *testing.T) {
 		VocabSize: 151936, RMSNormEps: 1e-6, RoPETheta: 1e6,
 		TieWordEmbeddings: true, MaxPositionEmbeddings: 40960,
 	}
-	if *c != want {
+	// reflect.DeepEqual and not ==: Config carries a layer schedule now, and a
+	// dense checkpoint's is nil, which is exactly what this asserts.
+	if !reflect.DeepEqual(*c, want) {
 		t.Errorf("Config =\n  %+v\nwant\n  %+v", *c, want)
 	}
 	// The two projections whose width discriminates: H·d_h = 2048 is twice d,
