@@ -312,7 +312,7 @@ written down, which [§1](#1-the-rule-that-fixes-the-order)'s rule makes a
 first-class piece of work rather than tidying: a spec that describes a design
 the code no longer has is worse than no spec, because a contributor trusts it.
 
-**Five specs reached `complete`**, each by writing what was already built rather
+**Six specs reached `complete`**, each by writing what was already built rather
 than by narrowing what was open:
 
 - [003](003-chat-template.md) carried seven rules the renderer followed and the
@@ -328,6 +328,13 @@ than by narrowing what was open:
   `Publish(written)` split, `Batch` and the hash encoding, and settled §6 — the
   cold-against-warm divergence stays asserted here rather than becoming a
   [010 §3](010-conformance.md) row, because accel could not act on the number.
+- [001](001-weights.md) had eight items, and every one was a description of
+  shipped code: the `weights` surface, the rotary permutation as a conversion
+  in its own right — including that **accel refuses no mismatch**, so a
+  permuted weight and an unpermuted one both compile and one produces fluent
+  incoherence — the f32 gain path and its bytes missing from `Report.Bytes`,
+  §3's NaN rule, seven refusal rows, the arena's four numbers, and 001-D10 for
+  where the int8 bound is asserted.
 - [005](005-kv-cache.md) documented the shared-pool addressing as addressing:
   the `rows`/`limit` split, which exists because a shared pool makes one
   session's limit a real row inside another conversation's block, so a dropped
