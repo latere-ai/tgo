@@ -4,6 +4,7 @@
 package tgo
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
@@ -105,6 +106,20 @@ type Policy struct {
 	// completion by different rules, and the one that wins would cut a
 	// document Schema promised would parse.
 	Stop []string
+
+	// LogProbs asks for the log probability of each token the stream draws,
+	// through [Stream.LogProbs]. See specs/030-logprobs.md.
+	//
+	// Off by default and skipped entirely when off: computing it runs the whole
+	// sampling policy a second time over a 151936-entry vocabulary, per step
+	// (030-D4).
+	LogProbs bool
+
+	// TopLogProbs asks for this many alternatives per step, in [TokenProb.Top],
+	// most likely first. Zero is none, and it implies nothing about LogProbs:
+	// a caller that wants alternatives wants the drawn token's number too, so
+	// setting it without LogProbs is refused rather than silently ignored.
+	TopLogProbs int
 }
 
 // sampling projects the policy onto what the sampler reads.
@@ -164,6 +179,14 @@ func (p Policy) check(vocab int) error {
 			return fmt.Errorf("tgo: LogitBias for token %d is %v; a bias is finite or "+
 				"negative infinity, which bans the token", id, bias)
 		}
+	}
+	if p.TopLogProbs < 0 || p.TopLogProbs > sample.TopMaxRounds {
+		return fmt.Errorf("tgo: TopLogProbs is %d; it is zero for none or 1..%d, which is "+
+			"what the truncation stages walk", p.TopLogProbs, sample.TopMaxRounds)
+	}
+	if p.TopLogProbs > 0 && !p.LogProbs {
+		return errors.New("tgo: TopLogProbs is set and LogProbs is not; the alternatives " +
+			"to a token are reported beside its own probability, not instead of it")
 	}
 	for _, s := range p.Stop {
 		if s == "" {

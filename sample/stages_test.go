@@ -521,3 +521,34 @@ func ulpOf(v float64) float64 {
 	}
 	return math.Abs(float64(math.Nextafter32(f, float32(math.Inf(1))) - f))
 }
+
+// TestNextRewritesTheRowItWasGiven is why specs/030-logprobs.md §5 puts Probs
+// before the draw and not after it.
+//
+// The stages of §3 write in place: the bias is added, the penalties are applied
+// and the row is divided by the temperature, all on the caller's slice. So
+// after Next the slice is not the logits the token was drawn from, and a Probs
+// taken there would penalise and divide a second time -- reporting a sharper
+// distribution than the one that produced the token, with no error anywhere.
+//
+// Probs itself copies (006-D7), which is what makes the ordering the only thing
+// a caller has to get right.
+func TestNextRewritesTheRowItWasGiven(t *testing.T) {
+	logits := []float32{1, 2, 3, 4}
+	before := append([]float32(nil), logits...)
+	p := Policy{Temperature: 0.5, RepetitionPenalty: 1.5}
+
+	New(1).Next(logits, []int{0, 1}, p)
+	if slices.Equal(logits, before) {
+		t.Fatal("Next left the row unchanged; 030 §5's ordering rests on it not doing " +
+			"that, and if this is now true the requirement can be dropped rather " +
+			"than merely satisfied")
+	}
+
+	// And Probs does not, which is the half a caller relies on.
+	quiet := append([]float32(nil), before...)
+	New(1).Probs(quiet, []int{0, 1}, p)
+	if !slices.Equal(quiet, before) {
+		t.Errorf("Probs rewrote its input: %v, want %v", quiet, before)
+	}
+}
