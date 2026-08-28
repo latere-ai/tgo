@@ -147,17 +147,17 @@ where the code is, what diverged, and what is open.
 | [018](018-hybrid-models.md) | complete | the two linear-attention blocks, and what a hybrid still needs | — |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
 | [021](021-admission-queue.md) | complete | one queue in front of admission, so a full batch defers rather than refuses | — |
+| [022](022-batched-serving.md) | implemented | the server drives a scheduler; batched serving becomes the default | §14's passes 2 and 3: the synthesized salt, `--slots`/`--kv`, the per-request reserve, and the default flip |
 | [030](030-logprobs.md) | implemented | reporting the distribution a token was drawn from | the three `llmdialect` routes, whose IR has no field for a logprob |
 
-**What is next.** Nine specs, each scoped to be finished in one pass. Five are
-the residue of a spec above that was scoped too large: 008 shed three of which
-[021](021-admission-queue.md) is built, 018 shed four, 017 shed two, 015 shed
-one.
+**What is next.** Eight specs, each scoped to be finished in one pass. Four are
+the residue of a spec above that was scoped too large: 008 shed three, of which
+[021](021-admission-queue.md) is built and [022](022-batched-serving.md) is one
+pass of three in; 018 shed four, 017 shed two, 015 shed one.
 
 | spec | status | what it owns | from |
 | --- | --- | --- | --- |
 | [020](020-device-sampling.md) | drafted | the sampling policy on `tensor.Sample`, single and batched | 006, 008 |
-| [022](022-batched-serving.md) | drafted | the server drives a scheduler; batched serving becomes the default | 008 |
 | [023](023-cache-kinds.md) | drafted | three state shapes in one forward pass, and what a block reserves | 018 |
 | [024](024-qwen3-5-architecture.md) | drafted | the `qwen3_5` config, weight map and hybrid graph | 018 |
 | [025](025-recurrent-snapshot.md) | drafted | prefix reuse for a state that has no positions | 018 |
@@ -166,7 +166,7 @@ one.
 | [028](028-performance-gate.md) | drafted | a build that loses throughput fails like one that loses a test | 017 |
 | [029](029-grammar-front-ends.md) | drafted | EBNF and regex over the machine the schema path already built | 015 |
 
-**Three of the ten judged themselves too large** and named their own passes:
+**Three of them judged themselves too large** and named their own passes:
 [022](022-batched-serving.md) §14 and [024](024-qwen3-5-architecture.md) §11 each
 cut into three, and [029](029-grammar-front-ends.md) defers regex to a spec after
 it. Disclosed rather than split again, because the sub-scopes share one design.
@@ -208,17 +208,20 @@ long completion's *first* steps while the server called them its most recent.
 idle one, and today `server/` imports no `Scheduler`:
 
 3. **Measure the batched sampling path** and choose the design. *Medium*,
-   blocked by nothing — C3 and C6 are closed, so the device path exists to
-   measure against.
+   **blocked on a Qwen3-0.6B f16 checkpoint on disk**: [020 §8](020-device-sampling.md)
+   names that model on the machine [017 §4.1](017-benchmarks.md) already
+   measured, and a curve over $B$ read off a synthetic fixture would answer a
+   question about the fixture. C3 and C6 are closed, so the device path exists
+   to measure against once there is something to measure it on.
 4. **Device-side sampling** ([020](020-device-sampling.md)). *Large*, blocked on
    3. Its oracle is 006's host path, which is why the top-*k* fix came first.
 5. **The admission queue** ([021](021-admission-queue.md)). **Built**, Wave 13.
-6. **The server drives the scheduler** ([022](022-batched-serving.md)). *Large*,
-   and three passes ([022 §14](022-batched-serving.md)). **Pass 1 is blocked by
-   nothing**: 022-D4 takes the host sampling path deliberately and names the
-   seam 020 replaces, so the scheduler engine, the driver goroutine and the
-   channel-backed stream do not wait on 4. Pass 3 is what flips the default and
-   is where 4 lands.
+6. **The server drives the scheduler** ([022](022-batched-serving.md)). Three
+   passes ([022 §14](022-batched-serving.md)). **Pass 1 is built**, opt-in
+   behind `--batched`: the scheduler engine, the driver goroutine, the
+   channel-backed stream and per-slot host sampling. *Pass 2* is the synthesized
+   salt, `--slots`/`--kv`, the per-request reserve and the report — *medium*,
+   blocked by nothing. *Pass 3* flips the default and is where 4 lands.
 7. **Instrument the batched path** ([027](027-batched-benchmarks.md)), then the
    **performance gate** ([028](028-performance-gate.md)), which needs a baseline
    worth committing.

@@ -305,6 +305,58 @@ it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
 remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
 and it blocks no milestone.
 
+### 2026-08-28 — Wave 14: several conversations in one forward pass, opt-in
+
+[022](022-batched-serving.md)'s first pass is built, which is the third and last
+of [008 §9](008-scheduler.md)'s items to have a caller. `tgo.Runner` is a
+scheduler, [021](021-admission-queue.md)'s queue in front of its admission, and
+one goroutine that drives them; `server.WrapRunner` puts it behind the `Engine`
+interface, and `tgo serve --batched` selects it. The default does not move: that
+is pass 3, and a default is the change that cannot be tested only by the person
+making it (022-D10).
+
+**What the pass had to do first.** [022 §5](022-batched-serving.md) names a seam
+and the code had no such seam. `Stream.advance` ran the forward pass and then
+turned the row into events in one function, half of it reaching through the
+session for things that were never the session's — the stop ids and the
+tokenizer are the model's. So the second half is now `decoder`: the grammar
+mask, the sampler, the detokenizer, the stop strings, the events and the
+stopping decision, shared by a single session and by a slot. Writing the batched
+decode loop beside the single one would have made a sampling bug and a batching
+bug indistinguishable, which is [008-D8](008-scheduler.md) one layer up. The
+extraction changed no behaviour: every test passed unedited except one that
+built a `Stream` around a bare `Session` to reach `isStop`.
+
+**The ordering the extraction had to get right.** A session appends the drawn
+token to its history on the *next* step; a runner appends it through
+`Scheduler.Feed` after sampling. The two orders must give the same tokens, and
+a disagreement would read as a sampling bug rather than the ordering one it
+would be. `TestRunnerAgreesWithASingleSession` holds them against each other on
+the same prompt and seed. The history is a **parameter** of `decoder.consume`
+rather than a field, because under a scheduler it belongs to the slot and two
+owners of one slice is the aliasing `Scheduler.Admit`'s copy exists to prevent.
+
+**What the measurement forced.** [017 §1](017-benchmarks.md) treats the four
+terms as exhaustive, so a batched loop recording a wall clock under one of their
+names would report a device cost as host time. `Batch.step` and `Scheduler.step`
+now measure submit, device and readback the way `Session.run` does, and the host
+term is the subtraction. §11's gate reads the batch width, which a quantile has
+no place for, so `bench.Recorder.Steps` exposes the raw observations.
+
+**What a fixture could not assert.** The first drafts of the per-slot mask and
+penalty tests compared a batched completion against the same request run alone,
+and failed: a reused prefix was computed under a different prefill shape and
+floating point is not associative ([016-D6](016-prefix-cache.md)), which is
+exactly the cost [022 §9](022-batched-serving.md) names as the price of batching
+by default. So the grammar row runs **two different schemas** in one step and
+asserts each output against its own — one schema would let a shared grammar
+state look correct — and the penalty row asserts that two policies alike but for
+the penalty disagree.
+
+**Still one $R$ for the whole deployment**, capped at half the context so the
+promise is payable on a short one. 022-D7 makes it per request in pass 2, and
+that is the change that will move [021](021-admission-queue.md)'s `Admitter`.
+
 ### 2026-08-28 — Wave 13: a full batch defers rather than refuses
 
 [021](021-admission-queue.md) is built, and it is the second of

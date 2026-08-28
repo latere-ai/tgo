@@ -1,6 +1,6 @@
 ---
 title: "The server drives a scheduler: one forward pass for every conversation in flight"
-status: drafted
+status: implemented
 layer: api
 depends_on:
   - 000-decisions.md
@@ -459,6 +459,113 @@ into three, in this order.
    engine, with [020](020-device-sampling.md)'s measurement deciding what moves
    off the host. Last, because a default is the change that cannot be tested
    only by the person making it.
+
+## Outcome
+
+Pass 1 of [§14](#14-this-is-not-one-pass) shipped 2026-08-28, opt-in behind
+`--batched` and off by default. `tgo.Runner` is the scheduler, the
+[021](021-admission-queue.md) queue in front of its admission, and the one
+goroutine that drives them; `tgo.SlotStream` is a request's completion read from
+the batch that produced it; `server.WrapRunner` adapts it to `server.Engine`.
+
+**What shipped**, section by section. §2's unit is a scheduler slot and there is
+no route to choose, because reuse comes from the block pool and any free slot
+reaches it. §3's driver goroutine is `Runner.drive`: one `Scheduler.Step`, then
+mask, sample and events for every slot it carried. §4's per-request stream is a
+receiver over a bounded channel and satisfies `server.Stream` unchanged, so
+`server/generate.go` and every dialect test are untouched. §5's six per-request
+parameters all stay on the host, per slot, which is 022-D4. §6's step-boundary
+release is built: a caller that hangs up or closes marks its slot, the dispatch
+it is inside finishes, and `Scheduler.Finish` returns the blocks to the shared
+pool. §10's preservation list is checked over the batched engine for the four
+routes and their streaming forms, the admission refusal, and `cache_salt`.
+§11's gate, `TestTwoRequestsShareOneForwardPass`, passes at both layers.
+
+**What diverged** from the design, and why the code is right.
+
+- **The decode loop was extracted before anything was built.** §5 names the seam
+  and the code had no such seam: `Stream.advance` ran the forward pass and then
+  turned the row into events in one function, half of it reaching through the
+  session. `decoder` is now the second half — the grammar mask, the sampler, the
+  detokenizer, the stop strings, the events and the stopping decision — and
+  `Stream` and `SlotStream` share one copy of it. Writing the batched decode
+  loop beside the single one would have made a sampling bug and a batching bug
+  indistinguishable, which is [008-D8](008-scheduler.md) one layer up.
+- **The runner is in package `tgo`, not in `server`.** §3's driver is drawn
+  inside the server and it cannot live there: the decode machinery is
+  package-private, so a driver under `server/` would need a second copy of it,
+  which is the thing the extraction above exists to prevent. `server` holds the
+  adapter and nothing else.
+- **What crosses the channel is a step, not a `tgo.Event`.** §4 says an event.
+  A step can produce several, and the log probabilities belong to the step:
+  [030-D1](030-logprobs.md) reuses the backing array across steps, so handing
+  that slice to another goroutine is a race rather than a lifetime. One slice
+  header per step that produced anything is what it costs; the strings inside
+  the events were already allocated by the detokenizer.
+- **A slow consumer is dropped when its channel fills, not after its context
+  deadline.** §4 says the second. The driver cannot wait for a deadline without
+  becoming the backpressure the bound exists to prevent, so the drop is
+  immediate and the request is told why: `ErrSlowConsumer`, rather than a stream
+  that ends in silence. `RunnerOptions.Backlog` is the bound, and it is an
+  option rather than a constant because it is the one place a slot's memory and
+  a client's tolerance trade against each other.
+- **`bench.Step`'s four terms are measured on the batched path, and §11's gate
+  needed a new accessor.** [017 §1](017-benchmarks.md) treats the four as
+  exhaustive, so a batched loop recording a wall clock under one of their names
+  would report a device cost as host time. `Batch.step` and `Scheduler.step`
+  now measure submit, device and readback the way `Session.run` does, and the
+  host term is the subtraction. `bench.Recorder.Steps` was added because the
+  batch width is the field §11 reads and a quantile has no place for it.
+- **§11's `TestPerSlotGrammarMask` and `TestPenaltiesReadOnlyTheirOwnSlot`
+  cannot compare a batched completion against the same request run alone**, and
+  the first draft of both did. A reused prefix was computed under a different
+  prefill shape and floating point is not associative
+  ([016-D6](016-prefix-cache.md)), which is the cost §9 names. So the grammar
+  row runs **two different schemas** in one step and asserts each output against
+  its own — a shared grammar state would still let one mask look correct — and
+  the penalty row asserts that two policies alike but for the penalty disagree.
+- **The flag is `--batched`.** §8's `--slots` and `--kv` are pass 2, and pass 1
+  changes no existing flag. `--batched` implies `--prefix-cache process`
+  (022-D1) rather than failing later with an error about a pool the operator
+  never mentioned, and an operator who asked for another scope is told the two
+  cannot both hold rather than having theirs overwritten. The two lines of the
+  startup report that stop being true under a batch — what the number counts,
+  and what concurrency buys — change with it; the rest of §8's report is pass 2.
+- **The reserve is capped at half the context.** §3's $R$ is one deployment
+  number until 022-D7, and `tgo.DefaultReserve` of 512 exceeds a short context —
+  a reserve larger than the context admits nobody, because
+  $\lceil (T+R)/B \rceil$ is then more blocks than one sequence's share of the
+  pool. `serveReserve` is the cap and it is stated where an operator can read
+  the arithmetic.
+- **The runner does not evict**, so [021](021-admission-queue.md)'s `Ticket`
+  has no caller yet and `Runner` does not expose one. Readmission at an original
+  arrival stamp is designed, tested in 021 and unreachable from here until
+  something calls `Scheduler.Evict`.
+
+**Not built.** Passes 2 and 3 of [§14](#14-this-is-not-one-pass), and they are
+the ones that change what a deployment gets by default.
+
+*Pass 2*: [§7](#7-the-empty-salt-means-the-opposite-thing-under-a-block-pool)'s
+synthesized per-request salt, so an unsalted request shares with nothing rather
+than with everybody — today the server forwards the empty salt and every
+unsalted request hashes into one domain, which is the hole §7 exists to close;
+[§8](#8-sessions-means-two-things-today-and-neither-of-them-afterwards)'s
+`--slots` and `--kv`, the deprecated `--sessions`, and the rest of the startup
+report; 022-D7's per-request reserve, which changes `Scheduler.Admit`'s
+signature and [021](021-admission-queue.md)'s `Admitter` with it; and removing
+[019 §8.6](019-session-affinity.md)'s startup refusal, which §4 says stops being
+necessary once every waiter is inside one queue.
+
+*Pass 3*: the default flip, and [020](020-device-sampling.md)'s measurement
+deciding what moves off the host.
+
+*Rows of [§11](#11-tests) not written*: `TestBatchedThroughputBeatsSerial`,
+which is [027](027-batched-benchmarks.md)'s instrument rather than a unit test;
+`TestNoLogitsCopyPerToken`, which needs a fake batch that poisons a slot's
+buffer; `TestUnsaltedRequestsDoNotShareBlocks` and
+`TestSaltedRequestsShareBlocks`, which are §7's pair and belong with the salt
+that makes the first of them true; and `TestCancelledSlotProducesNoTokens`,
+asserted here as a postcondition on the scheduler rather than on a grammar.
 
 ## Decision record
 
