@@ -264,6 +264,46 @@ func TestReachingMaxTokensIsReportedAsLength(t *testing.T) {
 	})
 }
 
+// TestAStopStringIsAnsweredAsStopSequenceAndNamed is what Stream.StopReason
+// bought.
+//
+// It answered end_turn on every route before 2026-08-28, because the server had
+// no way to tell a completion cut on a stop string from one the model chose to
+// end: the matched text is never emitted (006-D4), so the difference is not
+// visible from outside the engine. /v1/messages renders the two differently and
+// carries the matched string, which is why the gap showed there and nowhere
+// else.
+func TestAStopStringIsAnsweredAsStopSequenceAndNamed(t *testing.T) {
+	t.Parallel()
+	eng := &fakeEngine{script: text("a", "b"),
+		stopReason: tgo.StopSequence, stopSequence: "STOP"}
+	s := newTestServer(t, eng)
+	w := post(t, s, "/v1/messages", routes[1].body(""))
+	wantStatus(t, w, http.StatusOK)
+	for _, want := range []string{`"stop_reason":"stop_sequence"`, `"stop_sequence":"STOP"`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the response does not carry %s: %s", want, w.Body.String())
+		}
+	}
+
+	// The same completion on the OpenAI routes, where the vocabulary has no
+	// separate value. "stop" is right there and is what makes the gap invisible
+	// on three of the four routes.
+	for _, i := range []int{0, 3} {
+		r := routes[i]
+		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
+			eng := &fakeEngine{script: text("a", "b"),
+				stopReason: tgo.StopSequence, stopSequence: "STOP"}
+			w := post(t, newTestServer(t, eng), r.path, r.body(""))
+			wantStatus(t, w, http.StatusOK)
+			if !strings.Contains(w.Body.String(), `"finish_reason":"stop"`) {
+				t.Errorf("finish_reason is not stop: %s", w.Body.String())
+			}
+		})
+	}
+}
+
 // Each output block carries its own ordinal.
 //
 // ir.Event numbers the blocks and [tgo.Event] does not, which is the one piece

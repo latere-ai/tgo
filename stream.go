@@ -58,6 +58,47 @@ func (k EventKind) String() string {
 	return "unknown"
 }
 
+// StopReason is why a stream ended.
+//
+// A caller can reconstruct two of these from what it already has -- the token
+// count against MaxTokens, and its own stop strings against the text -- and not
+// the third: a stop string need not align to a token boundary and the matched
+// text is never emitted (006-D4), so "ended on a stop string" is not visible
+// from outside. Without this a completion that hit a stop string cannot be told
+// from one the model chose to end, and the three wire dialects render those
+// differently (specs/009-server.md §3.2).
+type StopReason uint8
+
+// The reasons a stream ends.
+const (
+	// StopRunning is the zero value: the stream has not ended, or it ended
+	// with an error, which [Stream.Err] reports instead.
+	StopRunning StopReason = iota
+
+	// StopEndTurn is an end-of-turn token. The model said it was done.
+	StopEndTurn
+
+	// StopSequence is one of [Policy.Stop]. [Stream.StopSequence] says which.
+	StopSequence
+
+	// StopMaxTokens is the caller's budget, from [Policy.MaxTokens] or from
+	// what the session's remaining capacity allowed.
+	StopMaxTokens
+)
+
+// String names a StopReason, in the vocabulary specs/009-server.md's IR uses.
+func (r StopReason) String() string {
+	switch r {
+	case StopEndTurn:
+		return "end_turn"
+	case StopSequence:
+		return "stop_sequence"
+	case StopMaxTokens:
+		return "max_tokens"
+	}
+	return "running"
+}
+
 // Event is one thing the model produced.
 type Event struct {
 	// Kind is what happened.
@@ -121,6 +162,11 @@ type Stream struct {
 	// stop string. It is empty whenever Policy.Stop is.
 	pending string
 	stopped bool
+
+	// stopSeq is the stop string that matched, and reason is why generation
+	// ended. Both are set once, by the branch that ends the stream.
+	stopSeq string
+	reason  StopReason
 
 	openBlock chat.BlockType
 	first     time.Time
@@ -280,6 +326,11 @@ func (st *Stream) advance() {
 	st.feed = tok
 
 	if st.isStop(tok) {
+		// An end-of-turn id. It is the model saying it is done, which is a
+		// different answer from a caller's budget running out and from a stop
+		// string the caller wrote -- and /v1/messages renders all three
+		// differently.
+		st.reason = StopEndTurn
 		st.finish(nil)
 	} else {
 		// Advance consumes the token that was drawn, and only a token that is
@@ -297,8 +348,10 @@ func (st *Stream) advance() {
 		st.emit(tok)
 		switch {
 		case st.stopped:
+			st.reason = StopSequence
 			st.finish(nil)
 		case st.usage.CompletionTokens >= st.maxTokens:
+			st.reason = StopMaxTokens
 			st.finish(nil)
 		}
 	}
@@ -375,6 +428,17 @@ func (st *Stream) endBlock() {
 	st.openBlock = ""
 }
 
+// StopReason is why the stream ended, and is [StopRunning] until it has.
+//
+// It is not set when the stream ended in an error or a cancellation: those are
+// [Stream.Err]'s, and reporting a reason for a completion that did not complete
+// would let a caller answer a failed request as a finished one.
+func (st *Stream) StopReason() StopReason { return st.reason }
+
+// StopSequence is the stop string that ended the stream, and is empty unless
+// [Stream.StopReason] is [StopSequence].
+func (st *Stream) StopSequence() string { return st.stopSeq }
+
 // drain releases as much held-back text as is safe.
 //
 // While a stop string is set, the longest suffix of the output that could still
@@ -385,10 +449,11 @@ func (st *Stream) drain(final bool) {
 	if st.pending == "" {
 		return
 	}
-	if i := firstStop(st.pending, st.pol.Stop); i >= 0 {
+	if i, which := firstStop(st.pending, st.pol.Stop); i >= 0 {
 		st.emitText(st.pending[:i])
 		st.pending = ""
 		st.stopped = true
+		st.stopSeq = which
 		return
 	}
 	keep := 0
@@ -475,14 +540,14 @@ func (st *Stream) abandon() {
 }
 
 // firstStop is the index of the earliest stop string in s, or -1.
-func firstStop(s string, stops []string) int {
-	best := -1
+func firstStop(s string, stops []string) (int, string) {
+	best, which := -1, ""
 	for _, stop := range stops {
 		if i := strings.Index(s, stop); i >= 0 && (best < 0 || i < best) {
-			best = i
+			best, which = i, stop
 		}
 	}
-	return best
+	return best, which
 }
 
 // holdBack is how many trailing bytes of s could still begin a stop string.

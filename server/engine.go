@@ -111,6 +111,12 @@ type Stream interface {
 	Event() tgo.Event
 	Usage() tgo.Usage
 	Err() error
+
+	// StopReason and StopSequence are why generation ended. They are read once,
+	// after Next has returned false: a stream still running reports
+	// [tgo.StopRunning], and so does one that failed, whose answer is Err.
+	StopReason() tgo.StopReason
+	StopSequence() string
 }
 
 // Wrap adapts a loaded model to [Engine], serving it under the id name.

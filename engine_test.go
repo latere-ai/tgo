@@ -817,6 +817,77 @@ func TestStopStringsCutTheTextAndAreNeverEmitted(t *testing.T) {
 	}
 }
 
+// TestTheStreamSaysWhichOfThreeEndingsItHad is what makes the three endings
+// distinguishable from outside the package.
+//
+// Two of them a caller could reconstruct: a token count against MaxTokens, and
+// an end-of-turn token it never sees. The third it cannot. A stop string need
+// not align to a token boundary and the matched text is never emitted (006-D4),
+// so from outside, a completion cut on a stop string and one the model chose to
+// end look identical -- which is why specs/009-server.md answered both as
+// end_turn on every route.
+func TestTheStreamSaysWhichOfThreeEndingsItHad(t *testing.T) {
+	t.Parallel()
+	m := openSynthetic(t)
+
+	full, _ := collect(t, complete(t, session(t, m, WithSessionContext(64)),
+		"the sun rose", greedy(24)))
+	if len(full) < 6 {
+		t.Skipf("the fixture produced %q, which is too short to cut", full)
+	}
+	cut := full[len(full)/2 : len(full)/2+2]
+
+	for _, c := range []struct {
+		name   string
+		policy Policy
+		want   StopReason
+		seq    string
+	}{
+		// The budget, which is the one ending the server could already name.
+		{"a budget that runs out", Policy{MaxTokens: 3}, StopMaxTokens, ""},
+		// The stop string, which it could not.
+		{"a stop string", Policy{MaxTokens: 24, Stop: []string{cut}}, StopSequence, cut},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st := complete(t, session(t, m, WithSessionContext(64)), "the sun rose", c.policy)
+			collect(t, st)
+			if got := st.StopReason(); got != c.want {
+				t.Errorf("StopReason() = %v, want %v", got, c.want)
+			}
+			if got := st.StopSequence(); got != c.seq {
+				t.Errorf("StopSequence() = %q, want %q", got, c.seq)
+			}
+		})
+	}
+
+	// A stream that has not run reports neither, so a caller cannot read a
+	// reason off a request that produced nothing.
+	fresh := complete(t, session(t, m, WithSessionContext(64)), "the sun rose", greedy(4))
+	if got := fresh.StopReason(); got != StopRunning {
+		t.Errorf("a stream before its first Next reports %v, want StopRunning", got)
+	}
+	if got := StopRunning.String(); got != "running" {
+		t.Errorf("StopRunning.String() = %q", got)
+	}
+	for r, want := range map[StopReason]string{
+		StopEndTurn: "end_turn", StopSequence: "stop_sequence", StopMaxTokens: "max_tokens",
+	} {
+		if got := r.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", r, got, want)
+		}
+	}
+}
+
+// complete starts a stream or fails the test.
+func complete(t *testing.T, s *Session, prompt string, p Policy) *Stream {
+	t.Helper()
+	st, err := s.Complete(t.Context(), prompt, p)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	return st
+}
+
 // TestHoldBackAndFirstStop are the two functions the row above rests on.
 func TestHoldBackAndFirstStop(t *testing.T) {
 	t.Parallel()
@@ -835,7 +906,7 @@ func TestHoldBackAndFirstStop(t *testing.T) {
 		{"tail", []string{"ail", "il", "l"}, 1, 0},
 		{"partial-a", []string{"a-b"}, -1, 1},
 	} {
-		if got := firstStop(c.s, c.stops); got != c.first {
+		if got, _ := firstStop(c.s, c.stops); got != c.first {
 			t.Errorf("firstStop(%q, %v) = %d, want %d", c.s, c.stops, got, c.first)
 		}
 		if got := holdBack(c.s, c.stops); got != c.keep {
@@ -1067,7 +1138,7 @@ func TestAStopStringStraddlingAUTF8Boundary(t *testing.T) {
 		// A stop inside a longer rune-bearing text.
 		{sigma + arrow + sigma, []string{arrow}, 3, 0},
 	} {
-		if got := firstStop(c.s, c.stops); got != c.first {
+		if got, _ := firstStop(c.s, c.stops); got != c.first {
 			t.Errorf("firstStop(%q, %v) = %d, want %d", c.s, c.stops, got, c.first)
 		}
 		if got := holdBack(c.s, c.stops); got != c.keep {
@@ -1092,7 +1163,7 @@ func TestAStopStringStraddlingAUTF8Boundary(t *testing.T) {
 		var emitted, pending string
 		for _, r := range tc.text {
 			pending += string(r)
-			if at := firstStop(pending, []string{tc.stop}); at >= 0 {
+			if at, _ := firstStop(pending, []string{tc.stop}); at >= 0 {
 				emitted += pending[:at]
 				pending = ""
 				break

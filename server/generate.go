@@ -171,8 +171,8 @@ func (s *Server) stream(w http.ResponseWriter, ctx context.Context, front llmdia
 		flush()
 		return
 	}
-	if !emit(ir.Event{Type: ir.EventMessageDelta, StopReason: stopReason(req.policy, st.Usage()),
-		Usage: usageOf(st.Usage())}) {
+	if !emit(ir.Event{Type: ir.EventMessageDelta, StopReason: stopReason(st, req.policy, st.Usage()),
+		StopSequence: st.StopSequence(), Usage: usageOf(st.Usage())}) {
 		return
 	}
 	emit(ir.Event{Type: ir.EventMessageStop})
@@ -218,11 +218,12 @@ func (s *Server) whole(w http.ResponseWriter, ctx context.Context, front llmdial
 	}
 
 	body, err := front.EncodeResponse(&ir.Response{
-		ID:         requestID(req.dialect),
-		Model:      s.eng.Name(),
-		Blocks:     blocks,
-		StopReason: stopReason(req.policy, st.Usage()),
-		Usage:      *usageOf(st.Usage()),
+		ID:           requestID(req.dialect),
+		Model:        s.eng.Name(),
+		Blocks:       blocks,
+		StopReason:   stopReason(st, req.policy, st.Usage()),
+		StopSequence: st.StopSequence(),
+		Usage:        *usageOf(st.Usage()),
 	})
 	if err != nil {
 		s.fail(w, req.dialect, &apiError{kind: errInternal, reason: "internal",
@@ -300,14 +301,29 @@ func usageOf(u tgo.Usage) *ir.Usage {
 	return &ir.Usage{InputTokens: int64(u.PromptTokens), OutputTokens: int64(u.CompletionTokens)}
 }
 
-// stopReason is why generation ended.
+// stopReason is why generation ended, in the IR's vocabulary.
 //
-// Only two of the IR's five are reachable. [tgo.Stream] reports no stop reason
-// of its own, so a completion that ended on a stop string cannot be told from
-// one that ended on the end-of-turn token; both are end_turn. Two of the three
-// dialects render the two identically, so the gap is visible only on
-// /v1/messages -- filed upstream as a request for Stream.StopReason.
-func stopReason(p tgo.Policy, u tgo.Usage) ir.StopReason {
+// The stream is the authority and the policy is the fallback. A stop string
+// need not align to a token boundary and the matched text is never emitted
+// (006-D4), so "ended on a stop string" cannot be reconstructed out here --
+// which is why [tgo.Stream] reports it and this translates rather than
+// recomputes.
+//
+// StopRunning falls through to end_turn. A stream that ended in an error never
+// reaches an encoder, and one that ran out of the session's remaining capacity
+// rather than of Policy.MaxTokens is a budget the caller did not set: the
+// policy branch below is what still answers max_tokens there.
+//
+// StopToolUse and StopRefusal stay unreachable, and neither is a gap. tgo emits
+// a tool call as text (009-D6) and has no refusal classifier, so a stop reason
+// naming either would be a claim about output nothing checked.
+func stopReason(st Stream, p tgo.Policy, u tgo.Usage) ir.StopReason {
+	switch st.StopReason() {
+	case tgo.StopSequence:
+		return ir.StopStopSequence
+	case tgo.StopMaxTokens:
+		return ir.StopMaxTokens
+	}
 	if p.MaxTokens > 0 && u.CompletionTokens >= p.MaxTokens {
 		return ir.StopMaxTokens
 	}

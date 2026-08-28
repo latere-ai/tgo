@@ -52,6 +52,12 @@ type fakeEngine struct {
 	// streamErr ends the stream after the script, as a device failure does.
 	streamErr error
 
+	// stopReason and stopSequence are what the engine says ended the stream.
+	// The zero value is tgo.StopRunning, which is a stream that ended on the
+	// end-of-turn token as far as stopReason is concerned.
+	stopReason   tgo.StopReason
+	stopSequence string
+
 	// sessionErr fails NewSession, as an exhausted device does.
 	sessionErr error
 
@@ -266,7 +272,16 @@ type fakeStream struct {
 	// cancelled records that the stream ended because the context did, which
 	// is the observation §5's second trap is about.
 	cancelled bool
+
+	// reason and seq are what the engine says ended the stream. The zero value
+	// is tgo.StopRunning, so a test that sets neither exercises the fallback
+	// path in stopReason rather than the stream's own answer.
+	reason tgo.StopReason
+	seq    string
 }
+
+func (st *fakeStream) StopReason() tgo.StopReason { return st.reason }
+func (st *fakeStream) StopSequence() string       { return st.seq }
 
 func (st *fakeStream) Next() bool {
 	if st.i > 0 && st.eng.gate != nil {
@@ -281,6 +296,7 @@ func (st *fakeStream) Next() bool {
 	}
 	if st.i >= len(st.eng.script) {
 		st.err = st.eng.streamErr
+		st.reason, st.seq = st.eng.stopReason, st.eng.stopSequence
 		return st.stop(false)
 	}
 	st.cur = st.eng.script[st.i]
