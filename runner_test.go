@@ -59,7 +59,11 @@ func TestTwoRequestsShareOneForwardPass(t *testing.T) {
 	r := newRunner(t, m, RunnerOptions{Slots: 2, Chunk: 8, Reserve: CacheBlock,
 		Recorder: rec})
 
-	const tokens = 4
+	// Sixteen and not four: what is under test is that two requests overlap,
+	// and on a device where a completion is milliseconds a short one can finish
+	// before the other is admitted. The overlap has to be the likely outcome of
+	// the fixture rather than of the machine.
+	const tokens = 16
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
@@ -261,16 +265,26 @@ func TestASlowConsumerDoesNotStallTheBatch(t *testing.T) {
 // TestRunnerReleasesASlotWhenTheCallerLeaves is 022-D5 at the step boundary: a
 // caller that stops reading gives its slot and its blocks back, so the next
 // request is admitted rather than waiting for a budget to elapse.
+//
+// The waiting half is asserted as a **positive observation** -- the third
+// request is seen in the queue -- and not as a deadline that elapsed. A
+// deadline says only that nothing happened in the time allowed, which on a fast
+// machine is also what a batch that emptied under the test looks like: the
+// first draft of this test used one and passed on the CPU backend and failed on
+// Metal, where the two holders finished before the third request arrived.
 func TestRunnerReleasesASlotWhenTheCallerLeaves(t *testing.T) {
 	t.Parallel()
 	m := batchModel(t)
 	r := newRunner(t, m, RunnerOptions{Slots: 2, Chunk: 8, Reserve: CacheBlock})
 
-	// Fill both slots with long completions nobody will read to the end.
+	// Both slots, with completions long enough that neither can end while the
+	// third request is being admitted -- 96 steps against the microseconds a
+	// goroutine takes to start -- and which nobody reads to the end. The test
+	// finishes long before they do, and closing the runner ends them.
 	held := make([]*SlotStream, 2)
 	for i := range held {
 		st, err := r.Complete(context.Background(), RunRequest{},
-			strings.Repeat("x ", 3+i), greedy(8))
+			strings.Repeat("x ", 3+i), greedy(96))
 		if err != nil {
 			t.Fatalf("holding request %d: %v", i, err)
 		}
@@ -279,23 +293,69 @@ func TestRunnerReleasesASlotWhenTheCallerLeaves(t *testing.T) {
 		}
 		held[i] = st
 	}
-	// A third request cannot be admitted while both are live.
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	_, err := r.Complete(ctx, RunRequest{}, "the third", greedy(2))
-	cancel()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a third request on a full batch got %v, want to have waited", err)
+
+	third := admit2(r, "the third")
+	waitFor(t, "the third request to be queued behind a full batch", func() bool {
+		return r.Queue().Depth() == 1
+	})
+	if !third.pending() {
+		t.Fatal("the third request was admitted while both slots were live")
 	}
 
 	if err := held[0].Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	st, err := r.Complete(context.Background(), RunRequest{}, "the third", greedy(2))
-	if err != nil {
-		t.Fatalf("after a caller left, the next request got %v", err)
-	}
-	if text, _ := drainSlot(t, st); text == "" {
+	if text := third.text(t); text == "" {
 		t.Error("the request admitted into the freed slot produced nothing")
+	}
+}
+
+// admit2 runs one completion in the background, so a test can watch it wait.
+type backgroundRun struct {
+	out chan string
+	err chan error
+}
+
+func admit2(r *Runner, prompt string) *backgroundRun {
+	b := &backgroundRun{out: make(chan string, 1), err: make(chan error, 1)}
+	go func() {
+		st, err := r.Complete(context.Background(), RunRequest{}, prompt, greedy(2))
+		if err != nil {
+			b.out <- ""
+			b.err <- err
+			return
+		}
+		var text string
+		for st.Next() {
+			text += st.Event().Text
+		}
+		b.out <- text
+		b.err <- st.Err()
+	}()
+	return b
+}
+
+func (b *backgroundRun) pending() bool {
+	select {
+	case err := <-b.err:
+		b.err <- err
+		return false
+	default:
+		return true
+	}
+}
+
+func (b *backgroundRun) text(t *testing.T) string {
+	t.Helper()
+	select {
+	case err := <-b.err:
+		if err != nil {
+			t.Fatalf("the background request: %v", err)
+		}
+		return <-b.out
+	case <-time.After(30 * time.Second):
+		t.Fatal("the background request did not finish")
+		return ""
 	}
 }
 

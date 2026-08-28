@@ -110,7 +110,10 @@ func TestTwoRequestsShareOneForwardPass(t *testing.T) {
 	rec := bench.NewRecorder(512)
 	s := batchedServer(t, openShared(t), 2, rec)
 
-	const body = `{"model":"` + synthName + `","max_tokens":4,"prompt":"hi"}`
+	// Sixteen tokens and not four: the two requests have to overlap, and on a
+	// device where a completion is milliseconds a short one can finish before
+	// the other is admitted.
+	const body = `{"model":"` + synthName + `","max_tokens":16,"prompt":"hi"}`
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
