@@ -1,6 +1,6 @@
 ---
 title: "Hybrid attention: what Qwen3.8-27B is, and the operator it now has"
-status: implemented
+status: complete
 layer: graph
 depends_on:
   - 000-decisions.md
@@ -387,7 +387,10 @@ parent that indexes them.
   `mamba_ssm_dtype: float32` makes f32-only plausible — but the dtype is a
   decision 023 has to record rather than inherit.
 
-**Not built.** Four children carry what is left: [023](023-cache-kinds.md), the
+**Not built.** Nothing that 018 owns: it is the design, and the design is
+written. What remains is a graph, and four children carry it.
+
+Owned elsewhere. [023](023-cache-kinds.md), the
 per-layer cache kinds the other three wait on; [024](024-qwen3-5-architecture.md),
 the `qwen3_5` config, weight map and hybrid graph;
 [025](025-recurrent-snapshot.md), snapshot and restore for recurrent state; and

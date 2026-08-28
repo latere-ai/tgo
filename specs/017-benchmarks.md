@@ -1,6 +1,6 @@
 ---
 title: "Benchmarks: measuring where a token's time goes, and comparing honestly"
-status: implemented
+status: complete
 layer: all
 depends_on:
   - 000-decisions.md
@@ -273,7 +273,10 @@ because [010](010-conformance.md), [011](011-sequencing.md),
   derivable from it. §4.1's p99-against-p50 ratio is a ratio of two such steps
   and stands.
 
-**Not built.** Five items, each with the spec that owns it.
+**Not built.** Nothing that 017 owns. One item left this paragraph on
+2026-08-28: the two stale strings claiming the engine exports no recorder.
+
+Owned elsewhere, four items, each with the spec that owns it.
 
 - **017-D5's batch curve**: [027](027-batched-benchmarks.md). It needs a
   `bench.Step` from `batch.go` and `scheduler.go` carrying the real slot count;
@@ -287,18 +290,22 @@ because [010](010-conformance.md), [011](011-sequencing.md),
   keeps the newest rather than refusing to publish a truncated report — a long
   request is the one whose current behaviour a reader wants, and refusing would
   report nothing at all in that case.
-- **Four stale strings in `cmd/tgo`**, which no code change here may make
-  alone: `singleBatchNote` (`cmd/tgo/record.go:131`) and the `--batch` refusal
+- **Two stale strings in `cmd/tgo`**, and they are [027](027-batched-benchmarks.md)'s:
+  `singleBatchNote` (`cmd/tgo/record.go:131`) and the `--batch` refusal
   (`cmd/tgo/bench.go:88`) both say "specs/008-scheduler.md is drafted and
   unbuilt" while 008 is `complete`, and `cmd/tgo/bench_test.go:40` asserts that
-  sentence verbatim, which is why nothing caught it. `noBreakdownNote`
-  (`cmd/tgo/record.go:156`) and `cmd/tgo/main.go:53` both say
-  "specs/007-engine.md §1 exports no way to set or read the bench.Recorder"
-  while `WithRecorder` shipped in Wave 4 (`options.go:161`). The first pair and
-  its test belong to [027](027-batched-benchmarks.md), which removes the
-  refusal. The second pair is a text correction no other spec owns: the note
-  should say what a missing breakdown means today, which is a caller who passed
-  no recorder.
+  sentence verbatim, which is why nothing caught it. 027 removes the refusal, so
+  the text goes with it.
+
+  **The other pair is corrected** (2026-08-28). `noBreakdownNote` and
+  `cmd/tgo/main.go`'s discrepancy list both said specs/007-engine.md §1 exports
+  no way to set or read a `bench.Recorder`, which was true when
+  [017-D7](#decision-record) was filed and stopped being true in Wave 4 when
+  `WithRecorder` shipped. The note now names the one thing that can still
+  produce an empty breakdown — a session opened without a recorder — and
+  `TestAnUnmeasuredAxisNamesAGapThatIsStillOpen` fails on the old text. The
+  test beside it checked only that a note cited a spec, which a note naming a
+  closed gap satisfies.
 - **017-D6's regression gate**: [028](028-performance-gate.md). The record is
   written and shaped for a checker that does not exist (`cmd/tgo/record.go:205`),
   `internal/` has no benchmark counterpart to `covercheck`, and neither

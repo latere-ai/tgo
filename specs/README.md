@@ -143,8 +143,8 @@ where the code is, what diverged, and what is open.
 | [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
 | [015](015-structured-output.md) | complete | schema-constrained decoding | — |
 | [016](016-prefix-cache.md) | complete | reusing the KV of a prompt somebody already paid for | — |
-| [017](017-benchmarks.md) | implemented | measuring where a token's time goes, and comparing honestly | 017-D5's batch curve, and the vLLM row 011 M13 gates |
-| [018](018-hybrid-models.md) | implemented | the two linear-attention blocks, and what a hybrid still needs | the graph: 023–026 below |
+| [017](017-benchmarks.md) | complete | measuring where a token's time goes, and comparing honestly | — |
+| [018](018-hybrid-models.md) | complete | the two linear-attention blocks, and what a hybrid still needs | — |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
 
 **What is next.** Ten specs written on 2026-08-27, each scoped to be finished in
