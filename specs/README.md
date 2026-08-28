@@ -130,7 +130,7 @@ where the code is, what diverged, and what is open.
 | --- | --- | --- | --- |
 | [000](000-decisions.md) | record | the thirteen decisions everything is built on | — |
 | [001](001-weights.md) | complete | safetensors, dtype conversion, transposition, quantization policy | — |
-| [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode | reference id vectors, which need a machine with huggingface `tokenizers` |
+| [002](002-tokenizer.md) | implemented | byte-level BPE, specials, streaming decode | 002-D5's reference id vectors, which need a machine with huggingface `tokenizers` |
 | [003](003-chat-template.md) | complete | chat rendering, and why user text cannot forge a turn | — |
 | [004](004-model-graph.md) | complete | `nn` blocks, the registry, the Qwen3 forward pass | — |
 | [005](005-kv-cache.md) | complete | the KV cache, contiguous and paged, and what each costs | — |

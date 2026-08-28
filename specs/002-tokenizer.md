@@ -54,7 +54,47 @@ type Decoder struct{ /* ... */ }
 
 func (d *Decoder) Push(id int) string  // the text this token completed, possibly ""
 func (d *Decoder) Flush() string       // whatever is held back, at end of stream
+
+// TextBytes returns the bytes an id contributes to decoded text, and nil for
+// an id that contributes none. See 2.1.
+func (t *Tokenizer) TextBytes(id int) []byte
 ```
+
+### 2.1 `TextBytes`, and why it is nil for a control token
+
+`TextBytes` is the inverse of the **byte-level alphabet**, not the vocabulary
+file's spelling: the id for `" the"` comes back as the four bytes of `" the"`,
+not as the five characters of `"Ġthe"`. A caller reasoning about what a token
+puts in the output — a grammar masking the tokens that cannot continue a
+document ([015 §2](015-structured-output.md)) — must read the bytes, because the
+surface form is a different string that happens to be legal in most contexts.
+
+It is nil in three cases, which are one case to a caller: an id out of range, an
+id no table claims, and **an added token**. The third is the one worth stating.
+An added token's piece holds its literal content, so `<|im_end|>` would
+otherwise read as ten characters a caller could believe it is free to emit
+wherever those characters are legal — and a grammar that admitted it there would
+end a document with a control token in the middle of a string.
+
+### 2.2 `VocabSize` is the id space, not the embedding
+
+`VocabSize` is `len(piece)`: the size of the **id space**. A checkpoint commonly
+pads its embedding matrix past the last real token, so Qwen3 returns 151669
+against an embedding of 151936. Use it to bound an id, never to shape a tensor
+— [004 §2](004-model-graph.md) reads the row count from the checkpoint.
+
+### 2.3 The concurrency contract
+
+One `Tokenizer` is shared; one `Decoder` belongs to one stream. A `Tokenizer` is
+immutable after `Parse` and `Encode` writes nothing to it, so any number of
+requests may encode at once. A `Decoder` holds a byte buffer between calls and
+is not safe for concurrent use — which is also why it is a separate type rather
+than a mode of `Tokenizer`, and why `Stream` makes one per request.
+
+That buffer is **not** 006's stop-string hold-back. One holds because a byte
+sequence is incomplete; the other because a text match might still extend
+([002-D8](#decision-record)), and a single buffer serving both mis-holds for
+both.
 
 ## 3. The byte-level alphabet
 
@@ -112,6 +152,83 @@ renders anyway. The asymmetry is the point:
 - a different split pattern produces **different token ids** for the same
   string, silently, and there is nothing to inspect. The model is simply fed
   something else.
+
+### 4.1 The two registered patterns, and the one alternative between them
+
+Two are registered, and they differ in **exactly one alternative** — the run of
+digits (`tokenizer/pretokenize.go:33-52`):
+
+| family | digit runs |
+| --- | --- |
+| Qwen | `\p{N}` one at a time |
+| cl100k (GPT-4) | `\p{N}{1,3}`, up to three |
+
+So one splitter serves both, parameterised by `maxDigits`. A third family is a
+row here and a checksum there, not a new splitter, which is what makes
+[002-D7](#decision-record)'s refusal cheap to lift for a pattern somebody has
+read.
+
+### 4.2 What is refused at load, and the invariants that make `Encode` total
+
+[002-D7](#decision-record) refuses anything this package cannot reproduce
+exactly, rather than approximating it. Every refusal is a setting that changes
+the ids produced for some text, and each names itself.
+
+| refused | why |
+| --- | --- |
+| a `normalizer` other than NFC | a different normalizer gives different ids for the same visible text |
+| other than exactly one `ByteLevel` and one `Split` pre-tokenizer | a `ByteLevel` with `use_regex` is GPT-2's built-in pattern, which is a third split this does not implement |
+| a `Split` `behavior` other than `Isolated` | the other behaviours cut the same text differently |
+| an unrecognised split pattern | named with its sha256, so a new family is added deliberately ([§4](#4-the-pre-tokenizer-and-the-constraint-go-imposes)) |
+| a `post_processor` other than `ByteLevel` | a `TemplateProcessing` post-processor inserts ids `Encode` would omit — a Llama-3-style file would encode every prompt **without its BOS** |
+| a `decoder` other than `ByteLevel` | `Decode` inverts the byte-level alphabet and nothing else |
+| a `model` type other than BPE | |
+| seven BPE model options: `dropout`, `unk_token`, `continuing_subword_prefix`, `end_of_word_suffix`, `fuse_unk`, `byte_fallback`, `ignore_merges` | each changes the ids produced, and a file setting one is a file this cannot reproduce |
+
+**Two merge-list serialisations are read.** `tokenizers` wrote `"left right"`
+for years and writes `["left","right"]` now, and both are in circulation on the
+hub. The pair form is unambiguous; the string form splits on the **first** space,
+which is safe because a byte-mapped token never contains one — U+0020 maps to
+U+0120.
+
+**The load-time invariants are what make `Encode` total.** They are checked once
+so that encoding needs no error path:
+
+- every vocab entry has a non-negative id, and no two entries claim one id;
+- every vocab entry is inside the byte-level alphabet;
+- the vocab holds a symbol for **all 256 bytes**, so any input has a starting
+  point;
+- every merge is a pair, no pair repeats — a second rank would be unreachable —
+  and every merge joins to a token that is in the vocab;
+- every added token has non-empty content and a non-negative id.
+
+With those, `Encode` cannot meet a byte it has no token for and cannot meet a
+merge it cannot apply, so it returns ids and no error.
+
+### 4.3 `add_prefix_space`, and where it is applied
+
+`ByteLevel` carries `add_prefix_space`, and this package applies it **once to
+the whole normalized string**, before the added-token matcher
+(`tokenizer/tokenizer.go:366`). The reference applies it per pre-tokenizer span,
+after added tokens are extracted.
+
+**[002-D11](#decision-record): the placements are equivalent for every file this
+package accepts, and the position here is the safer of the two.**
+
+The pattern of [§4](#4-the-pre-tokenizer-and-the-constraint-go-imposes) never
+splits *before* a leading space: ` ?[^\s\p{L}\p{N}]+`, `[^\r\n\p{L}\p{N}]?\p{L}+`
+and `\s+` all take a leading space into the span that follows it, so the first
+span of a prefixed string is the first span of the unprefixed one with the space
+attached — which is what applying it per span would have produced. And the
+added-token matcher is unaffected: an added token's content never begins with
+the prefix space, so extracting first or last selects the same spans.
+
+Where they could differ is a file that sets `add_prefix_space` **and** ships an
+added token beginning with a space. Applying per span would prefix the text
+after that token as well; applying once does not. Qwen3 sets the flag false, so
+nothing in the tested set reaches either path — and the rule chosen is the one
+that adds bytes in exactly one place, which is the one a reader can check
+against the rendered prompt.
 
 ## 5. BPE, and the part that is easy to get subtly wrong
 
@@ -294,39 +411,50 @@ was a declared normalizer running as the identity, which is what 002-D9 and
   an in-tree oracle built a different way, with the two exclusions §7 now
   records and a negative test that proves it catches a mis-read lookahead.
 
-**Not built.**
+**Not built.** One item, and it needs a machine this is not.
 
-- Generate the reference id vectors — for the synthetic fixture and for the real
-  Qwen3 checkpoint — on a machine that has huggingface `tokenizers`, check them
-  in under `tokenizer/testdata`, and unskip `TestReferenceVectors`
-  (`tokenizer/tokenizer_test.go:142`). This closes 002-D5, the one decision here
-  with no code behind it. It cannot be done in CI: [000 D8](000-decisions.md)
-  keeps the reference out, so the vectors are produced once offline and
-  committed, the way `chat/testdata/qwen3_chat_template.jinja` was.
-- Decide where `add_prefix_space` applies. The loader reads it and applies it
-  once to the whole normalized string (`tokenizer/tokenizer.go:365`); the
-  reference applies it per pre-tokenizer span, after added tokens are extracted.
-  The two agree for Qwen3, whose file sets it false, so nothing tests the
-  difference. Either move the application to match the reference, or record why
-  the placements are equivalent for every file this package accepts.
-- Document the shipped surface §1 and §2 never mention: `TextBytes` and its
-  nil-on-added-token rule, the `post_processor`/`decoder` and seven
-  BPE-model-option refusals, the load-time vocabulary invariants that make
-  `Encode` total, both merge-list serialisations, the cl100k pattern family,
-  `add_prefix_space`, `VocabSize` as the id space rather than the embedding row
-  count, and the concurrency contract — one `Tokenizer` shared, one `Decoder`
-  per stream.
-- Correct the package comments the above left stale: `tokenizer/tokenizer.go:10`
-  still claims no dependency beyond the standard library, `:19` still says NFC
-  is not implemented, `:419` still claims `Decoder` output is always well-formed
-  UTF-8, and `tokenizer/tokenizer_test.go:197` still calls the normalizer seam
-  unimplemented.
+Generate the reference id vectors — for the synthetic fixture and for the real
+Qwen3 checkpoint — on a machine that has huggingface `tokenizers`, check them in
+under `tokenizer/testdata`, and unskip `TestReferenceVectors`
+(`tokenizer/tokenizer_test.go:142`). This closes [002-D5](#decision-record), the
+one decision here with no code behind it. It cannot be done in CI:
+[000 D8](000-decisions.md) keeps the reference out, so the vectors are produced
+once offline and committed, the way `chat/testdata/qwen3_chat_template.jinja`
+was.
 
+Three items left this paragraph on 2026-08-28.
+
+**Where `add_prefix_space` applies is decided**, as
+[002-D11](#decision-record) and [§4.3](#43-add_prefix_space-and-where-it-is-applied):
+the split pattern never cuts before a leading space, so applying it once to the
+whole string and applying it per span agree for every file this package accepts.
+
+**The shipped surface §1 and §2 never mentioned has sections**:
+[§2.1](#21-textbytes-and-why-it-is-nil-for-a-control-token) for `TextBytes` and
+its nil-on-added-token rule, [§2.2](#22-vocabsize-is-the-id-space-not-the-embedding)
+for `VocabSize`, [§2.3](#23-the-concurrency-contract) for one `Tokenizer` shared
+and one `Decoder` per stream,
+[§4.1](#41-the-two-registered-patterns-and-the-one-alternative-between-them) for
+the cl100k family, and
+[§4.2](#42-what-is-refused-at-load-and-the-invariants-that-make-encode-total)
+for the `post_processor`/`decoder` and seven model-option refusals, both merge
+serialisations, and the load-time invariants that make `Encode` total.
+
+**Four stale package comments are corrected**, each of which asserted something
+a test in the same package disproved: `tokenizer/tokenizer.go` claimed no
+dependency beyond the standard library while [002-D10](#decision-record) takes
+`golang.org/x/text`, claimed NFC was not implemented after it was, and claimed
+`Decoder` output is always well-formed UTF-8 while
+`TestDecoderDoesNotHoldAnImpossibleByte` shows a byte that cannot begin a code
+point is emitted raw. `TestDecoderOutputIsNotAlwaysValidUTF8` now pins the real
+guarantee, and `internal/depcheck` gates the x/text sentence: a second module
+here fails, and x/text going away fails too.
 ## Decision record
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
 | 002-D1 | true BPE by global merge rank, **ties broken leftmost** | greedy longest-match; an unstated tie rule | ids match the reference. The tie rule is a `<` versus `<=` coin flip that diverges on 3.7% of short strings and fires on every double space |
+| 002-D11 | `add_prefix_space` is applied **once**, to the whole normalized string | apply it per pre-tokenizer span, as the reference does | the split pattern never cuts before a leading space, so the two agree for every file this package accepts; the one shape that would differ is an added token beginning with a space, and the rule chosen adds bytes in exactly one place ([§4.3](#43-add_prefix_space-and-where-it-is-applied)) |
 | 002-D9 | NFC-normalize before splitting | skip it, as the four-part table implied | the reference normalizes; skipping it gives different ids for the same visible text |
 | 002-D10 | take `golang.org/x/text/unicode/norm` for NFC | a hand-rolled table; leave the seam as identity | NFC needs the decomposition tables, combining classes, composition exclusions and Hangul rules, none of which is in the standard library. x/text is pure Go with no cgo, so [000 D2](000-decisions.md) — which is about cgo, not dependencies — is untouched. **The state it replaced was worse than either**: the loader refused NFKC because it "changes ids" and then accepted NFC and ran the identity, so the file claimed normalization the ids did not have |
 | 002-D2 | naive $O(n^2)$ merge in v0 | a heap from the start | pieces are short; the heap needs a benchmark, and a long unsplittable run is a fuzz seed |
