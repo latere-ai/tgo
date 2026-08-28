@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/latere-ai/tgo/internal/prefix"
 )
 
 // Scheduler drives a [Batch]: it admits requests into slots, decides what each
@@ -33,6 +35,13 @@ type Scheduler struct {
 	b       *Batch
 	chunk   int
 	reserve int
+
+	// capacity carries one signal per event that could make a refused
+	// admission succeed: a slot freed, blocks returned, or a step taken. It
+	// has capacity 1 and is sent to without blocking, so a [Queue] waits on an
+	// event rather than on a timer and a burst of releases collapses into one
+	// re-evaluation.
+	capacity chan struct{}
 
 	mu    sync.Mutex
 	slots []schedState
@@ -72,11 +81,57 @@ func (m *Model) NewScheduler(n int, o SchedulerOptions) (*Scheduler, error) {
 		return nil, err
 	}
 	return &Scheduler{b: b, chunk: o.Chunk, reserve: o.Reserve,
-		slots: make([]schedState, n)}, nil
+		capacity: make(chan struct{}, 1), slots: make([]schedState, n)}, nil
 }
 
 // Slots is how many sequences the scheduler holds.
 func (s *Scheduler) Slots() int { return s.b.Slots() }
+
+// Capacity fires when something happened that could make a refused admission
+// succeed. It is the signal a [Queue] waits on.
+//
+// specs/021-admission-queue.md §2. The channel holds one signal, so a reader
+// that wakes once after ten releases has lost nothing: the answer to "can this
+// prompt be admitted now" is recomputed from the slots and the pool rather than
+// counted from the signals. A send that would block is dropped for the same
+// reason, which is what keeps [Scheduler.Finish] and [Scheduler.Step] from
+// waiting on whoever is listening.
+func (s *Scheduler) Capacity() <-chan struct{} { return s.capacity }
+
+// signal offers one capacity event and drops it if one is already pending.
+func (s *Scheduler) signal() {
+	select {
+	case s.capacity <- struct{}{}:
+	default:
+	}
+}
+
+// Feasible reports whether a prompt of this length could ever be admitted:
+// whether the pool is large enough for it and its reserve, not whether the
+// blocks are free right now.
+//
+// specs/021-admission-queue.md §3 and 021-D3. [prefix.ErrExhausted] means two
+// things -- "the pool is too small for this prompt", which never resolves, and
+// "live sequences hold the blocks", which resolves when one finishes -- and
+// [Scheduler.Admit] returns whichever it got. A queue that classified by
+// inspecting the error would enqueue a request that can never be admitted, and
+// its head-of-line bound would stop being finite. So the first case is
+// arithmetic at the door instead, over the pool's own block size and count, so
+// that this check and the pool's cannot drift apart.
+func (s *Scheduler) Feasible(prompt int) error {
+	if prompt <= 0 {
+		return errors.New("tgo: the prompt is empty; there is nothing to condition on")
+	}
+	p := s.b.m.blocks.pool
+	block, blocks := p.Block(), p.Blocks()
+	need := (prompt + s.reserve + block - 1) / block
+	if need > blocks {
+		return fmt.Errorf("tgo: a %d-token prompt with a reserve of %d needs %d "+
+			"blocks of %d positions and the pool holds %d: %w", prompt, s.reserve,
+			need, block, blocks, prefix.ErrExhausted)
+	}
+	return nil
+}
 
 // ErrNoSlot is what [Scheduler.Admit] refuses with when every slot is live.
 var ErrNoSlot = errors.New("tgo: every slot is occupied")
@@ -135,6 +190,7 @@ func (s *Scheduler) Finish(slot int) error {
 		return err
 	}
 	s.slots[slot] = schedState{}
+	s.signal()
 	return nil
 }
 
@@ -157,6 +213,7 @@ func (s *Scheduler) Evict() (int, error) {
 		return -1, err
 	}
 	s.slots[v] = schedState{}
+	s.signal()
 	return v, nil
 }
 
@@ -229,6 +286,11 @@ func (s *Scheduler) Step() (StepResult, error) {
 			Logits: out[i],
 		})
 	}
+	// A step frees nothing by itself. It signals anyway, because a step is the
+	// only event that happens while the batch is busy, and a [Queue] whose
+	// pass raced with a release would otherwise sleep until the next one. The
+	// cost of a signal nobody needed is one re-evaluation over the waiter list.
+	s.signal()
 	return res, nil
 }
 
