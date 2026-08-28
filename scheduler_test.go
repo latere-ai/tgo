@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/latere-ai/tgo/internal/prefix"
 )
 
 func newScheduler(t *testing.T, m *Model, n int, o SchedulerOptions) *Scheduler {
@@ -52,7 +54,7 @@ func TestAChunkAndTheDecodesRunInOneDispatch(t *testing.T) {
 	// The two short ones first, so they are decoding by the time the long one
 	// is still being chunked.
 	for i, p := range short {
-		slot, err := s.Admit(p, "")
+		slot, err := s.Admit(p, "", 0)
 		if err != nil {
 			t.Fatalf("Admit(short %d): %v", i, err)
 		}
@@ -82,7 +84,7 @@ func TestAChunkAndTheDecodesRunInOneDispatch(t *testing.T) {
 	}
 
 	// Now the long one arrives and is chunked beside them.
-	slot, err := s.Admit(long, "")
+	slot, err := s.Admit(long, "", 0)
 	if err != nil {
 		t.Fatalf("Admit(long): %v", err)
 	}
@@ -117,7 +119,7 @@ func TestASchedulersDecodesMatchTheSessionsTheyBatch(t *testing.T) {
 
 	prompts := [][]int{promptIDs(4, 6), promptIDs(5, 10)}
 	for _, p := range prompts {
-		if _, err := s.Admit(p, ""); err != nil {
+		if _, err := s.Admit(p, "", 0); err != nil {
 			t.Fatalf("Admit: %v", err)
 		}
 	}
@@ -191,18 +193,18 @@ func TestAdmitRefusesWithoutASlotAndSaysWhich(t *testing.T) {
 	m := batchModel(t)
 	s := newScheduler(t, m, 2, SchedulerOptions{Chunk: 8, Reserve: CacheBlock})
 	for range 2 {
-		if _, err := s.Admit(promptIDs(1, 4), ""); err != nil {
+		if _, err := s.Admit(promptIDs(1, 4), "", 0); err != nil {
 			t.Fatalf("Admit: %v", err)
 		}
 	}
-	if _, err := s.Admit(promptIDs(2, 4), ""); !errors.Is(err, ErrNoSlot) {
+	if _, err := s.Admit(promptIDs(2, 4), "", 0); !errors.Is(err, ErrNoSlot) {
 		t.Fatalf("a third admission into a batch of two = %v, want ErrNoSlot", err)
 	}
 	// A finished slot is available again.
 	if err := s.Finish(0); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
-	if slot, err := s.Admit(promptIDs(2, 4), ""); err != nil {
+	if slot, err := s.Admit(promptIDs(2, 4), "", 0); err != nil {
 		t.Fatalf("Admit after Finish: %v", err)
 	} else if slot != 0 {
 		t.Fatalf("the readmission took slot %d, want the freed 0", slot)
@@ -216,7 +218,7 @@ func TestEvictChoosesTheLastToArriveOnTheDevice(t *testing.T) {
 	m := batchModel(t)
 	s := newScheduler(t, m, 2, SchedulerOptions{Chunk: 8, Reserve: CacheBlock})
 	for range 2 {
-		if _, err := s.Admit(promptIDs(1, 4), ""); err != nil {
+		if _, err := s.Admit(promptIDs(1, 4), "", 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -233,7 +235,7 @@ func TestEvictChoosesTheLastToArriveOnTheDevice(t *testing.T) {
 			"how a full pool makes room", got, held)
 	}
 	// And the slot is free.
-	if slot, err := s.Admit(promptIDs(3, 4), ""); err != nil {
+	if slot, err := s.Admit(promptIDs(3, 4), "", 0); err != nil {
 		t.Fatalf("Admit after Evict: %v", err)
 	} else if slot != 1 {
 		t.Fatalf("the readmission took slot %d, want the evicted 1", slot)
@@ -268,7 +270,7 @@ func TestSchedulerRefusals(t *testing.T) {
 	}
 
 	long := promptIDs(1, 40)
-	slot, err := s.Admit(long, "")
+	slot, err := s.Admit(long, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,5 +282,56 @@ func TestSchedulerRefusals(t *testing.T) {
 	}
 	if err := s.Finish(9); err == nil {
 		t.Error("finishing a slot outside the batch was accepted")
+	}
+}
+
+// TestTheReserveIsTheRequestsOwn is 022-D7. One R for the whole deployment is
+// either larger than most requests need, which admits fewer sequences than the
+// device holds, or smaller than some request needs, which is the admission the
+// promise exists to prevent — and the request already carries the number, in
+// its own token budget.
+//
+// The pool here holds eight blocks. A four-token prompt reserving five blocks'
+// worth of positions takes six of them, so two such requests do not fit and the
+// two the deployment default sizes do.
+func TestTheReserveIsTheRequestsOwn(t *testing.T) {
+	t.Parallel()
+	m := batchModel(t)
+	s := newScheduler(t, m, 2, SchedulerOptions{Chunk: 8, Reserve: CacheBlock})
+	blocks := m.blocks.pool.Blocks()
+
+	big := 5 * CacheBlock
+	first, err := s.Admit(promptIDs(1, 4), "", big)
+	if err != nil {
+		t.Fatalf("a request reserving %d positions was refused: %v", big, err)
+	}
+	if _, err := s.Admit(promptIDs(2, 4), "", big); !errors.Is(err, prefix.ErrExhausted) {
+		t.Fatalf("a second request reserving %d positions got %v, want the pool "+
+			"to be exhausted", big, err)
+	}
+	// The same second request, taking the deployment's default, fits — so the
+	// refusal above was the reserve and not the prompt.
+	if _, err := s.Admit(promptIDs(2, 4), "", 0); err != nil {
+		t.Fatalf("a request taking the default reserve was refused: %v", err)
+	}
+	if err := s.Finish(first); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// And the door agrees with admission, which is 021-D3's whole point.
+	if err := s.Feasible(4, big); err != nil {
+		t.Errorf("Feasible(4, %d) refused a request that fits the pool: %v", big, err)
+	}
+	tooBig := blocks * CacheBlock
+	if err := s.Feasible(4, tooBig); !errors.Is(err, prefix.ErrExhausted) {
+		t.Errorf("Feasible(4, %d) = %v, want the pool to be too small", tooBig, err)
+	}
+	for _, bad := range []int{-1, -CacheBlock} {
+		if err := s.Feasible(4, bad); err == nil {
+			t.Errorf("Feasible(4, %d) was accepted; a reserve is positions", bad)
+		}
+		if _, err := s.Admit(promptIDs(3, 4), "", bad); err == nil {
+			t.Errorf("Admit with a reserve of %d was accepted", bad)
+		}
 	}
 }

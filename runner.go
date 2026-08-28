@@ -5,8 +5,11 @@ package tgo
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,6 +58,11 @@ type Runner struct {
 	// nothing of it, which is what keeps a step free of a lock.
 	mu   sync.Mutex
 	runs []*slotRun
+
+	// domain is the prefix of every salt this runner mints, sixteen random
+	// bytes read once. See [Runner.salt].
+	domain string
+	minted atomic.Uint64
 
 	// wake tells the driver that a slot was filled, so it steps rather than
 	// spinning on an empty batch.
@@ -129,6 +137,10 @@ type RunRequest struct {
 	// It is not an affinity key here. Under a block pool the reuse is keyed on
 	// chained block hashes shared across every slot, so which slot a request
 	// lands in does not change what it reuses (022-D2).
+	//
+	// **Empty means share with nothing**, not share with everything: the runner
+	// mints a salt unique to the request. See [Runner.salt] for why the
+	// alternative is a membership test over another tenant's prompt.
 	Key string
 
 	// Recorder instruments this request. It sees the steps this request was
@@ -157,8 +169,14 @@ func (m *Model) NewRunner(o RunnerOptions) (*Runner, error) {
 		_ = s.Close()
 		return nil, err
 	}
+	domain, err := mintDomain()
+	if err != nil {
+		_ = q.Close()
+		_ = s.Close()
+		return nil, err
+	}
 	r := &Runner{
-		m: m, sched: s, q: q, rec: o.Recorder, backlog: o.Backlog,
+		m: m, sched: s, q: q, rec: o.Recorder, backlog: o.Backlog, domain: domain,
 		runs:    make([]*slotRun, s.Slots()),
 		wake:    make(chan struct{}, 1),
 		done:    make(chan struct{}),
@@ -170,6 +188,48 @@ func (m *Model) NewRunner(o RunnerOptions) (*Runner, error) {
 
 // Slots is how many sequences the runner generates at once.
 func (r *Runner) Slots() int { return r.sched.Slots() }
+
+// mintDomain reads the sixteen random bytes every synthesised salt is prefixed
+// with. See [Runner.salt].
+func mintDomain() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("tgo: reading the runner's isolation domain: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// salt is the isolation domain a request's block hashes are seeded with.
+//
+// A request that names one gets its own, and shares with the other requests
+// that named the same one, which is what cache_salt is for
+// (specs/016-prefix-cache.md §7.1).
+//
+// **A request that names none gets a salt unique to itself, so it shares with
+// nothing.** [016-D7](specs/016-prefix-cache.md) and 019-D3 both say an unkeyed
+// request shares with nobody rather than with everybody, and under a pooled
+// session that is true by construction because routing compares the key. Under
+// a shared block pool it is false: the seed's domain is empty for
+// [CacheProcess] (internal/prefix/prefix.go), so every unsalted request hashes
+// into one domain and two tenants with the same system prompt seed identically
+// — the second one's first token arrives fast, which is a membership test over
+// the first one's prompt (specs/022-batched-serving.md §7).
+//
+// The minted salt is **sixteen random bytes and a counter**, not a counter
+// alone. A caller's salt is used verbatim, so any predictable namespace can be
+// named by a request and shared into; randomness is what makes the domain
+// unreachable rather than merely unlikely to be guessed.
+//
+// The cost is that a conversation's second turn through a runner reuses nothing
+// unless its client sends a cache_salt. That is 016-D7's rule kept rather than
+// broken: cross-request sharing is a deployment's decision, and this is what
+// lets batching be the default without making sharing one (022-D8).
+func (r *Runner) salt(key string) string {
+	if key != "" {
+		return key
+	}
+	return r.domain + "-" + strconv.FormatUint(r.minted.Add(1), 36)
+}
 
 // Queue is the admission queue in front of the batch, for a caller reporting
 // what it measured (021 §7).
@@ -240,7 +300,12 @@ func (r *Runner) start(ctx context.Context, req RunRequest, ids []int, p Policy)
 		max = capacity - len(ids)
 	}
 
-	slot, err := r.q.Admit(ctx, r.q.NewTicket(), ids, req.Key)
+	// The reserve is this request's own budget and not one number for the
+	// deployment: a single R is either larger than most requests need, which
+	// admits fewer than the device holds, or smaller than some request needs,
+	// which is the admission the promise exists to prevent (022-D7). max is
+	// Policy.MaxTokens, or what the capacity left after the prompt allowed.
+	slot, err := r.q.Admit(ctx, r.q.NewTicket(), ids, r.salt(req.Key), max)
 	if err != nil {
 		return nil, err
 	}

@@ -597,3 +597,110 @@ func TestPenaltiesReadOnlyTheirOwnSlot(t *testing.T) {
 			"the same seed, so the penalty did not reach one slot alone", out[0])
 	}
 }
+
+// longPrompt is more than one CacheBlock of tokens, because reuse is
+// block-aligned: a prompt that fits in one block has no whole block to find
+// again (016-D4).
+func longPrompt() string { return strings.Repeat("shared opening words ", 12) }
+
+// TestUnsaltedRequestsDoNotShareBlocks is 022 §7, and it is the half that is a
+// correctness claim rather than a performance one.
+//
+// [016-D7](../specs/016-prefix-cache.md) and 019-D3 both say an unkeyed request
+// shares with nobody rather than with everybody. Under a pooled session that is
+// true by construction, because routing compares the key. Under a shared block
+// pool the seed's domain is empty, so without a minted salt every unsalted
+// request hashes into one domain — and the second one's first token arrives
+// fast, which is a membership test over the first one's prompt.
+func TestUnsaltedRequestsDoNotShareBlocks(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, batchModel(t), RunnerOptions{Slots: 2, Chunk: 8,
+		Reserve: CacheBlock})
+
+	reused := make([]int, 2)
+	for i := range reused {
+		st, err := r.Complete(context.Background(), RunRequest{}, longPrompt(),
+			greedy(2))
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		drainSlot(t, st)
+		reused[i] = st.Usage().CachedPromptTokens
+	}
+	if reused[1] != 0 {
+		t.Errorf("the second unsalted request reused %d positions of the first "+
+			"one's prompt; an unkeyed request shares with nobody", reused[1])
+	}
+}
+
+// TestSaltedRequestsShareBlocks is the other half, and without it the row above
+// passes by disabling the cache.
+func TestSaltedRequestsShareBlocks(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, batchModel(t), RunnerOptions{Slots: 2, Chunk: 8,
+		Reserve: CacheBlock})
+
+	req := RunRequest{Key: "tenant-a"}
+	reused := make([]int, 2)
+	for i := range reused {
+		st, err := r.Complete(context.Background(), req, longPrompt(), greedy(2))
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		drainSlot(t, st)
+		reused[i] = st.Usage().CachedPromptTokens
+	}
+	if reused[0] != 0 {
+		t.Errorf("the first request reused %d positions and there was nothing to "+
+			"reuse", reused[0])
+	}
+	if reused[1] == 0 {
+		t.Error("the second request with the same cache_salt and the same prompt " +
+			"reused nothing, which is what the field is for")
+	}
+}
+
+// TestADifferentSaltIsADifferentDomain is the isolation the minted salt buys,
+// stated over two callers who both named one: the same prompt under two
+// cache_salts shares nothing.
+func TestADifferentSaltIsADifferentDomain(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, batchModel(t), RunnerOptions{Slots: 2, Chunk: 8,
+		Reserve: CacheBlock})
+
+	reused := make([]int, 2)
+	for i, key := range []string{"tenant-a", "tenant-b"} {
+		st, err := r.Complete(context.Background(), RunRequest{Key: key},
+			longPrompt(), greedy(2))
+		if err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		drainSlot(t, st)
+		reused[i] = st.Usage().CachedPromptTokens
+	}
+	if reused[1] != 0 {
+		t.Errorf("tenant-b reused %d positions of tenant-a's prompt", reused[1])
+	}
+}
+
+// TestAMintedSaltCannotBeNamed is why the minted salt carries sixteen random
+// bytes rather than a counter: a caller's salt is used verbatim, so a
+// predictable namespace is one a request can name and share into.
+func TestAMintedSaltCannotBeNamed(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, batchModel(t), RunnerOptions{Slots: 2, Chunk: 8,
+		Reserve: CacheBlock})
+
+	first, second := r.salt(""), r.salt("")
+	if first == second {
+		t.Fatalf("two minted salts are both %q", first)
+	}
+	for _, guess := range []string{"1", "0", "-1", "tgo-1", first[:8]} {
+		if r.salt(guess) == first || r.salt(guess) == second {
+			t.Errorf("a caller naming %q reaches a minted domain", guess)
+		}
+	}
+	if got := r.salt("tenant-a"); got != "tenant-a" {
+		t.Errorf("a named salt became %q; it is used verbatim", got)
+	}
+}

@@ -58,6 +58,13 @@ type SchedulerOptions struct {
 	// holds blocks for: §3's R, and the difference between admitting a request
 	// and promising it can finish. Zero is refused, because a scheduler that
 	// admits on the prompt alone is the deadlock §3 is about.
+	//
+	// It is the **default**, used for a request that names no reserve of its
+	// own. specs/022-batched-serving.md 022-D7: one R for the whole deployment
+	// is either larger than most requests need, which admits fewer than the
+	// device holds, or smaller than some request needs, which is the admission
+	// the promise exists to prevent — and the request already carries the
+	// number, in Policy.MaxTokens.
 	Reserve int
 }
 
@@ -118,19 +125,40 @@ func (s *Scheduler) signal() {
 // its head-of-line bound would stop being finite. So the first case is
 // arithmetic at the door instead, over the pool's own block size and count, so
 // that this check and the pool's cannot drift apart.
-func (s *Scheduler) Feasible(prompt int) error {
+func (s *Scheduler) Feasible(prompt, reserve int) error {
 	if prompt <= 0 {
 		return errors.New("tgo: the prompt is empty; there is nothing to condition on")
 	}
+	reserve, err := s.reserveFor(reserve)
+	if err != nil {
+		return err
+	}
 	p := s.b.m.blocks.pool
 	block, blocks := p.Block(), p.Blocks()
-	need := (prompt + s.reserve + block - 1) / block
+	need := (prompt + reserve + block - 1) / block
 	if need > blocks {
 		return fmt.Errorf("tgo: a %d-token prompt with a reserve of %d needs %d "+
-			"blocks of %d positions and the pool holds %d: %w", prompt, s.reserve,
+			"blocks of %d positions and the pool holds %d: %w", prompt, reserve,
 			need, block, blocks, prefix.ErrExhausted)
 	}
 	return nil
+}
+
+// reserveFor resolves a request's reserve against the deployment's default.
+//
+// Zero takes the default, which is what a caller with no budget of its own
+// passes; a negative one is refused rather than clamped, because a reserve is
+// positions and a caller that computed a negative number computed something
+// else (022-D7).
+func (s *Scheduler) reserveFor(reserve int) (int, error) {
+	if reserve == 0 {
+		return s.reserve, nil
+	}
+	if reserve < 0 {
+		return 0, fmt.Errorf("tgo: the reserve is %d; it is how many positions "+
+			"beyond its prompt an admitted sequence may grow by", reserve)
+	}
+	return reserve, nil
 }
 
 // ErrNoSlot is what [Scheduler.Admit] refuses with when every slot is live.
@@ -144,7 +172,13 @@ var ErrNoSlot = errors.New("tgo: every slot is occupied")
 // it currently stands and evicting something would be the way to make room.
 // A server that reported one number for both would be indistinguishable from a
 // slow one, which §3 says is the thing to avoid.
-func (s *Scheduler) Admit(prompt []int, salt string) (int, error) {
+// reserve is how many positions beyond its prompt this sequence may grow by,
+// which is the request's own budget. Zero takes [SchedulerOptions.Reserve].
+func (s *Scheduler) Admit(prompt []int, salt string, reserve int) (int, error) {
+	reserve, err := s.reserveFor(reserve)
+	if err != nil {
+		return -1, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	free := -1
@@ -157,7 +191,7 @@ func (s *Scheduler) Admit(prompt []int, salt string) (int, error) {
 	if free < 0 {
 		return -1, ErrNoSlot
 	}
-	if _, err := s.b.Admit(free, prompt, salt, s.reserve); err != nil {
+	if _, err := s.b.Admit(free, prompt, salt, reserve); err != nil {
 		return -1, err
 	}
 	// The reuse is positions the pool already holds, so they are prefilled

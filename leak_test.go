@@ -226,7 +226,7 @@ func TestAdmitDoesNotWriteIntoTheCallersPrompt(t *testing.T) {
 
 	// One backing array, two prompts carved from it: cap(all[:20]) is 40.
 	all := promptIDs(7, 40)
-	first, err := s.Admit(all[:20], "")
+	first, err := s.Admit(all[:20], "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestAdmitDoesNotWriteIntoTheCallersPrompt(t *testing.T) {
 
 	before := all[20]
 	second := append([]int(nil), all[20:40]...)
-	if _, err := s.Admit(all[20:40], ""); err != nil {
+	if _, err := s.Admit(all[20:40], "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Feed(first, 1); err != nil {
@@ -245,7 +245,7 @@ func TestAdmitDoesNotWriteIntoTheCallersPrompt(t *testing.T) {
 			"is the first token of the prompt admitted after it",
 			first, before, all[20])
 	}
-	if _, err := s.Admit(second, "reference"); err == nil {
+	if _, err := s.Admit(second, "reference", 0); err == nil {
 		t.Fatal("a third admission into a batch of two was accepted")
 	}
 }

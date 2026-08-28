@@ -71,11 +71,12 @@ type Admitter interface {
 	// Slots is the batch width, which is what the queue's defaults scale with.
 	Slots() int
 
-	// Feasible reports whether a prompt of this length could ever be admitted.
-	Feasible(prompt int) error
+	// Feasible reports whether a prompt of this length, holding blocks for
+	// this many positions beyond it, could ever be admitted.
+	Feasible(prompt, reserve int) error
 
 	// Admit takes a slot or refuses. It never waits, which is the point.
-	Admit(prompt []int, salt string) (int, error)
+	Admit(prompt []int, salt string, reserve int) (int, error)
 
 	// Finish gives a slot back. The queue calls it for a slot it won for a
 	// caller who had already left (021-D10).
@@ -202,10 +203,11 @@ type outcome struct {
 }
 
 type waiter struct {
-	prompt []int
-	salt   string
-	ticket Ticket
-	at     time.Time
+	prompt  []int
+	salt    string
+	reserve int
+	ticket  Ticket
+	at      time.Time
 
 	// passed is how many times a later waiter was admitted ahead of this one,
 	// and reserving is set on the K-th. It is monotone: once set it stays set
@@ -297,17 +299,23 @@ func (q *Queue) Depth() int {
 // t orders the request. Take one ticket per request with [Queue.NewTicket] and
 // pass the same one to every Admit for it, so a sequence the scheduler evicted
 // re-enters where it was rather than behind everything that arrived since.
-func (q *Queue) Admit(ctx context.Context, t Ticket, prompt []int, salt string) (int, error) {
+//
+// reserve is how many positions beyond its prompt this request may grow by:
+// its own budget, which is what makes admission a promise the request can
+// keep. Zero takes the admitter's deployment default (022-D7).
+func (q *Queue) Admit(ctx context.Context, t Ticket, prompt []int, salt string,
+	reserve int) (int, error) {
+
 	// The door. An unsatisfiable request is refused here rather than queued,
 	// which is what makes §3's head-of-line bound finite: every waiter at the
 	// head is admissible eventually, because blocks come back when a sequence
 	// finishes (021-D3).
-	if err := q.a.Feasible(len(prompt)); err != nil {
+	if err := q.a.Feasible(len(prompt), reserve); err != nil {
 		q.refuse("infeasible")
 		return -1, err
 	}
 	w := &waiter{
-		prompt: prompt, salt: salt, ticket: t, at: time.Now(),
+		prompt: prompt, salt: salt, reserve: reserve, ticket: t, at: time.Now(),
 		res: make(chan outcome, 1),
 	}
 	q.mu.Lock()
@@ -464,7 +472,7 @@ func (q *Queue) attempt(w *waiter) bool {
 	}
 	q.mu.Unlock()
 
-	slot, err := q.a.Admit(w.prompt, w.salt)
+	slot, err := q.a.Admit(w.prompt, w.salt, w.reserve)
 
 	q.mu.Lock()
 	if err != nil {

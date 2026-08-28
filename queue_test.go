@@ -57,21 +57,26 @@ func newFake(slots, blocks, block, reserve int) *fakeAdmitter {
 
 func (f *fakeAdmitter) Slots() int { return len(f.live) }
 
-func (f *fakeAdmitter) need(prompt int) int {
-	return (prompt + f.reserve + f.block - 1) / f.block
+// need is the pool's arithmetic, with the request's own reserve where it named
+// one and the fake's deployment default where it did not (022-D7).
+func (f *fakeAdmitter) need(prompt, reserve int) int {
+	if reserve <= 0 {
+		reserve = f.reserve
+	}
+	return (prompt + reserve + f.block - 1) / f.block
 }
 
-func (f *fakeAdmitter) Feasible(prompt int) error {
+func (f *fakeAdmitter) Feasible(prompt, reserve int) error {
 	if prompt <= 0 {
 		return errors.New("fake: the prompt is empty")
 	}
-	if n := f.need(prompt); n > f.blocks {
+	if n := f.need(prompt, reserve); n > f.blocks {
 		return fmt.Errorf("fake: %d blocks for %d: %w", n, f.blocks, prefix.ErrExhausted)
 	}
 	return nil
 }
 
-func (f *fakeAdmitter) Admit(prompt []int, salt string) (int, error) {
+func (f *fakeAdmitter) Admit(prompt []int, salt string, reserve int) (int, error) {
 	if f.gate != nil {
 		<-f.gate
 	}
@@ -81,7 +86,7 @@ func (f *fakeAdmitter) Admit(prompt []int, salt string) (int, error) {
 	if f.fail != nil {
 		return -1, f.fail
 	}
-	slot, err := f.take(len(prompt))
+	slot, err := f.take(len(prompt), reserve)
 	if err != nil {
 		return -1, err
 	}
@@ -93,7 +98,7 @@ func (f *fakeAdmitter) Admit(prompt []int, salt string) (int, error) {
 
 // take is Admit without the gate or the hook, so a test can set the fake up
 // from a state the queue did not produce.
-func (f *fakeAdmitter) take(prompt int) (int, error) {
+func (f *fakeAdmitter) take(prompt, reserve int) (int, error) {
 	f.mu.Lock()
 	slot := -1
 	for i, l := range f.live {
@@ -106,7 +111,7 @@ func (f *fakeAdmitter) take(prompt int) (int, error) {
 		f.mu.Unlock()
 		return -1, ErrNoSlot
 	}
-	n := f.need(prompt)
+	n := f.need(prompt, reserve)
 	if f.used+n > f.blocks {
 		f.mu.Unlock()
 		return -1, fmt.Errorf("fake: %d of %d blocks are held: %w",
@@ -150,7 +155,7 @@ func (f *fakeAdmitter) signal() {
 // admitter without a queue having put it there.
 func (f *fakeAdmitter) occupy(t *testing.T, prompt int) int {
 	t.Helper()
-	slot, err := f.take(prompt)
+	slot, err := f.take(prompt, 0)
 	if err != nil {
 		t.Fatalf("occupying with a %d-token prompt: %v", prompt, err)
 	}
@@ -231,7 +236,7 @@ type admission struct {
 func admit(q *Queue, ctx context.Context, t Ticket, prompt int) *admission {
 	a := &admission{slot: make(chan int, 1), err: make(chan error, 1)}
 	go func() {
-		s, err := q.Admit(ctx, t, make([]int, prompt), "")
+		s, err := q.Admit(ctx, t, make([]int, prompt), "", 0)
 		a.slot <- s
 		a.err <- err
 	}()
@@ -285,7 +290,7 @@ func TestQueueAdmitsImmediatelyWhenASlotIsFree(t *testing.T) {
 	f := newFake(2, 16, 4, 0)
 	q := newQueue(t, f, QueueOptions{})
 
-	slot, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "")
+	slot, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "", 0)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -458,7 +463,7 @@ func TestQueueRefusesAnEmptyPrompt(t *testing.T) {
 	f := newFake(2, 16, 4, 0)
 	q := newQueue(t, f, QueueOptions{})
 
-	if _, err := q.Admit(context.Background(), q.NewTicket(), nil, ""); err == nil {
+	if _, err := q.Admit(context.Background(), q.NewTicket(), nil, "", 0); err == nil {
 		t.Fatal("an empty prompt was admitted; there is nothing to condition on")
 	}
 	if d := q.Depth(); d != 0 {
@@ -478,7 +483,7 @@ func TestQueueRefusesAnInfeasiblePromptAtTheDoor(t *testing.T) {
 	q := newQueue(t, f, QueueOptions{})
 
 	// 20 tokens is five blocks and the pool holds four.
-	_, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 20), "")
+	_, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 20), "", 0)
 	if !errors.Is(err, prefix.ErrExhausted) {
 		t.Fatalf("Admit refused with %v, want a wrapped prefix.ErrExhausted", err)
 	}
@@ -487,7 +492,7 @@ func TestQueueRefusesAnInfeasiblePromptAtTheDoor(t *testing.T) {
 	}
 	// The same length, admitted once the reserve is out of the way, proves the
 	// refusal was the arithmetic and not the length.
-	if _, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 16), ""); err != nil {
+	if _, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 16), "", 0); err != nil {
 		t.Fatalf("a 16-token prompt fills the pool exactly and was refused: %v", err)
 	}
 }
@@ -506,7 +511,7 @@ func TestQueueFullIsRefusedWithRetryAfter(t *testing.T) {
 			return q.Depth() == i+1
 		})
 	}
-	_, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "")
+	_, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "", 0)
 	if !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("the third request past a depth of 2 got %v, want ErrQueueFull", err)
 	}
@@ -654,7 +659,7 @@ func TestQueueClosedWithWaiters(t *testing.T) {
 			t.Errorf("waiter %d got %v, want ErrQueueClosed", i, err)
 		}
 	}
-	if _, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), ""); !errors.Is(err, ErrQueueClosed) {
+	if _, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "", 0); !errors.Is(err, ErrQueueClosed) {
 		t.Errorf("admitting into a closed queue got %v, want ErrQueueClosed", err)
 	}
 	if err := q.Close(); err != nil {
@@ -671,7 +676,7 @@ func TestQueueEvictedSequenceKeepsItsArrivalStamp(t *testing.T) {
 	q := newQueue(t, f, QueueOptions{})
 
 	evicted := q.NewTicket()
-	slot, err := q.Admit(context.Background(), evicted, make([]int, 4), "")
+	slot, err := q.Admit(context.Background(), evicted, make([]int, 4), "", 0)
 	if err != nil {
 		t.Fatalf("the first admission: %v", err)
 	}
@@ -758,7 +763,7 @@ func TestQueueUnderRace(t *testing.T) {
 					cancel()
 				}()
 			}
-			slot, err := q.Admit(ctx, q.NewTicket(), make([]int, 4), "")
+			slot, err := q.Admit(ctx, q.NewTicket(), make([]int, 4), "", 0)
 			if err != nil {
 				return
 			}
@@ -823,7 +828,7 @@ func TestSchedulerCapacityFiresOnFinish(t *testing.T) {
 		act  func(t *testing.T)
 	}{
 		{"Finish", func(t *testing.T) {
-			slot, err := s.Admit(promptIDs(1, 6), "")
+			slot, err := s.Admit(promptIDs(1, 6), "", 0)
 			if err != nil {
 				t.Fatalf("Admit: %v", err)
 			}
@@ -833,7 +838,7 @@ func TestSchedulerCapacityFiresOnFinish(t *testing.T) {
 			}
 		}},
 		{"Evict", func(t *testing.T) {
-			if _, err := s.Admit(promptIDs(2, 6), ""); err != nil {
+			if _, err := s.Admit(promptIDs(2, 6), "", 0); err != nil {
 				t.Fatalf("Admit: %v", err)
 			}
 			drain()
@@ -842,7 +847,7 @@ func TestSchedulerCapacityFiresOnFinish(t *testing.T) {
 			}
 		}},
 		{"Step", func(t *testing.T) {
-			slot, err := s.Admit(promptIDs(3, 6), "")
+			slot, err := s.Admit(promptIDs(3, 6), "", 0)
 			if err != nil {
 				t.Fatalf("Admit: %v", err)
 			}
@@ -869,7 +874,7 @@ func TestSchedulerCapacityFiresOnFinish(t *testing.T) {
 
 	// A full channel does not block the release that would have filled it,
 	// which is what lets Finish be called from inside a driver's own loop.
-	slot, err := s.Admit(promptIDs(4, 6), "")
+	slot, err := s.Admit(promptIDs(4, 6), "", 0)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -892,19 +897,19 @@ func TestSchedulerFeasibleIsThePoolsArithmetic(t *testing.T) {
 	s := newScheduler(t, m, 2, SchedulerOptions{Chunk: 8, Reserve: CacheBlock})
 	blocks := m.blocks.pool.Blocks()
 
-	if err := s.Feasible(0); err == nil {
+	if err := s.Feasible(0, 0); err == nil {
 		t.Error("an empty prompt was called feasible")
 	}
 	// One block short of the pool, minus the reserve's block, fits.
-	if err := s.Feasible((blocks - 1) * CacheBlock); err != nil {
+	if err := s.Feasible((blocks-1)*CacheBlock, 0); err != nil {
 		t.Errorf("a prompt that fits with its reserve was refused: %v", err)
 	}
 	// The whole pool plus a reserve does not, and Admit agrees.
 	tooBig := blocks * CacheBlock
-	if err := s.Feasible(tooBig); !errors.Is(err, prefix.ErrExhausted) {
+	if err := s.Feasible(tooBig, 0); !errors.Is(err, prefix.ErrExhausted) {
 		t.Errorf("Feasible(%d) = %v, want a wrapped prefix.ErrExhausted", tooBig, err)
 	}
-	if _, err := s.Admit(promptIDs(1, tooBig), ""); !errors.Is(err, prefix.ErrExhausted) {
+	if _, err := s.Admit(promptIDs(1, tooBig), "", 0); !errors.Is(err, prefix.ErrExhausted) {
 		t.Errorf("Admit of the same prompt = %v, want the same refusal", err)
 	}
 }
@@ -951,7 +956,7 @@ func TestQueueReturnsARefusalWaitingCannotFix(t *testing.T) {
 	f.fail = errors.New("fake: the batch is closed")
 	q := newQueue(t, f, QueueOptions{Wait: time.Hour})
 
-	_, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "")
+	_, err := q.Admit(context.Background(), q.NewTicket(), make([]int, 4), "", 0)
 	if err == nil || !strings.Contains(err.Error(), "the batch is closed") {
 		t.Fatalf("Admit = %v, want the admitter's own refusal", err)
 	}

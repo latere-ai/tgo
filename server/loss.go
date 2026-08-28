@@ -65,12 +65,15 @@ var honoured = map[string][]string{
 // [github.com/latere-ai/tgo.Policy] fields and cannot go in [honoured], whose
 // invariant is that its keys are exactly Policy's.
 //
-// One entry. cache_salt bounds which pooled session a request may be routed to
-// (specs/019-session-affinity.md 019-D3) and reaches no Policy field at all, so
-// a caller who sends it and is told it was dropped would think their cache is
-// shared with everybody when it is isolated. It is honoured on every route,
-// because [parseExtras] reads it from the raw body and does not know which
-// dialect sent it.
+// One entry. cache_salt is the isolation boundary under both engines and
+// reaches no Policy field at all, so a caller who sends it and is told it was
+// dropped would think their cache is shared with everybody when it is isolated.
+// Under a pooled engine it bounds which session a request may be routed to
+// (specs/019-session-affinity.md 019-D3); under a batched one it is the domain
+// the shared pool”'s block hashes are seeded with, and a request that sends none
+// gets a minted one (specs/022-batched-serving.md §7). It is honoured on every
+// route, because [parseExtras] reads it from the raw body and does not know
+// which dialect sent it.
 var honouredSession = map[string]bool{"cache_salt": true}
 
 // honouredWire is honoured flattened: every wire name some dialect applies.
