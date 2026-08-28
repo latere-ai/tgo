@@ -1,6 +1,6 @@
 ---
 title: "The server: three wire dialects through one neutral request, and none of it in the engine"
-status: implemented
+status: complete
 layer: api
 depends_on:
   - 000-decisions.md
@@ -504,24 +504,8 @@ GET routes are live.
   type assertion. It reports the failure a wrapped `ResponseWriter` would
   otherwise swallow, which is the trap the section names.
 
-**Not built.** `logprobs` and `top_logprobs`, and the reason they are still here
-changed on 2026-08-28: **it is not 009's to build alone.**
-
-They are accepted and reported as an advisory loss. `sample.Sampler.Probs`
-returns the post-policy distribution without moving the stream and nothing in
-`server/` calls it; the legacy encoder answers `logprobs: null` on every choice
-(`server/loss_test.go:273`, `server/legacy.go:193`).
-
-What stands in the way is [007 §1](007-engine.md)'s surface, not this one. A
-logprob is **per token** and `tgo.Event` carries **decoded text**: the tokenizer
-holds back an incomplete UTF-8 prefix, so one delta can be zero tokens, one, or
-several, and there is no field on an `Event` for a token id or a probability.
-`Policy` has no `LogProbs` field either. So serving them needs an engine change
-first — a new field on `Event`, a second event kind, or a side channel — and
-that choice is 007's to make and this spec's to consume. Recorded here rather
-than built, which is [000 D1](000-decisions.md)'s shape applied one layer down.
-
-Three items left this paragraph on 2026-08-28. `stopReason` reaching two of
+**Not built.** Nothing that 009 owns. Four items left this paragraph on
+2026-08-28. `stopReason` reaching two of
 five values is closed: [007 §1](007-engine.md) exports `Stream.StopReason` and
 `StopSequence`, and §3.2's vocabulary is served. And six pieces of shipped
 surface that had no section have one — [§3.3](#33-v1completions-is-a-fourth-frontend-written-here)
@@ -531,7 +515,16 @@ its two constructors and the seven options, and
 [§6.2](#62-three-operational-numbers) for the defaults, the 499 rule and the
 loss counter's cardinality bound.
 
-Owned elsewhere. [022](022-batched-serving.md) makes a scheduler engine the
+Owned elsewhere. `logprobs` and `top_logprobs` are accepted and reported as an
+advisory loss, and serving them is [030](030-logprobs.md)'s. Writing this
+paragraph out is what found why: the obstruction is [007 §1](007-engine.md)'s
+surface, not this one. A logprob is **per token** and `tgo.Event` carries
+**decoded text** — the tokenizer holds back an incomplete UTF-8 prefix, so one
+delta can be zero tokens, one, or several — and there is no field on an `Event`
+for a token id or a probability. 030 puts the accessor on `Stream` and §4 of it
+says what each dialect does with the result; this spec consumes it.
+
+[022](022-batched-serving.md) makes a scheduler engine the
 default and leaves `WrapPool` behind `--prefix-cache session` and `off`, which
 is what makes concurrent requests go faster rather than interleave (§6). And
 [021](021-admission-queue.md) gives `tgo_queue_wait_seconds` a real number,

@@ -137,7 +137,7 @@ where the code is, what diverged, and what is open.
 | [006](006-sampling.md) | complete | composition order, and reproducibility as a stream | — |
 | [007](007-engine.md) | complete | sessions, plans, buckets, the decode loop | — |
 | [008](008-scheduler.md) | complete | continuous batching: slots, admission, eviction, chunked prefill | — |
-| [009](009-server.md) | implemented | three wire dialects over one neutral request | `logprobs` needs an engine change first: an `Event` carries decoded text, and a logprob is per token |
+| [009](009-server.md) | complete | three wire dialects over one neutral request | — |
 | [010](010-conformance.md) | implemented | **what tgo proves about accel**, and the register of gaps | §3's five measurements are named and none is run |
 | [011](011-sequencing.md) | record | build order, what landed, and where a measurement goes | — |
 | [013](013-distribution.md) | complete | fetching checkpoints, and the cache | — |
@@ -163,6 +163,7 @@ three, 018 shed four, 017 shed two, 015 shed one.
 | [027](027-batched-benchmarks.md) | drafted | the throughput curve 017-D5 designed and nothing measures | 017 |
 | [028](028-performance-gate.md) | drafted | a build that loses throughput fails like one that loses a test | 017 |
 | [029](029-grammar-front-ends.md) | drafted | EBNF and regex over the machine the schema path already built | 015 |
+| [030](030-logprobs.md) | drafted | reporting the distribution a token was drawn from | 006, 007, 009 |
 
 **Three of the ten judged themselves too large** and named their own passes:
 [022](022-batched-serving.md) §14 and [024](024-qwen3-5-architecture.md) §11 each
