@@ -440,9 +440,14 @@ func TestRunnerRecordsTheFourTermsPerStep(t *testing.T) {
 			t.Errorf("step %d recorded no device time; a batched step's fence wait "+
 				"cannot be zero", i)
 		}
-		if s.Readback == 0 {
-			t.Errorf("step %d recorded no readback; every step reads its slots' "+
-				"logits back", i)
+		// The claim, stated as a comparison rather than as a floor on each
+		// term: a batched loop must not report a device cost as host time. A
+		// floor on the readback is a claim about the clock -- Windows resolves
+		// a short interval to zero -- and this is a claim about the
+		// attribution.
+		if s.Host >= s.Total() {
+			t.Errorf("step %d puts all %s of the step on the host; the three device "+
+				"terms were not measured", i, s.Total())
 		}
 		if s.Batch < 1 {
 			t.Errorf("step %d reports a batch of %d", i, s.Batch)

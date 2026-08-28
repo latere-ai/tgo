@@ -201,17 +201,26 @@ func newQueue(t *testing.T, a Admitter, o QueueOptions) *Queue {
 
 // waitFor polls a predicate rather than sleeping a guess, so a slow machine
 // takes longer and a fast one does not race.
+//
+// The deadline is generous because it is a deadline and not a measurement:
+// these cases are goroutine handoffs that take microseconds, and the budget has
+// to survive a -race run beside the model-backed tests in this package, where a
+// runnable goroutine can wait a long time for a core.
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(handoff)
 	for time.Now().Before(deadline) {
 		if ok() {
 			return
 		}
 		time.Sleep(200 * time.Microsecond)
 	}
-	t.Fatalf("waited 5s for %s and it did not happen", what)
+	t.Fatalf("waited %s for %s and it did not happen", handoff, what)
 }
+
+// handoff is how long a queue test waits for something that takes
+// microseconds. See [waitFor].
+const handoff = 30 * time.Second
 
 // admission is one background Admit, so a test can hold several at once.
 type admission struct {
@@ -237,7 +246,7 @@ func (a *admission) got(t *testing.T, what string) int {
 			t.Fatalf("%s: Admit: %v", what, err)
 		}
 		return <-a.slot
-	case <-time.After(5 * time.Second):
+	case <-time.After(handoff):
 		t.Fatalf("%s: Admit did not return", what)
 		return -1
 	}
@@ -252,7 +261,7 @@ func (a *admission) refused(t *testing.T, what string) error {
 			t.Fatalf("%s: Admit succeeded and the test needs it to be refused", what)
 		}
 		return err
-	case <-time.After(5 * time.Second):
+	case <-time.After(handoff):
 		t.Fatalf("%s: Admit did not return", what)
 		return nil
 	}
@@ -732,7 +741,7 @@ func TestQueueUnderRace(t *testing.T) {
 	t.Parallel()
 	const slots, callers = 4, 64
 	f := newFake(slots, 4*slots, 4, 0)
-	q := newQueue(t, f, QueueOptions{Wait: 5 * time.Second})
+	q := newQueue(t, f, QueueOptions{Wait: handoff})
 
 	var wg sync.WaitGroup
 	for i := 0; i < callers; i++ {

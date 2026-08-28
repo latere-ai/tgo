@@ -23,7 +23,10 @@
 // else in tgo.
 package bench
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Phase says whether a step consumed prompt tokens or produced one.
 type Phase uint8
@@ -91,9 +94,22 @@ func (s Step) Total() time.Duration {
 // report, because a long request is the one whose current behaviour a reader
 // wants, and refusing would report nothing at all in that case.
 //
-// A Recorder is not safe for concurrent use. One recorder per stepping
-// goroutine, merged by the harness, keeps the hot path free of a lock.
+// # Why there is a lock
+//
+// A Recorder is safe for concurrent use. It was not until 2026-08-28, on
+// 017-D3's argument that one recorder per stepping goroutine keeps the hot path
+// free of a lock -- which assumed the stepping goroutine and the reader are the
+// same one. Under specs/022-batched-serving.md they are structurally different:
+// one driver goroutine steps the whole batch and writes every request's
+// recorder, and the request's own goroutine reads it. No discipline fixes that,
+// because the two goroutines are what batching is.
+//
+// The cost is one uncontended mutex against a forward pass, and the allocation
+// claim is unchanged: storage is still fixed at construction and Step still
+// copies into it.
 type Recorder struct {
+	mu sync.Mutex
+
 	steps []Step // pre-sized; len is the capacity, never appended to
 	first int    // index of the oldest step once the ring has wrapped
 	n     int
@@ -140,6 +156,8 @@ func (r *Recorder) Step(s Step) {
 		// nothing was discarded by an instrument that was never recording.
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.steps[(r.first+r.n)%len(r.steps)] = s
 	if r.n == len(r.steps) {
 		r.first = (r.first + 1) % len(r.steps)
@@ -159,6 +177,8 @@ func (r *Recorder) TTFT(d time.Duration) {
 	if r == nil || len(r.ttfts) == 0 {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.ttfts[(r.ttftFirst+r.nttft)%len(r.ttfts)] = d
 	if r.nttft == len(r.ttfts) {
 		r.ttftFirst = (r.ttftFirst + 1) % len(r.ttfts)
@@ -175,5 +195,7 @@ func (r *Recorder) Reset() {
 	if r == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.first, r.n, r.ttftFirst, r.nttft, r.dropped = 0, 0, 0, 0, 0
 }

@@ -353,6 +353,20 @@ asserts each output against its own — one schema would let a shared grammar
 state look correct — and the penalty row asserts that two policies alike but for
 the penalty disagree.
 
+**A deadline is not an observation, and the Metal runner said so.** The test
+that a full batch makes a request wait gave a third request a 300 ms context and
+read the timeout as proof. A deadline says only that nothing happened in the
+time allowed, which on a fast machine is also what a batch that emptied under
+the test looks like — so it passed on the CPU backend and failed on Metal, where
+the two holders finished their budgets before the third request arrived. It now
+waits for the third request to appear in the admission queue. The same shape was
+in [022 §11](022-batched-serving.md)'s gate itself: two requests share a forward
+pass only if they overlap, and a four-token completion where a step is
+milliseconds can finish before the other request is admitted. This is
+[010-D7](010-conformance.md)'s rule reaching one level further — do not read a
+clock where an observation is available — and the two backends disagreeing is
+what found it.
+
 **Still one $R$ for the whole deployment**, capped at half the context so the
 promise is payable on a short one. 022-D7 makes it per request in pass 2, and
 that is the change that will move [021](021-admission-queue.md)'s `Admitter`.

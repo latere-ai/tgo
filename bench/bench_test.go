@@ -511,3 +511,31 @@ func TestEmptyReportMarshals(t *testing.T) {
 		t.Errorf("ShareOfStep round tripped to %v, want four zero keys", back.Decode.ShareOfStep)
 	}
 }
+
+// TestARecorderIsWrittenByOneGoroutineAndReadByAnother is what
+// specs/022-batched-serving.md made structural: one driver goroutine steps the
+// whole batch and writes every request's recorder, and the request's own
+// goroutine reads it.
+//
+// It fails under -race without the lock, which is how it was found: 017-D3's
+// "one recorder per stepping goroutine" assumed the stepping goroutine and the
+// reader are the same one, and under a batch they cannot be.
+func TestARecorderIsWrittenByOneGoroutineAndReadByAnother(t *testing.T) {
+	r := bench.NewRecorder(16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			r.Step(bench.Step{Phase: bench.Decode, Tokens: 1, Batch: 2, Device: time.Microsecond})
+			r.TTFT(time.Millisecond)
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		_ = r.Report()
+		_ = r.Steps()
+	}
+	<-done
+	if got := r.Report().Decode.Steps; got == 0 {
+		t.Error("nothing was recorded")
+	}
+}

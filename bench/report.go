@@ -76,30 +76,37 @@ type Report struct {
 // Order matters here where it does not in a quantile: a report whose entries
 // are rotated by an arbitrary amount is one nobody can line up against a log.
 func (r *Recorder) Steps() []Step {
+	steps, _, _ := r.snapshot()
+	return steps
+}
+
+// snapshot copies everything recorded so far, under one lock.
+//
+// One acquisition and not three, so that the steps, the times to first token
+// and the drop count describe the same moment: a report whose Dropped came from
+// after its steps would say the percentiles are a prefix of a run they are not.
+func (r *Recorder) snapshot() ([]Step, []time.Duration, int) {
 	if r == nil {
-		return nil
+		return nil, nil, 0
 	}
-	out := make([]Step, 0, r.n)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	steps := make([]Step, 0, r.n)
 	for i := range r.n {
-		out = append(out, r.steps[(r.first+i)%len(r.steps)])
+		steps = append(steps, r.steps[(r.first+i)%len(r.steps)])
 	}
-	return out
+	ttfts := make([]time.Duration, 0, r.nttft)
+	for i := range r.nttft {
+		ttfts = append(ttfts, r.ttfts[(r.ttftFirst+i)%len(r.ttfts)])
+	}
+	return steps, ttfts, r.dropped
 }
 
 // Report aggregates what has been recorded. It allocates and sorts, so it
 // belongs off the hot path; a nil or disabled Recorder returns the zero Report
 // with its share maps populated.
 func (r *Recorder) Report() Report {
-	var ttfts []time.Duration
-	var dropped int
-	steps := r.Steps()
-	if r != nil {
-		ttfts = make([]time.Duration, 0, r.nttft)
-		for i := range r.nttft {
-			ttfts = append(ttfts, r.ttfts[(r.ttftFirst+i)%len(r.ttfts)])
-		}
-		dropped = r.dropped
-	}
+	steps, ttfts, dropped := r.snapshot()
 
 	var prefill, decode []Step
 	for _, s := range steps {
