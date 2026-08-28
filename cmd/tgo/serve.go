@@ -66,12 +66,25 @@ const defaultSessions = 4
 
 // serveOptions is `tgo serve`'s command line, parsed.
 type serveOptions struct {
-	Dir      string
-	Addr     string
-	Name     string
-	Public   bool
-	Sessions int
-	Engine   engineOptions
+	Dir    string
+	Addr   string
+	Name   string
+	Public bool
+
+	// Slots is how many requests generate at once: the pool's size under a
+	// pooled engine and the batch width under a batched one. Zero takes the
+	// default for whichever it is.
+	Slots int
+
+	// SlotsFlag is the name the operator used for Slots, so a refusal names the
+	// flag they typed.
+	SlotsFlag string
+
+	// Notes are lines the report prints about the command line itself, such as
+	// a flag that has been renamed.
+	Notes []string
+
+	Engine engineOptions
 }
 
 // serveFlagSet declares what `tgo serve` accepts. See [runFlagSet] for why
@@ -84,9 +97,13 @@ func serveFlagSet() (*flag.FlagSet, *serveFlags) {
 		precision: fs.String("precision", "auto", "f16, int8, int4 or auto"),
 		context:   fs.Int("context", defaultContext, "KV cache capacity per session, in positions"),
 		device:    fs.String("device", "auto", "auto, cpu or metal"),
-		sessions: fs.Int("sessions", 0,
-			"pooled sessions, which is the concurrency and the reuse depth "+
-				"(0 takes 4, or fewer if the device holds fewer)"),
+		sessions:  fs.Int("sessions", 0, "deprecated alias for --slots"),
+		slots: fs.Int("slots", 0,
+			"how many requests generate at once (0 takes 4 pooled, or 8 batched, "+
+				"or fewer if the device holds fewer)"),
+		kv: fs.Int("kv", 0,
+			"shared block pool, in positions; needs --prefix-cache process "+
+				"(0 takes slots x context)"),
 		prefixCache: registerScope(fs),
 		batched: fs.Bool("batched", false,
 			"put every in-flight request in one forward pass; implies "+
@@ -111,6 +128,7 @@ type serveFlags struct {
 	prefixCache             *scopeFlag
 	batched                 *bool
 	context, sessions       *int
+	slots, kv               *int
 }
 
 // parseServe parses and checks `tgo serve`'s arguments.
@@ -131,12 +149,37 @@ func parseServe(args []string) (serveOptions, error) {
 	if err := positive("context", *f.context); err != nil {
 		return serveOptions{}, err
 	}
+	// --slots and --sessions are one number, and --sessions is the old name.
+	//
+	// Under a scheduler the flag stops describing a pool: what it says is how
+	// many requests generate at once, which is the batch width, and a batched
+	// slot costs a page table rather than a context of key/value cache
+	// (specs/022-batched-serving.md §8). Renaming it and keeping the old name
+	// working is what does not break every existing command line for a rename.
+	set := map[string]bool{}
+	fs.Visit(func(fl *flag.Flag) { set[fl.Name] = true })
+	slots, slotsFlag, notes := *f.slots, "--slots", []string(nil)
+	if set["sessions"] {
+		if set["slots"] {
+			return serveOptions{}, fmt.Errorf("%w: --slots and --sessions are one "+
+				"number and both were given (%d and %d); --sessions is the old name",
+				errUsage, *f.slots, *f.sessions)
+		}
+		slots, slotsFlag = *f.sessions, "--sessions"
+		notes = append(notes, "--sessions is the old name for --slots and still works. "+
+			"It named a pool, and\n                    under --batched what it names is "+
+			"the batch width.")
+	}
 	// Zero is "as many as the device holds, up to the default", which is what
 	// the admission arithmetic answers once the weights are on the device. A
-	// negative one is a pool that holds no conversation.
-	if *f.sessions < 0 {
-		return serveOptions{}, fmt.Errorf("%w: --sessions is %d; a pool holds at least one "+
-			"conversation", errUsage, *f.sessions)
+	// negative one is a deployment that runs no request.
+	if slots < 0 {
+		return serveOptions{}, fmt.Errorf("%w: %s is %d; a deployment runs at "+
+			"least one request at a time", errUsage, slotsFlag, slots)
+	}
+	if *f.kv < 0 {
+		return serveOptions{}, fmt.Errorf("%w: --kv is %d; it is the shared block "+
+			"pool's size in positions", errUsage, *f.kv)
 	}
 	// 022-D1: the batched path and the process scope are one configuration,
 	// because NewBatch refuses a model with no shared block pool. So --batched
@@ -155,6 +198,15 @@ func parseServe(args []string) (serveOptions, error) {
 		}
 		scope = tgo.CacheProcess
 	}
+	// --kv sizes the one thing a process-scoped cache has and the other two
+	// scopes do not. Refused rather than ignored: a number an operator passed
+	// and nothing read is the shape of a deployment that thinks it configured
+	// something.
+	if set["kv"] && scope != tgo.CacheProcess {
+		return serveOptions{}, fmt.Errorf("%w: --kv sizes the shared block pool and "+
+			"--prefix-cache is %s, which gives every session its own cache; --kv "+
+			"needs --prefix-cache process or --batched", errUsage, scope)
+	}
 	addr := strings.TrimSpace(*f.addr)
 	if addr == "" {
 		addr = server.DefaultAddr
@@ -167,9 +219,10 @@ func parseServe(args []string) (serveOptions, error) {
 		return serveOptions{}, publicBindRefusal(addr)
 	}
 	return serveOptions{
-		Dir: dir, Addr: addr, Name: modelID(dir), Public: *f.public, Sessions: *f.sessions,
+		Dir: dir, Addr: addr, Name: modelID(dir), Public: *f.public, Slots: slots,
+		SlotsFlag: slotsFlag, Notes: notes,
 		Engine: engineOptions{Precision: policy, Context: *f.context, Device: dev,
-			PrefixCache: scope, Sessions: *f.sessions, Batched: *f.batched},
+			PrefixCache: scope, Slots: slots, KV: *f.kv, Batched: *f.batched},
 	}, nil
 }
 
@@ -264,21 +317,19 @@ var openServable = func(dir, name string, o engineOptions) (servable, error) {
 		// is its own and there is nothing else to spend it on.
 		opts = append(opts, tgo.WithPrefixCache(tgo.CacheSession, o.Context))
 	case tgo.CacheProcess:
-		// One pool of exactly what the per-session caches would have cost, so
-		// the sharing is free in memory and the admission arithmetic below is
-		// unchanged: sessions x context positions, held once instead of once
-		// each.
+		// One pool, and --kv is what sizes it. Its default is exactly what the
+		// per-session caches would have cost -- slots x context positions, held
+		// once instead of once each -- so a deployment that does not set it
+		// holds the same bytes it held before, and they become fungible: a long
+		// conversation and seven short ones fit where that many fixed caches
+		// would have refused the first (specs/022-batched-serving.md §9).
 		//
-		// The session count is the operator's, or the default, and is resolved
+		// The slot count is the operator's, or the default, and is resolved
 		// here rather than from the admission below because the pool is
 		// allocated while the model loads and the admission needs the loaded
 		// weights. Where the two disagree the admission is the one that
-		// reports it, in --sessions and --context terms.
-		sessions := o.Sessions
-		if sessions == 0 {
-			sessions = defaultSessions
-		}
-		opts = append(opts, tgo.WithPrefixCache(tgo.CacheProcess, sessions*o.Context))
+		// reports it, in --slots and --context terms.
+		opts = append(opts, tgo.WithPrefixCache(tgo.CacheProcess, poolPositions(o)))
 	}
 	m, err := tgo.Open(dir, opts...)
 	if err != nil {
@@ -323,6 +374,39 @@ var openServable = func(dir, name string, o engineOptions) (servable, error) {
 	}, nil
 }
 
+// poolPositions is how large the shared block pool is, in positions.
+//
+// --kv where the operator set it, and slots x context otherwise, which is the
+// bytes a pool of that many sessions reserves today (§8).
+func poolPositions(o engineOptions) int {
+	if o.KV > 0 {
+		return o.KV
+	}
+	slots := o.Slots
+	if slots == 0 {
+		slots = defaultSlots(o.Batched)
+	}
+	return slots * o.Context
+}
+
+// defaultSlots is how many requests generate at once when nothing says.
+//
+// Eight batched and four pooled, because a slot costs a different thing under
+// each: a pooled session reserves a whole context of key/value cache (019-D2)
+// and a batched slot reserves a page table and a row of the per-step ports,
+// which are O(rows + B x V) rather than O(B x context) (specs/022-batched-serving.md §8).
+// The number that is generous for one is wasteful for the other, and the
+// startup report prints which one this deployment got.
+func defaultSlots(batched bool) int {
+	if batched {
+		return defaultBatchSlots
+	}
+	return defaultSessions
+}
+
+// defaultBatchSlots is §8's default batch width.
+const defaultBatchSlots = 8
+
 // serveReserve is §3's R for a batched deployment: how many positions beyond
 // its prompt an admitted sequence holds blocks for.
 //
@@ -363,7 +447,50 @@ type admission struct {
 	// The two differ because 019-D2 allocates every one of them at startup and
 	// holds it for the process's life, so the device's capacity is a ceiling
 	// rather than a target.
+	//
+	// Under a batched engine it is the batch width instead, and it is not
+	// capped by Fits: a slot there reserves a page table rather than a context
+	// of key/value cache, and what the budget bounds is Positions.
 	Sessions int
+
+	// Positions is the shared block pool's size, and is zero for a deployment
+	// that reserves one cache per session.
+	Positions int
+
+	// Reserved is what the deployment actually holds for its life: N sessions'
+	// caches, or one pool of Positions.
+	Reserved int64
+}
+
+// admissionShape says what a deployment reserves, which is not the same
+// quantity under the two engines (specs/022-batched-serving.md §8).
+type admissionShape struct {
+	// Positions is the shared pool's size. Zero is a deployment that reserves
+	// one cache per session, which is what every scope but a batched one does.
+	Positions int
+
+	// Context is what one session's cache is priced at, so a pool of Positions
+	// can be priced from the same number.
+	Context int
+
+	// Default is how many requests generate at once when the operator named no
+	// number.
+	Default int
+
+	// Flag is the name the operator used for the slot count, so a refusal
+	// names the flag they typed rather than the one it was renamed to.
+	Flag string
+}
+
+// shapeOf is what this deployment reserves, in the terms [kvAdmission] prices.
+func shapeOf(o serveOptions, context int) admissionShape {
+	if !o.Engine.Batched {
+		return admissionShape{Default: defaultSessions, Flag: o.SlotsFlag}
+	}
+	return admissionShape{
+		Positions: poolPositions(o.Engine), Context: context,
+		Default: defaultBatchSlots, Flag: o.SlotsFlag,
+	}
 }
 
 // kvAdmission is §6's arithmetic:
@@ -381,8 +508,16 @@ type admission struct {
 // here rather than at the allocation that would fail part way through it: every
 // session's cache is reserved at startup (019-D2), so the ceiling is a number
 // this arithmetic already has.
-func kvAdmission(pool, weightBytes, perSession int64, want int) (admission, error) {
+func kvAdmission(pool, weightBytes, perSession int64, want int,
+	shape admissionShape) (admission, error) {
+
 	a := admission{Pool: pool, Weights: weightBytes, Budget: pool - weightBytes, PerSession: perSession}
+	if shape.Default == 0 {
+		shape.Default = defaultSessions
+	}
+	if shape.Flag == "" {
+		shape.Flag = "--slots"
+	}
 	switch {
 	case perSession <= 0:
 		return admission{}, fmt.Errorf("the model reports a key/value cache of %s per session, "+
@@ -397,17 +532,37 @@ func kvAdmission(pool, weightBytes, perSession int64, want int) (admission, erro
 			humanBytes(a.Budget), humanBytes(perSession))
 	}
 	a.Fits = int(a.Budget / perSession)
+	if shape.Positions > 0 {
+		// One pool, priced from the same per-position cost a session's cache
+		// is: what the budget bounds is the pool, and the slot count costs a
+		// page table and a row of the per-step ports rather than a cache.
+		a.Positions = shape.Positions
+		a.Reserved = perSession * int64(shape.Positions) / int64(shape.Context)
+		if a.Reserved > a.Budget {
+			return admission{}, fmt.Errorf("--kv %d positions reserves %s of key/value "+
+				"cache and %s is left after the weights, which holds %d positions at "+
+				"this context; lower --kv or --context", shape.Positions,
+				humanBytes(a.Reserved), humanBytes(a.Budget),
+				a.Budget*int64(shape.Context)/perSession)
+		}
+		a.Sessions = want
+		if want == 0 {
+			a.Sessions = shape.Default
+		}
+		return a, nil
+	}
 	switch {
 	case want == 0:
-		a.Sessions = min(defaultSessions, a.Fits)
+		a.Sessions = min(shape.Default, a.Fits)
 	case want > a.Fits:
-		return admission{}, fmt.Errorf("--sessions %d reserves %s of key/value cache and %s "+
+		return admission{}, fmt.Errorf("%s %d reserves %s of key/value cache and %s "+
 			"is left after the weights, which holds %d session(s) at %s each; lower "+
-			"--sessions or --context", want, humanBytes(int64(want)*perSession),
-			humanBytes(a.Budget), a.Fits, humanBytes(perSession))
+			"%s or --context", shape.Flag, want, humanBytes(int64(want)*perSession),
+			humanBytes(a.Budget), a.Fits, humanBytes(perSession), shape.Flag)
 	default:
 		a.Sessions = want
 	}
+	a.Reserved = int64(a.Sessions) * perSession
 	return a, nil
 }
 
@@ -477,7 +632,7 @@ func startServe(args []string, stdout, stderr io.Writer) (*serving, error) {
 	// subtract weights that are not on the device (specs/001-weights.md §5).
 	rep = resolvedInto(rep, sv.Info)
 	adm, err := kvAdmission(rep.Hardware.MaxPoolBytes, rep.Memory.WeightBytes, rep.Memory.KVBytes,
-		o.Sessions)
+		o.Slots, shapeOf(o, rep.Memory.Context))
 	if err != nil {
 		return nil, err
 	}
@@ -579,19 +734,28 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 	if o.Engine.Batched {
 		fmt.Fprintf(w, "\nslots      %d, and every in-flight request is in one forward pass\n",
 			srv.Concurrency())
+		fmt.Fprintf(w, "  reserved          %s = one shared pool of %d positions at %d "+
+			"positions of context\n", humanBytes(adm.Reserved), adm.Positions,
+			rep.Memory.Context)
+		fmt.Fprintf(w, "  chunk and reserve %d prompt tokens a step, and %d positions held "+
+			"beyond a prompt at admission\n", tgo.DefaultChunk,
+			serveReserve(rep.Memory.Context))
 	} else {
-		fmt.Fprintf(w, "\nsessions   %d pooled, reserved now and held until this process exits\n",
-			srv.Concurrency())
+		fmt.Fprintf(w, "\nslots      %d pooled sessions, reserved now and held until this "+
+			"process exits\n", srv.Concurrency())
+		fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
+			humanBytes(adm.Reserved), adm.Sessions, humanBytes(adm.PerSession),
+			rep.Memory.Context)
 	}
-	fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
-		humanBytes(int64(adm.Sessions)*adm.PerSession), adm.Sessions,
-		humanBytes(adm.PerSession), rep.Memory.Context)
 	fmt.Fprintf(w, "  kv budget         %s = %s device pool - %s weights, which holds %d\n",
 		humanBytes(adm.Budget), humanBytes(adm.Pool), humanBytes(adm.Weights), adm.Fits)
 	fmt.Fprintf(w, "  admission         %d generating at once, %d waiting, refused with 429 after %s\n",
 		srv.Concurrency(), server.DefaultQueue, humanDuration(server.DefaultQueueWait))
 	fmt.Fprintf(w, "  prefix cache      %s\n", prefixCacheLine(o.Engine.PrefixCache))
 	fmt.Fprintf(w, "  note              %s\n", batchingNote(o.Engine.Batched))
+	for _, n := range o.Notes {
+		fmt.Fprintf(w, "  deprecated        %s\n", n)
+	}
 	fmt.Fprintf(w, "\nCtrl-C stops it, letting in-flight requests finish.\n")
 }
 

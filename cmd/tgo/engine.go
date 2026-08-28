@@ -122,12 +122,6 @@ type engineOptions struct {
 	// pooled session sees a second turn (019 §1).
 	PrefixCache tgo.CacheScope
 
-	// Sessions is how many pooled sessions the server will hold, or zero for
-	// the default. It is here rather than only on serveOptions because the
-	// process-scoped block pool is sized from it and is allocated while the
-	// model loads.
-	Sessions int
-
 	// Recorder instruments the engine's decode loop, which is where the
 	// host/submit/device/readback breakdown comes from.
 	//
@@ -145,6 +139,18 @@ type engineOptions struct {
 	// and the pass that makes it the default is the one that cannot be tested
 	// only by the person making it (022-D10).
 	Batched bool
+
+	// Slots is how many requests generate at once. Zero takes the default,
+	// which differs by engine: a pooled slot reserves a whole context of
+	// key/value cache and a batched one reserves a page table, so the number
+	// that is generous for one is wasteful for the other
+	// (specs/022-batched-serving.md §8).
+	Slots int
+
+	// KV is the shared block pool's size in positions, and is read only under
+	// [tgo.CacheProcess]. Zero takes Slots x Context, which is the bytes a
+	// pool of that many sessions reserves today.
+	KV int
 }
 
 // livePrecision maps the loader's precision onto the engine's.

@@ -199,7 +199,7 @@ func TestModelIDIsTheDirectorysName(t *testing.T) {
 func TestKVAdmission(t *testing.T) {
 	// 1000 - 280 = 720 over 150 is 4 sessions with 120 left over, which the
 	// floor drops. Four distinct numbers, none a multiple of another.
-	a, err := kvAdmission(1000, 280, 150, 0)
+	a, err := kvAdmission(1000, 280, 150, 0, admissionShape{})
 	if err != nil {
 		t.Fatalf("kvAdmission: %v", err)
 	}
@@ -215,18 +215,18 @@ func TestKVAdmission(t *testing.T) {
 	// machine which can only just run the model, which is the one an operator
 	// is most likely to be on, and a `<` written as `<=` turns it away at
 	// startup with a message telling it to shrink a context that already fits.
-	a, err = kvAdmission(1000, 850, 150, 0)
+	a, err = kvAdmission(1000, 850, 150, 0, admissionShape{})
 	if err != nil {
 		t.Fatalf("a budget of exactly one session was refused: %v", err)
 	}
 	if a.Budget != 150 || a.Fits != 1 || a.Sessions != 1 {
-		t.Errorf("kvAdmission(1000, 850, 150) = %+v, want a budget of 150 and 1 session", a)
+		t.Errorf("kvAdmission(1000, 850, 150, admissionShape{}) = %+v, want a budget of 150 and 1 session", a)
 	}
 
 	// 019-D2 reserves every pooled session's cache at startup, so the device's
 	// capacity is a ceiling and not a target: an operator who asks for nothing
 	// gets the default rather than every session the budget would hold.
-	a, err = kvAdmission(100000, 280, 150, 0)
+	a, err = kvAdmission(100000, 280, 150, 0, admissionShape{})
 	if err != nil {
 		t.Fatalf("kvAdmission on a large device: %v", err)
 	}
@@ -237,14 +237,14 @@ func TestKVAdmission(t *testing.T) {
 
 	// And an explicit ask is honoured up to what fits, and refused above it
 	// rather than at the allocation that would fail part way through.
-	if a, err := kvAdmission(1000, 280, 150, 3); err != nil || a.Sessions != 3 {
-		t.Errorf("kvAdmission(..., 3) = %+v, %v; three of four sessions fit", a, err)
+	if a, err := kvAdmission(1000, 280, 150, 3, admissionShape{}); err != nil || a.Sessions != 3 {
+		t.Errorf("kvAdmission(..., 3, admissionShape{}) = %+v, %v; three of four sessions fit", a, err)
 	}
-	_, err = kvAdmission(1000, 280, 150, 5)
+	_, err = kvAdmission(1000, 280, 150, 5, admissionShape{})
 	if err == nil {
 		t.Fatal("a pool of five was accepted where four fit")
 	}
-	for _, want := range []string{"--sessions 5", "4 session"} {
+	for _, want := range []string{"--slots 5", "4 session"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q does not say %q", err, want)
 		}
@@ -260,9 +260,9 @@ func TestKVAdmission(t *testing.T) {
 		{"a budget under one session", 1000, 900, 150, "lower --context"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := kvAdmission(tc.pool, tc.weights, tc.perSession, 0)
+			_, err := kvAdmission(tc.pool, tc.weights, tc.perSession, 0, admissionShape{})
 			if err == nil {
-				t.Fatalf("kvAdmission(%d, %d, %d) was accepted", tc.pool, tc.weights, tc.perSession)
+				t.Fatalf("kvAdmission(%d, %d, %d, admissionShape{}) was accepted", tc.pool, tc.weights, tc.perSession)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error = %v, want one containing %q", err, tc.want)
@@ -310,7 +310,7 @@ func TestServeReportsWhatAnOperatorGot(t *testing.T) {
 	}
 	// The budget, with the two terms it came from (§6), and the limit the
 	// server actually admits against.
-	adm, err := kvAdmission(2147483647, fakeWeightBytes, fakeCacheBytes, 0)
+	adm, err := kvAdmission(2147483647, fakeWeightBytes, fakeCacheBytes, 0, admissionShape{})
 	if err != nil {
 		t.Fatalf("kvAdmission: %v", err)
 	}
@@ -1130,5 +1130,132 @@ func TestServeReserveFitsTheContext(t *testing.T) {
 		if got := serveReserve(c.context); got != c.want {
 			t.Errorf("serveReserve(%d) = %d, want %d", c.context, got, c.want)
 		}
+	}
+}
+
+// TestSlotsAndSessionsAreOneNumber is 022-D6 at the command line. Under a
+// scheduler the flag stops describing a pool: what it says is how many requests
+// generate at once, which is the batch width, and a batched slot costs a page
+// table rather than a context of key/value cache. The old name keeps working,
+// because removing it would break every existing command line for a rename.
+func TestSlotsAndSessionsAreOneNumber(t *testing.T) {
+	dir := filepath.Join("models", "qwen3")
+	for _, c := range []struct {
+		name string
+		args []string
+		want int
+		flag string
+	}{
+		{"neither", nil, 0, "--slots"},
+		{"slots", []string{"--slots", "6"}, 6, "--slots"},
+		{"the old name", []string{"--sessions", "6"}, 6, "--sessions"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			o, err := parseServe(append(c.args, dir))
+			if err != nil {
+				t.Fatalf("parseServe(%v): %v", c.args, err)
+			}
+			if o.Slots != c.want || o.Engine.Slots != c.want {
+				t.Errorf("slots = %d and engine slots = %d, want %d", o.Slots,
+					o.Engine.Slots, c.want)
+			}
+			// The refusal has to name the flag the operator typed, not the one
+			// it was renamed to.
+			if o.SlotsFlag != c.flag {
+				t.Errorf("SlotsFlag = %q, want %q", o.SlotsFlag, c.flag)
+			}
+			if deprecated := len(o.Notes) > 0; deprecated != (c.flag == "--sessions") {
+				t.Errorf("notes = %v for %v", o.Notes, c.args)
+			}
+		})
+	}
+	if _, err := parseServe([]string{"--slots", "2", "--sessions", "2", dir}); err == nil {
+		t.Error("--slots and --sessions together were accepted; they are one number")
+	}
+	if _, err := parseServe([]string{"--slots", "-1", dir}); err == nil {
+		t.Error("--slots -1 was accepted")
+	}
+}
+
+// TestKVSizesTheSharedPool is §8's second flag: how much conversation state the
+// process holds, which under a batch is one number for the whole process rather
+// than a reservation each.
+func TestKVSizesTheSharedPool(t *testing.T) {
+	dir := filepath.Join("models", "qwen3")
+	o, err := parseServe([]string{"--batched", "--kv", "4096", "--context", "512", dir})
+	if err != nil {
+		t.Fatalf("parseServe: %v", err)
+	}
+	if got := poolPositions(o.Engine); got != 4096 {
+		t.Errorf("the pool is %d positions, want the 4096 --kv named", got)
+	}
+
+	// Unset, it is what the per-session caches would have cost.
+	o, err = parseServe([]string{"--batched", "--slots", "3", "--context", "512", dir})
+	if err != nil {
+		t.Fatalf("parseServe: %v", err)
+	}
+	if got, want := poolPositions(o.Engine), 3*512; got != want {
+		t.Errorf("the default pool is %d positions, want slots x context = %d", got, want)
+	}
+
+	// And the default slot count differs by engine, because a slot costs a
+	// different thing under each.
+	if got, want := defaultSlots(true), defaultBatchSlots; got != want {
+		t.Errorf("the batched default is %d, want %d", got, want)
+	}
+	if got, want := defaultSlots(false), defaultSessions; got != want {
+		t.Errorf("the pooled default is %d, want %d", got, want)
+	}
+
+	// A number nothing would read is refused rather than ignored.
+	for _, args := range [][]string{
+		{"--kv", "4096"},
+		{"--kv", "4096", "--prefix-cache=session"},
+		{"--kv", "-1", "--batched"},
+	} {
+		if _, err := parseServe(append(args, dir)); err == nil {
+			t.Errorf("parseServe(%v) was accepted", args)
+		}
+	}
+}
+
+// TestABatchedDeploymentIsPricedAsOnePool is §8's memory argument: what a
+// batched process holds is one pool of positions, and the slot count is not
+// capped by how many caches the budget holds because a slot is not a cache.
+func TestABatchedDeploymentIsPricedAsOnePool(t *testing.T) {
+	// 150 bytes per session at a context of 100 is 1.5 bytes a position.
+	const perSession, context = 150, 100
+	shape := admissionShape{Positions: 400, Context: context, Default: defaultBatchSlots}
+
+	a, err := kvAdmission(1000, 280, perSession, 0, shape)
+	if err != nil {
+		t.Fatalf("kvAdmission: %v", err)
+	}
+	if a.Positions != 400 {
+		t.Errorf("Positions = %d, want 400", a.Positions)
+	}
+	if want := int64(perSession) * 400 / context; a.Reserved != want {
+		t.Errorf("Reserved = %d, want %d: one pool priced from the per-position cost",
+			a.Reserved, want)
+	}
+	// Sixteen slots over a budget that holds four sessions' caches: a slot is a
+	// page table, and capping it by Fits would be pricing it as a cache.
+	a, err = kvAdmission(1000, 280, perSession, 16, shape)
+	if err != nil {
+		t.Fatalf("kvAdmission with 16 slots: %v", err)
+	}
+	if a.Sessions != 16 {
+		t.Errorf("slots = %d, want the 16 asked for; the budget bounds the pool "+
+			"and not the slot count", a.Sessions)
+	}
+	// The pool itself is bounded, and the refusal names the flag that sizes it.
+	_, err = kvAdmission(1000, 280, perSession, 0,
+		admissionShape{Positions: 100000, Context: context})
+	if err == nil {
+		t.Fatal("a pool larger than the budget was accepted")
+	}
+	if !strings.Contains(err.Error(), "--kv") {
+		t.Errorf("the refusal %q does not name --kv", err)
 	}
 }

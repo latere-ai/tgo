@@ -5,7 +5,7 @@
 //
 //	tgo run   [--prompt P] [--max-tokens N] [--temp T] [--seed S] [--precision f16|int8|auto] <model-dir>
 //	tgo bench [--tokens N] [--prompt-tokens N] [--batch N] [--json out.json] <model-dir>
-//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--sessions N] [--prefix-cache S] [--batched] [--device D] <model-dir>
+//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--slots N] [--kv P] [--prefix-cache S] [--batched] [--device D] <model-dir>
 //	tgo info  <model-dir>
 //	tgo pull  [--revision R] [--token T] <repo-id>
 //
@@ -132,7 +132,15 @@ serve flags:
                       last resort: auto takes the widest that fits, and int4 is
                       not uniformly more accurate than int8
   --context C         KV cache capacity per session, in positions (default 4096)
-  --sessions N        pooled sessions: how many requests generate at once, and
+  --slots N           how many requests generate at once. Under --batched it is
+                      the batch width and costs a page table each; otherwise it
+                      is the pooled session count and costs a whole context of
+                      key/value cache each (default 8 batched, 4 pooled, or
+                      fewer if the device holds fewer)
+  --kv P              shared block pool, in positions. Needs --prefix-cache
+                      process, which --batched implies (default slots x context)
+  --sessions N        deprecated alias for --slots: how many requests generate
+                      at once, and
                       under --prefix-cache session how many conversations keep
                       their cache between turns. Under --prefix-cache process
                       the blocks are shared, so which session a request lands
