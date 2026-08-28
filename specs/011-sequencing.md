@@ -1206,7 +1206,7 @@ pay for itself:
   ([002-D10](002-tokenizer.md)) — pure Go, no cgo, so
   [000 D2](000-decisions.md) is untouched.
 
-**A real checkpoint is on disk**: Qwen3-0.6B at `~/.cache/openllms-e2e/model`,
+**A real checkpoint is on disk**: Qwen3-0.6B at `~/.cache/llmops-e2e/model`,
 1.5 GB of bf16 safetensors. It carries `head_dim: 128` against
 `hidden_size/num_attention_heads` of 64 — exactly the case
 [004 §5](004-model-graph.md) says never to infer, now testable rather than
