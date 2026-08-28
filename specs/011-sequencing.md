@@ -336,7 +336,10 @@ the three dialects it encodes cannot express one whatever tgo computes.
 `/v1/completions` is the only `Frontend` tgo wrote and the only route that can.
 030-D5 reports that upstream rather than reaching past the codec to append a
 member to a body tgo did not write, which is 000 D1's sequence with
-`latere.ai/x/pkg` in accel's place.
+`latere.ai/x/pkg` in accel's place —
+[latere-ai/pkg#7](https://github.com/latere-ai/pkg/issues/7), filed the same
+day. It is the first gap this project has filed against an upstream other than
+accel, and the rule needed no amendment to cover it.
 
 Two of the tests the spec's own §6 table asked for did not discriminate, which
 is worth recording because it is the second time this wave: a sampled draw's

@@ -227,5 +227,10 @@ ask for them, `Stream.LogProbs()` returns the last step's, and
 put a logprob in. That is [030-D5](#decision-record) and it is a report rather
 than a workaround: reaching past the `Frontend` to append a member to a body tgo
 did not write is what [009-D10](009-server.md) exists to prevent, and it would
-break the day the field lands properly. Filing it against `latere.ai/x/pkg` is
-this spec's, and the loss report is what tells a caller in the meantime.
+break the day the field lands properly.
+
+**Filed as [latere-ai/pkg#7](https://github.com/latere-ai/pkg/issues/7)** on
+2026-08-28, with the shape that would close it and the two details that bit tgo:
+that a masked token's $-\infty$ needs a JSON answer, and that the number has to
+say which distribution it is of. The loss report is what tells a caller in the
+meantime.
