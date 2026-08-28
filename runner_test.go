@@ -426,3 +426,109 @@ func TestRunnerQueuesPastItsSlots(t *testing.T) {
 		t.Errorf("Queue.Depth = %d once every request finished, want 0", d)
 	}
 }
+
+// TestPerSlotGrammarMask is what "per-slot masking" means: two constrained
+// requests with **different** schemas in one step, each answering its own.
+//
+// Two different schemas and not one constrained request beside a free one,
+// because a shared grammar state would still let a single mask look correct.
+// The mask is a per-request, per-position write over the vocabulary derived
+// from that request's position in its own grammar (022 §5), so a state that
+// leaked would put one request's admissible set on the other's row and the
+// document it produced would not parse.
+//
+// The completions are not compared against the same requests run alone. A
+// reused prefix was computed under a different prefill shape and floating point
+// is not associative, so a warm answer matches a cold one in distribution
+// rather than bit for bit (016-D6) -- which 022 §9 names as the one real cost
+// of batching by default.
+func TestPerSlotGrammarMask(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, batchModel(t), RunnerOptions{Slots: 2, Chunk: 8,
+		Reserve: CacheBlock})
+
+	kinds := []struct {
+		name   string
+		schema string
+		ok     func(string) bool
+	}{
+		{"boolean", `{"type":"boolean"}`, func(s string) bool {
+			return s == "true" || s == "false"
+		}},
+		{"integer", `{"type":"integer"}`, func(s string) bool {
+			if s == "" {
+				return false
+			}
+			for i, c := range s {
+				if c == '-' && i == 0 {
+					continue
+				}
+				if c < '0' || c > '9' {
+					return false
+				}
+			}
+			return true
+		}},
+	}
+	out := make([]string, len(kinds))
+	var wg sync.WaitGroup
+	for i, k := range kinds {
+		wg.Add(1)
+		go func(i int, schema string) {
+			defer wg.Done()
+			st, err := r.Complete(context.Background(), RunRequest{}, "answer",
+				Policy{MaxTokens: 12, Seed: 3, Schema: []byte(schema)})
+			if err != nil {
+				t.Errorf("the %s request: %v", kinds[i].name, err)
+				return
+			}
+			out[i], _ = drainSlot(t, st)
+		}(i, k.schema)
+	}
+	wg.Wait()
+
+	for i, k := range kinds {
+		if got := strings.TrimSpace(out[i]); !k.ok(got) {
+			t.Errorf("the %s request produced %q, which its own schema does not "+
+				"admit; the masks did not stay on their own slots", k.name, got)
+		}
+	}
+}
+
+// TestPenaltiesReadOnlyTheirOwnSlot: two requests alike in everything but their
+// repetition penalty, in one step. The penalties read that slot's own history
+// (022 §5), so a penalty state shared across the batch would make the two
+// agree.
+func TestPenaltiesReadOnlyTheirOwnSlot(t *testing.T) {
+	t.Parallel()
+	r := newRunner(t, batchModel(t), RunnerOptions{Slots: 2, Chunk: 8,
+		Reserve: CacheBlock})
+
+	base := Policy{MaxTokens: 6, Temperature: 0.9, Seed: 11}
+	penalised := base
+	penalised.RepetitionPenalty = 1.8
+
+	out := make([]string, 2)
+	var wg sync.WaitGroup
+	for i, pol := range []Policy{base, penalised} {
+		wg.Add(1)
+		go func(i int, pol Policy) {
+			defer wg.Done()
+			st, err := r.Complete(context.Background(), RunRequest{}, "repeat", pol)
+			if err != nil {
+				t.Errorf("request %d: %v", i, err)
+				return
+			}
+			out[i], _ = drainSlot(t, st)
+		}(i, pol)
+	}
+	wg.Wait()
+
+	if out[0] == "" || out[1] == "" {
+		t.Fatalf("a request produced nothing: %q and %q", out[0], out[1])
+	}
+	if out[0] == out[1] {
+		t.Errorf("the penalised and the unpenalised request both produced %q from "+
+			"the same seed, so the penalty did not reach one slot alone", out[0])
+	}
+}
