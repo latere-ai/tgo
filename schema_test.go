@@ -154,13 +154,16 @@ func TestTheGrammarStopsOnTheIDsTheStreamStopsOn(t *testing.T) {
 	// today.
 	sp := m.special
 	if want := []int{sp.imEnd, sp.endOfText}; fmtIDs(m.stopIDs()) != fmtIDs(want) {
-		t.Errorf("stopIDs = %v, want %v, which is what Stream.isStop reads",
+		t.Errorf("stopIDs = %v, want %v, which is what decoder.isStop reads",
 			m.stopIDs(), want)
 	}
-	fake := &Stream{s: &Session{m: m}}
+	// The decoder and not a Stream: the stop ids are the model's, and reading
+	// them through a session was what made the batched path need a second copy
+	// of this decision (022 §5).
+	fake := &decoder{m: m}
 	for _, id := range m.stopIDs() {
 		if !fake.isStop(id) {
-			t.Errorf("Stream.isStop(%d) is false for an id the grammar ends on", id)
+			t.Errorf("decoder.isStop(%d) is false for an id the grammar ends on", id)
 		}
 	}
 }

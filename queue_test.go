@@ -29,6 +29,7 @@ type fakeAdmitter struct {
 	holds   []int
 	used    int
 	admits  int
+	tries   int
 
 	// gate, when non-nil, is received from at the top of Admit. Closing it
 	// releases every attempt, which is how a test gets the whole waiter list in
@@ -74,6 +75,9 @@ func (f *fakeAdmitter) Admit(prompt []int, salt string) (int, error) {
 	if f.gate != nil {
 		<-f.gate
 	}
+	f.mu.Lock()
+	f.tries++
+	f.mu.Unlock()
 	if f.fail != nil {
 		return -1, f.fail
 	}
@@ -163,6 +167,16 @@ func (f *fakeAdmitter) freeSlots() int {
 		}
 	}
 	return n
+}
+
+// tried is how many times the driver has asked the admitter, which is what a
+// test waits on when it needs the waiter to have been *refused* rather than
+// merely enqueued. Depth reaching one says the request arrived; it does not say
+// the driver has looked at it yet.
+func (f *fakeAdmitter) tried() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tries
 }
 
 func (f *fakeAdmitter) inUse() int {
@@ -290,7 +304,7 @@ func TestQueueWaitsRatherThanRefusing(t *testing.T) {
 	held := f.occupy(t, 4)
 
 	a := admit(q, context.Background(), q.NewTicket(), 4)
-	waitFor(t, "the request to be queued", func() bool { return q.Depth() == 1 })
+	waitFor(t, "the request to be refused once", func() bool { return f.tried() > 0 })
 	if !a.pending() {
 		t.Fatal("Admit returned while every slot was live; it must wait instead")
 	}

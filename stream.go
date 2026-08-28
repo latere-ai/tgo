@@ -5,16 +5,11 @@ package tgo
 
 import (
 	"context"
-	"fmt"
-	"math"
-	"strings"
 	"time"
 
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
 	"github.com/latere-ai/tgo/internal/grammar"
-	"github.com/latere-ai/tgo/sample"
-	"github.com/latere-ai/tgo/tokenizer"
 )
 
 // EventKind is what one [Event] says happened.
@@ -156,16 +151,16 @@ type Event struct {
 // A Stream belongs to one session and is no safer for concurrent use than the
 // session is.
 type Stream struct {
+	// decoder is the host half: the sampler, the grammar, the detokenizer, the
+	// stop strings and the events. It is embedded rather than owned because a
+	// batched step runs the same half over a slot's row, and one copy of it is
+	// what keeps the two paths from drifting (specs/022-batched-serving.md §5).
+	*decoder
+
 	s   *Session
 	ctx context.Context
 
-	pol     Policy
-	sp      sample.Policy
-	sampler *sample.Sampler
-	dec     *tokenizer.Decoder
-
-	prompt    []int
-	maxTokens int
+	prompt []int
 
 	// reused is how many leading prompt positions the session's cache already
 	// holds, and therefore the position the prefill starts at. Zero is a cold
@@ -173,39 +168,8 @@ type Stream struct {
 	// no first token with the conversation so far.
 	reused int
 
-	queue []Event
-	head  int
-	cur   Event
-
 	started bool
-	done    bool
-	err     error
-	usage   Usage
-
-	// feed is the token the next decode step scores: the one just emitted.
-	feed int
-
-	// gram is this request's position in the grammar [Policy.Schema] compiled
-	// to, and is nil for an unconstrained request. Its state belongs to this
-	// stream; the caches behind it are the Model's and are shared (015-D1).
-	gram *grammar.State
-
-	// pending is the decoded text held back because it could still begin a
-	// stop string. It is empty whenever Policy.Stop is.
-	pending string
-	stopped bool
-
-	// stopSeq is the stop string that matched, and reason is why generation
-	// ended. Both are set once, by the branch that ends the stream.
-	stopSeq string
-	reason  StopReason
-
-	// probs is the last step's token probabilities, reused across steps, and
-	// is nil unless Policy.LogProbs is set (030-D1).
-	probs []TokenProb
-
-	openBlock chat.BlockType
-	first     time.Time
+	first   time.Time
 }
 
 // newStream prepares a request. Nothing is submitted until the first
@@ -217,23 +181,13 @@ func newStream(ctx context.Context, s *Session, ids []int, p Policy, reused int,
 	if max <= 0 {
 		max = s.capacity - len(ids)
 	}
-	var st *grammar.State
-	if g != nil {
-		st = g.Start()
-	}
 	return &Stream{
-		gram:      st,
-		s:         s,
-		ctx:       ctx,
-		pol:       p,
-		sp:        p.sampling(),
-		sampler:   sample.New(p.Seed),
-		dec:       s.m.tok.NewDecoder(),
-		prompt:    ids,
-		maxTokens: max,
-		reused:    reused,
-		feed:      -1,
-		first:     time.Now(),
+		decoder: newDecoder(s.m, p, max, g),
+		s:       s,
+		ctx:     ctx,
+		prompt:  ids,
+		reused:  reused,
+		first:   time.Now(),
 	}
 }
 
@@ -257,21 +211,11 @@ func (st *Stream) Next() bool {
 	}
 }
 
-// Event is the current event.
-func (st *Stream) Event() Event { return st.cur }
-
-// Text is the current event's text delta, and is empty for an event that is not
-// one.
-func (st *Stream) Text() string { return st.cur.Text }
-
 // Err is what ended the stream, or nil if it ran to its stopping condition.
 //
 // A cancelled context reports its own error. A device failure reports the
 // driver's, and has also left the session unusable until it is reset (§7).
 func (st *Stream) Err() error { return st.err }
-
-// Usage is the prompt and completion token counts so far.
-func (st *Stream) Usage() Usage { return st.usage }
 
 // advance runs one model step and turns its token into events.
 func (st *Stream) advance() {
@@ -348,58 +292,17 @@ func (st *Stream) advance() {
 	// else this function does: specs/017-benchmarks.md §1 treats the four
 	// terms as exhaustive, so the host's is the step minus the other three
 	// rather than a fifth measurement with a gap between them.
-	// The mask goes on before the draw, which is where 015-D2 puts it: the
-	// penalties and the temperature live inside Next, and both are monotone in
-	// the logit with -Inf as a fixed point, so a token masked here cannot be
-	// brought back by either.
-	if st.gram != nil {
-		if err := st.gram.Mask(logits); err != nil {
-			st.finish(fmt.Errorf("tgo: masking a constrained step: %w", err))
-			return
-		}
+	//
+	// The history is the session's, and the token consume draws is appended to
+	// it by the next step rather than here, which is the order the batched path
+	// follows too (specs/022-batched-serving.md §4).
+	done, derr := st.consume(logits, s.history)
+	if derr != nil {
+		st.finish(derr)
+		return
 	}
-	// Before the draw, and on a copy: Next rewrites the row in place, so
-	// afterwards these are not the logits the token was drawn from. After the
-	// mask, because a grammar-forbidden token must report -Inf rather than the
-	// chance it had before the grammar cut it (030 section 5).
-	var dist []float32
-	if st.pol.LogProbs {
-		dist = st.sampler.Probs(logits, s.history, st.sp)
-	}
-
-	tok := st.sampler.Next(logits, s.history, st.sp)
-	st.feed = tok
-	st.recordProbs(dist, tok)
-
-	if st.isStop(tok) {
-		// An end-of-turn id. It is the model saying it is done, which is a
-		// different answer from a caller's budget running out and from a stop
-		// string the caller wrote -- and /v1/messages renders all three
-		// differently.
-		st.reason = StopEndTurn
+	if done {
 		st.finish(nil)
-	} else {
-		// Advance consumes the token that was drawn, and only a token that is
-		// part of the document. A stop id is the branch above: the stream does
-		// not emit it and does not count it, and the grammar admits it exactly
-		// where the document is already complete, so advancing over it would
-		// mutate a state nothing reads again.
-		if st.gram != nil {
-			if err := st.gram.Advance(tok); err != nil {
-				st.finish(fmt.Errorf("tgo: advancing a constrained step: %w", err))
-				return
-			}
-		}
-		st.usage.CompletionTokens++
-		st.emit(tok)
-		switch {
-		case st.stopped:
-			st.reason = StopSequence
-			st.finish(nil)
-		case st.usage.CompletionTokens >= st.maxTokens:
-			st.reason = StopMaxTokens
-			st.finish(nil)
-		}
 	}
 
 	if s.rec.Enabled() {
@@ -417,210 +320,12 @@ func (st *Stream) advance() {
 	}
 }
 
-// isStop reports whether a token ends the completion without being part of it.
-func (st *Stream) isStop(tok int) bool {
-	sp := st.s.m.special
-	return tok == sp.imEnd || tok == sp.endOfText
-}
-
-// emit turns one token into events.
-//
-// The structural markers are matched by id and never by looking at decoded
-// text. A stop found in text has the boundary problem 003-D6 rejects for turn
-// markers and fails the same way: a user who asks the model to explain
-// "</think>" would have the explanation cut in half.
-func (st *Stream) emit(tok int) {
-	sp := st.s.m.special
-	switch {
-	case tok == sp.think[0] || tok == sp.think[1]:
-		st.startBlock(chat.BlockThinking)
-		return
-	case tok == sp.toolCall:
-		st.startBlock(chat.BlockToolUse)
-		return
-	case tok == sp.thinkEnd, tok == sp.toolEnd:
-		st.endBlock()
-		return
-	}
-	if text := st.dec.Push(tok); text != "" {
-		st.delta(text)
-	}
-}
-
-// delta queues a piece of text, opening a text block if none is open.
-func (st *Stream) delta(text string) {
-	if st.openBlock == "" {
-		st.openBlock = chat.BlockText
-		st.queue = append(st.queue, Event{Kind: BlockStart, Block: chat.BlockText})
-	}
-	st.pending += text
-	st.drain(false)
-}
-
-// startBlock closes whatever block is open and opens this one.
-func (st *Stream) startBlock(bt chat.BlockType) {
-	st.endBlock()
-	st.openBlock = bt
-	st.queue = append(st.queue, Event{Kind: BlockStart, Block: bt})
-}
-
-// endBlock flushes what is held back and closes the open block.
-func (st *Stream) endBlock() {
-	if st.openBlock == "" {
-		return
-	}
-	st.drain(true)
-	st.queue = append(st.queue, Event{Kind: BlockStop, Block: st.openBlock})
-	st.openBlock = ""
-}
-
-// LogProbs is the tokens the last [Stream.Next] produced, with their
-// probabilities, and is empty unless [Policy.LogProbs] is set.
-//
-// A slice and not one value because a step can produce no token -- a prefill --
-// and a batched step may one day produce more than one, and a caller reading a
-// length does not have to change when either happens.
-//
-// **Valid until the next Next.** The backing array is reused: a per-token
-// allocation in the decode loop is the cost specs/017-benchmarks.md 017-D3
-// warns an instrument must not impose on what it measures. A caller keeping
-// them appends.
-func (st *Stream) LogProbs() []TokenProb { return st.probs }
-
-// StopReason is why the stream ended, and is [StopRunning] until it has.
-//
-// It is not set when the stream ended in an error or a cancellation: those are
-// [Stream.Err]'s, and reporting a reason for a completion that did not complete
-// would let a caller answer a failed request as a finished one.
-func (st *Stream) StopReason() StopReason { return st.reason }
-
-// StopSequence is the stop string that ended the stream, and is empty unless
-// [Stream.StopReason] is [StopSequence].
-func (st *Stream) StopSequence() string { return st.stopSeq }
-
-// recordProbs fills the step's [Stream.LogProbs], reusing the backing array.
-//
-// dist is nil when [Policy.LogProbs] is off, and then the slice is emptied
-// rather than left holding the previous step's answer -- a stale value here
-// would be read as this token's.
-func (st *Stream) recordProbs(dist []float32, tok int) {
-	st.probs = st.probs[:0]
-	if dist == nil {
-		return
-	}
-	st.probs = append(st.probs, st.tokenProb(dist, tok))
-	if st.pol.TopLogProbs > 0 {
-		st.probs[0].Top = st.topProbs(dist)
-	}
-}
-
-// tokenProb is one entry: the id, what it contributes to the output, and ln of
-// its probability.
-func (st *Stream) tokenProb(dist []float32, id int) TokenProb {
-	p := 0.0
-	if id >= 0 && id < len(dist) {
-		p = float64(dist[id])
-	}
-	// math.Log(0) is -Inf already, which is the value 030-D3 wants, so this is
-	// not a special case -- it is here because Log of a negative would be NaN
-	// and a distribution cannot hold one.
-	return TokenProb{ID: id, Text: string(st.s.m.tok.TextBytes(id)), LogProb: math.Log(p)}
-}
-
-// topProbs is the Policy.TopLogProbs most likely tokens, descending.
-//
-// Ties go to the lower id, which is accel's rule and 006's: two tokens with the
-// same weight are ordinary at the tail of a 151936-entry distribution, and an
-// unstated order would let two runs of one seed report different alternatives.
-func (st *Stream) topProbs(dist []float32) []TokenProb {
-	n := min(st.pol.TopLogProbs, len(dist))
-	idx := make([]int, 0, n)
-	for id, w := range dist {
-		if len(idx) == n && !(w > dist[idx[n-1]] || (w == dist[idx[n-1]] && id < idx[n-1])) {
-			continue
-		}
-		if len(idx) < n {
-			idx = append(idx, 0)
-		}
-		j := len(idx) - 1
-		for j > 0 && (w > dist[idx[j-1]] || (w == dist[idx[j-1]] && id < idx[j-1])) {
-			idx[j] = idx[j-1]
-			j--
-		}
-		idx[j] = id
-	}
-	out := make([]TokenProb, len(idx))
-	for i, id := range idx {
-		out[i] = st.tokenProb(dist, id)
-	}
-	return out
-}
-
-// drain releases as much held-back text as is safe.
-//
-// While a stop string is set, the longest suffix of the output that could still
-// begin one is held: a stop string need not align to a token boundary, so
-// matching it means matching decoded text, and text already handed to the
-// caller cannot be taken back (006-D4).
-func (st *Stream) drain(final bool) {
-	if st.pending == "" {
-		return
-	}
-	if i, which := firstStop(st.pending, st.pol.Stop); i >= 0 {
-		st.emitText(st.pending[:i])
-		st.pending = ""
-		st.stopped = true
-		st.stopSeq = which
-		return
-	}
-	keep := 0
-	if !final {
-		keep = holdBack(st.pending, st.pol.Stop)
-	}
-	out := st.pending[:len(st.pending)-keep]
-	st.pending = st.pending[len(st.pending)-keep:]
-	st.emitText(out)
-}
-
-// emitText queues one delta of the open block's kind.
-func (st *Stream) emitText(s string) {
-	if s == "" {
-		return
-	}
-	st.queue = append(st.queue, Event{Kind: deltaKind(st.openBlock), Block: st.openBlock,
-		Text: s})
-}
-
-// deltaKind is the delta event a block's text belongs to.
-func deltaKind(bt chat.BlockType) EventKind {
-	switch bt {
-	case chat.BlockThinking:
-		return ThinkingDelta
-	case chat.BlockToolUse:
-		return ToolArgsDelta
-	}
-	return TextDelta
-}
-
-// finish ends the stream, flushing the detokenizer and closing any open block.
-//
-// The flush happens even on a failure: text the model produced before the
-// device failed is text the caller already paid for, and dropping it would make
-// the error harder to read rather than easier.
+// finish ends the stream and gives the session's blocks back.
 func (st *Stream) finish(err error) {
 	if st.done {
 		return
 	}
-	st.done = true
-	st.err = err
-	// Through delta rather than straight onto pending: what the detokenizer
-	// holds at the end of a stream is a truncated code point, and if no block
-	// was ever opened — a completion that is one partial character — appending
-	// to pending would leave it in a buffer endBlock does not drain.
-	if rest := st.dec.Flush(); rest != "" && !st.stopped {
-		st.delta(rest)
-	}
-	st.endBlock()
+	st.end(err)
 	if st.s.live == st {
 		st.s.live = nil
 	}
@@ -654,34 +359,4 @@ func (st *Stream) abandon() {
 	// session's than a finished one's, and a caller who walked away from a
 	// completion is the case most likely to leave them held for good.
 	st.s.release()
-}
-
-// firstStop is the index of the earliest stop string in s, or -1.
-func firstStop(s string, stops []string) (int, string) {
-	best, which := -1, ""
-	for _, stop := range stops {
-		if i := strings.Index(s, stop); i >= 0 && (best < 0 || i < best) {
-			best, which = i, stop
-		}
-	}
-	return best, which
-}
-
-// holdBack is how many trailing bytes of s could still begin a stop string.
-//
-// A proper prefix only: a suffix that is a whole stop string is a stop, which
-// [firstStop] has already found, and holding it back would be waiting for a
-// match that has happened.
-func holdBack(s string, stops []string) int {
-	keep := 0
-	for _, stop := range stops {
-		n := min(len(stop)-1, len(s))
-		for k := n; k > 0; k-- {
-			if strings.HasSuffix(s, stop[:k]) {
-				keep = max(keep, k)
-				break
-			}
-		}
-	}
-	return keep
 }
