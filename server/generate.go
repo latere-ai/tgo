@@ -69,7 +69,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, front llmdiale
 			w.WriteHeader(errClientGone.status())
 			return
 		}
-		s.fail(w, req.dialect, sessionError(err))
+		s.fail(w, req.dialect, s.sessionError(err))
 		return
 	}
 	defer func() {
@@ -86,7 +86,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, front llmdiale
 		st, err = sess.Chat(ctx, req.msgs, req.policy)
 	}
 	if err != nil {
-		s.fail(w, req.dialect, sessionError(err))
+		s.fail(w, req.dialect, s.sessionError(err))
 		return
 	}
 
@@ -384,12 +384,42 @@ func stopReason(st Stream, p tgo.Policy, u tgo.Usage) ir.StopReason {
 }
 
 // sessionError dresses a failure that happened before any output.
-func sessionError(err error) *apiError {
-	if errors.Is(err, tgo.ErrContextExhausted) {
+//
+// Four classes, and the two the batched engine added are the ones a caller most
+// needs told apart from a bug. A request that waited past the admission
+// budget, or arrived at a full queue, is a 429 with the Retry-After that budget
+// promises — the same answer [admitter.overloaded] gives one slot layer up,
+// because under a batched engine the wait moved into the engine and the
+// deployment's answer must not change with it (specs/022-batched-serving.md
+// §10). A client that hung up while queued is a 499 and not a failure.
+func (s *Server) sessionError(err error) *apiError {
+	switch {
+	case errors.Is(err, tgo.ErrQueueFull):
+		return s.overloaded("queue_full", err)
+	case errors.Is(err, tgo.ErrQueueTimeout):
+		return s.overloaded("queue_timeout", err)
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return &apiError{kind: errClientGone, reason: "client_gone",
+			msg: fmt.Sprintf("tgo: %v", err)}
+	case errors.Is(err, tgo.ErrContextExhausted):
 		return badRequest("tgo: %v: the request does not fit this session's context, and is "+
 			"refused rather than truncated", err)
 	}
 	return &apiError{kind: errInternal, reason: "internal", msg: fmt.Sprintf("tgo: %v", err)}
+}
+
+// overloaded is a 429 from inside the engine, with the Retry-After the engine's
+// own budget promises rather than the admitter's.
+func (s *Server) overloaded(reason string, err error) *apiError {
+	wait := s.opt.queueWait
+	if q, ok := s.eng.(queuedEngine); ok {
+		wait = q.AdmissionWait()
+	}
+	// The engine's errors already name themselves, so this does not prefix them
+	// again: "tgo: tgo: the admission queue's wait budget elapsed" is what a
+	// second one reads like.
+	return &apiError{kind: errOverloaded, reason: reason, retryAfter: retryAfter(wait),
+		msg: err.Error()}
 }
 
 // streamError dresses a failure that happened during generation.

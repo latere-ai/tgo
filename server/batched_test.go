@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/bench"
@@ -40,11 +41,15 @@ func openShared(t *testing.T) *tgo.Model {
 	return m
 }
 
-// batchedServer builds a server over a batched engine of n slots.
-func batchedServer(t *testing.T, m *tgo.Model, n int, rec *bench.Recorder) *server.Server {
+// batchedEngine builds a batched engine of n slots and closes it with the test.
+// A zero wait takes the queue's default.
+func batchedEngine(t *testing.T, m *tgo.Model, n int, rec *bench.Recorder,
+	wait time.Duration) *server.RunnerEngine {
+
 	t.Helper()
 	e, err := server.WrapRunner(m, synthName, tgo.RunnerOptions{
 		Slots: n, Chunk: 16, Reserve: tgo.CacheBlock, Recorder: rec,
+		Queue: tgo.QueueOptions{Wait: wait},
 	})
 	if err != nil {
 		t.Fatalf("server.WrapRunner: %v", err)
@@ -54,8 +59,14 @@ func batchedServer(t *testing.T, m *tgo.Model, n int, rec *bench.Recorder) *serv
 			t.Errorf("RunnerEngine.Close: %v", err)
 		}
 	})
-	s, err := server.New(e, server.WithNotice(&strings.Builder{}),
-		server.WithConcurrency(n))
+	return e
+}
+
+// batchedServer builds a server over a batched engine of n slots.
+func batchedServer(t *testing.T, m *tgo.Model, n int, rec *bench.Recorder) *server.Server {
+	t.Helper()
+	s, err := server.New(batchedEngine(t, m, n, rec, 0),
+		server.WithNotice(&strings.Builder{}), server.WithConcurrency(n))
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -154,28 +165,88 @@ func TestBatchedEngineRefusesWithoutABlockPool(t *testing.T) {
 	}
 }
 
-// TestAdmissionAboveTheSlotsIsRefused is 019 §8.6's refusal, unchanged, with
-// the slot count in place of the pool size: a concurrency above what the engine
-// runs at once would make requests wait where the queue neither counts nor
-// times them out, so the Retry-After would stop describing what they wait.
-func TestAdmissionAboveTheSlotsIsRefused(t *testing.T) {
-	m := openShared(t)
-	e, err := server.WrapRunner(m, synthName, tgo.RunnerOptions{Slots: 2})
+// TestAdmissionAboveTheSlotsIsQueuedNotRefused is [019 §8.6]'s refusal turned
+// off for the engine that no longer needs it, and still on for the one that
+// does.
+//
+// The refusal exists because a pooled engine makes the surplus above its pool
+// wait inside NewSession, where this package neither counts it nor times it out
+// -- so the Retry-After stops describing what that request waits. A batched
+// engine answers for its own wait: it bounds the depth, it bounds the budget,
+// and it reports both, so the surplus is a wait the deployment can see.
+func TestAdmissionAboveTheSlotsIsQueuedNotRefused(t *testing.T) {
+	e := batchedEngine(t, openShared(t), 2, nil, 0)
+	for _, n := range []int{2, 3, 16} {
+		if _, err := server.New(e, server.WithNotice(&strings.Builder{}),
+			server.WithConcurrency(n)); err != nil {
+			t.Errorf("a concurrency of %d over a batch of 2 slots was refused: %v",
+				n, err)
+		}
+	}
+
+	// And the pooled engine, whose wait this package cannot see, still is.
+	p, err := server.WrapPool(openSynthetic(t), synthName, 2)
 	if err != nil {
-		t.Fatalf("WrapRunner: %v", err)
+		t.Fatalf("WrapPool: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := e.Close(); err != nil {
-			t.Errorf("RunnerEngine.Close: %v", err)
+		if err := p.Close(); err != nil {
+			t.Errorf("PoolEngine.Close: %v", err)
 		}
 	})
-	if _, err := server.New(e, server.WithNotice(&strings.Builder{}),
+	if _, err := server.New(p, server.WithNotice(&strings.Builder{}),
 		server.WithConcurrency(3)); err == nil {
-		t.Fatal("a concurrency of 3 over a batch of 2 slots was accepted")
+		t.Fatal("a concurrency of 3 over a pool of 2 sessions was accepted")
 	}
-	if _, err := server.New(e, server.WithNotice(&strings.Builder{}),
-		server.WithConcurrency(2)); err != nil {
-		t.Fatalf("a concurrency equal to the slot count was refused: %v", err)
+}
+
+// TestAFullBatchAnswers429WithTheEnginesOwnBudget is what makes the row above
+// safe: the wait moved into the engine, and the deployment's answer must not
+// change with it.
+//
+// The slots are held outside the handler so the refusal is the queue's budget
+// rather than a race with two completions finishing.
+func TestAFullBatchAnswers429WithTheEnginesOwnBudget(t *testing.T) {
+	const budget = 100 * time.Millisecond
+	e := batchedEngine(t, openShared(t), 2, nil, budget)
+	s, err := server.New(e, server.WithNotice(&strings.Builder{}),
+		server.WithConcurrency(4))
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+
+	// Both slots, with completions long enough that neither ends inside the
+	// budget, and which nobody reads.
+	for i := 0; i < 2; i++ {
+		sess, err := e.NewSession(context.Background(), server.SessionSpec{})
+		if err != nil {
+			t.Fatalf("holding session %d: %v", i, err)
+		}
+		if _, err := sess.Complete(context.Background(), strings.Repeat("hold ", 2+i),
+			tgo.Policy{MaxTokens: 80}); err != nil {
+			t.Fatalf("holding request %d: %v", i, err)
+		}
+	}
+
+	w := do(t, s, http.MethodPost, "/v1/completions",
+		`{"model":"`+synthName+`","max_tokens":2,"prompt":"hi"}`)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want %q: it is the engine's budget rounded up "+
+			"with a floor of one, and not an estimated service time", got, "1")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "wait budget elapsed") {
+		t.Errorf("the 429 does not say what the caller waited on: %s", body)
+	} else if strings.Contains(body, "tgo: tgo:") {
+		t.Errorf("the message is prefixed twice: %s", body)
+	}
+	// The reason is a label rather than a body field, which is where the two
+	// refusals are told apart (021-D9).
+	if m := do(t, s, http.MethodGet, "/metrics", "").Body.String(); !strings.Contains(
+		m, `tgo_sessions_rejected_total{reason="queue_timeout"} 1`) {
+		t.Errorf("the refusal was not counted as a queue timeout:\n%s", m)
 	}
 }
 
@@ -209,18 +280,7 @@ func TestABatchedRequestReportsWhatItReused(t *testing.T) {
 // for: what a request took from the shared pool, and what the queue in front of
 // admission measured (021 §7).
 func TestABatchedSessionReportsItsReuseAndItsQueue(t *testing.T) {
-	m := openShared(t)
-	e, err := server.WrapRunner(m, synthName, tgo.RunnerOptions{
-		Slots: 2, Chunk: 16, Reserve: tgo.CacheBlock,
-	})
-	if err != nil {
-		t.Fatalf("WrapRunner: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := e.Close(); err != nil {
-			t.Errorf("RunnerEngine.Close: %v", err)
-		}
-	})
+	e := batchedEngine(t, openShared(t), 2, nil, 0)
 
 	sess, err := e.NewSession(context.Background(), server.SessionSpec{Key: "tenant-a"})
 	if err != nil {

@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/chat"
@@ -57,6 +58,14 @@ type RunnerEngine struct {
 // is, so that the refusal 019 §8.6 added -- a concurrency above what the engine
 // can run at once -- applies to this engine with no change to [New].
 func (e *RunnerEngine) Sessions() int { return e.r.Slots() }
+
+// AdmissionWait and AdmissionDepth are what the engine's own queue promises,
+// so a 429 raised inside it carries the same Retry-After the admitter in front
+// of it would have (021-D6).
+func (e *RunnerEngine) AdmissionWait() time.Duration { return e.r.Queue().Wait() }
+
+// AdmissionDepth is how many requests may wait for a slot at once.
+func (e *RunnerEngine) AdmissionDepth() int { return e.r.Queue().MaxDepth() }
 
 // Runner is the batch behind the engine, for a caller reporting what the queue
 // measured (021 §7).

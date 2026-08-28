@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"latere.ai/x/pkg/llmdialect"
 	"latere.ai/x/pkg/llmdialect/anthropic"
@@ -25,6 +26,24 @@ import (
 // that allocates per request ([Wrap]) has no such number -- what bounds it is
 // device memory, which [WithKVBudget] divides.
 type pooledEngine interface{ Sessions() int }
+
+// queuedEngine is an engine that does its own admission, counted and bounded.
+//
+// It is the difference [019 §8.6](../specs/019-session-affinity.md) turns on. A
+// pooled engine makes the surplus above its pool wait inside NewSession, where
+// this package neither counts it nor times it out — so the Retry-After stops
+// describing what that request waits, and [New] refuses the configuration. An
+// engine that queues answers for its own wait: it bounds the depth, it bounds
+// the budget, and it reports both, so the surplus is a wait the deployment can
+// see and a 429 it can predict.
+type queuedEngine interface {
+	// AdmissionWait is the budget past which a queued request is refused,
+	// which is the only interval a Retry-After can promise.
+	AdmissionWait() time.Duration
+
+	// AdmissionDepth is how many requests may wait at once.
+	AdmissionDepth() int
+}
 
 // Server serves one [Engine] over the four request routes and the three
 // informational ones. It is an [http.Handler]; nothing here starts a listener
@@ -75,7 +94,8 @@ func New(eng Engine, opts ...Option) (*Server, error) {
 	// count them; what their caller gets is a wait past the Retry-After budget
 	// instead of the refusal that budget promises. Both numbers are known
 	// here, so the disagreement is refused here.
-	if p, ok := eng.(pooledEngine); ok && o.concurrency > p.Sessions() {
+	_, queues := eng.(queuedEngine)
+	if p, ok := eng.(pooledEngine); ok && !queues && o.concurrency > p.Sessions() {
 		return nil, fmt.Errorf("server: admission allows %d requests to generate at once and "+
 			"the engine pools %d session(s); lower the concurrency or pool more sessions",
 			o.concurrency, p.Sessions())

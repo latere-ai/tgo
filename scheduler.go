@@ -137,9 +137,16 @@ func (s *Scheduler) Feasible(prompt, reserve int) error {
 	block, blocks := p.Block(), p.Blocks()
 	need := (prompt + reserve + block - 1) / block
 	if need > blocks {
-		return fmt.Errorf("tgo: a %d-token prompt with a reserve of %d needs %d "+
-			"blocks of %d positions and the pool holds %d: %w", prompt, reserve,
-			need, block, blocks, prefix.ErrExhausted)
+		// Both sentinels. [prefix.ErrExhausted] is what the pool says and what a
+		// [Queue] classifies deferrals by; [ErrContextExhausted] is what it
+		// means to the caller -- this request does not fit, and never will --
+		// which is the same answer a session gives a prompt larger than its
+		// cache, and the one a layer above turns into a refusal rather than a
+		// wait.
+		return fmt.Errorf("%w: a %d-token prompt with a reserve of %d needs %d "+
+			"blocks of %d positions and the shared pool holds %d: %w",
+			ErrContextExhausted, prompt, reserve, need, block, blocks,
+			prefix.ErrExhausted)
 	}
 	return nil
 }
