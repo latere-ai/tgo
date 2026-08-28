@@ -53,17 +53,40 @@ import (
 // everybody knows about it is an entry the test below cannot tell from an entry
 // nobody decided on, and the gate's answer is which modules are reachable, not
 // which ones are news.
-var gated = map[string][]entry{
+var gated = map[string]gate{
 	// Import paths rather than ./relative ones. `go list` resolves a relative
 	// path against its own working directory, so a gate written that way
 	// passes from the module root and fails from the package's own directory
 	// -- which is where `go test` runs it.
-	"github.com/latere-ai/tgo/server": {
+	"github.com/latere-ai/tgo/server": {"009-D14", []entry{
 		{"golang.design/x/accel", "the compute layer; 000 D1 makes every package here reach it"},
 		{"golang.org/x/text", "Unicode normalisation for the tokenizer, 002-D10"},
 		{"latere.ai/x/pkg/llmdialect", "the three wire dialects, 009-D10; this is the one 009-D14 exists to watch"},
 		{"github.com/ebitengine/purego", "accel's cgo-free dynamic loading of Metal, reached through accel on darwin only"},
-	},
+	}},
+	// The tokenizer's package comment says its one dependency outside the
+	// standard library is golang.org/x/text. That comment claimed no
+	// dependency at all for three waves after 002-D10 took x/text, so the
+	// sentence gets a gate: a second module here fails, and x/text going away
+	// fails too, through the stale-allowance half of the test.
+	//
+	// It matters more here than elsewhere because 000 D2 is about this
+	// package's reach specifically -- x/text is admissible because it is pure
+	// Go, and the next module might not be.
+	"github.com/latere-ai/tgo/tokenizer": {"002-D10", []entry{
+		{"golang.org/x/text", "Unicode normalisation, 002-D10; pure Go, so 000 D2 holds"},
+	}},
+}
+
+// gate is one package's allowlist and the decision that owns it.
+//
+// The decision is named so a failure sends a reader to the argument the list
+// defends rather than to this file. Two packages are gated for two different
+// reasons -- one about a wire dependency's cost, one about staying cgo-free --
+// and a message naming only the first would misdirect half of them.
+type gate struct {
+	decision string
+	allow    []entry
 }
 
 // platforms are the GOOS/GOARCH pairs the build list is taken on.
@@ -104,7 +127,7 @@ func main() {
 // A read failure is a third code rather than a failure, because it says nothing
 // about the dependency footprint. Reporting a broken `go list` as a violation
 // would send a reader to the allowlist for an answer that is not there.
-func run(gates map[string][]entry, verbose bool, out, errw io.Writer) int {
+func run(gates map[string]gate, verbose bool, out, errw io.Writer) int {
 	pkgs := make([]string, 0, len(gates))
 	for p := range gates {
 		pkgs = append(pkgs, p)
@@ -113,25 +136,27 @@ func run(gates map[string][]entry, verbose bool, out, errw io.Writer) int {
 
 	failed := false
 	for _, pkg := range pkgs {
-		unexpected, matched, err := checkAll(pkg, gates[pkg])
+		g := gates[pkg]
+		unexpected, matched, err := checkAll(pkg, g.allow)
 		if err != nil {
 			fmt.Fprintf(errw, "depcheck: %v\n", err)
 			return 2
 		}
 		if verbose {
-			for _, e := range gates[pkg] {
+			for _, e := range g.allow {
 				if where := matched[e.prefix]; where != "" {
 					fmt.Fprintf(out, "       %s -- %s [%s]\n", e.prefix, e.why, where)
 				}
 			}
 		}
 		if len(unexpected) == 0 {
-			fmt.Fprintf(out, "ok   %s reaches only what 009-D14 allows, on %d platforms\n",
-				short(pkg), len(platforms))
+			fmt.Fprintf(out, "ok   %-12s reaches only what %s allows, on %d platforms\n",
+				short(pkg), g.decision, len(platforms))
 			continue
 		}
 		failed = true
-		fmt.Fprintf(out, "FAIL %s reaches %d module(s) no decision allows:\n", short(pkg), len(unexpected))
+		fmt.Fprintf(out, "FAIL %-12s reaches %d module(s) %s does not allow:\n",
+			short(pkg), len(unexpected), g.decision)
 		for _, u := range unexpected {
 			fmt.Fprintf(out, "       %s\n", u)
 		}
@@ -139,8 +164,8 @@ func run(gates map[string][]entry, verbose bool, out, errw io.Writer) int {
 	if failed {
 		fmt.Fprintln(errw, "\nA new dependency in a gated package is a decision, not an "+
 			"upgrade. Either drop it, or add it to `gated` with the reason it is "+
-			"worth what it costs -- specs/009-server.md §2 is the argument the "+
-			"list defends.")
+			"worth what it costs -- the decision named beside each package is "+
+			"the argument its list defends.")
 		return 1
 	}
 	return 0

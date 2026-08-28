@@ -17,7 +17,7 @@ const serverPkg = module + "/server"
 func TestTheGateFailsOnAModuleNobodyAllowed(t *testing.T) {
 	// The server reaches llmdialect. Allow everything except it, which is the
 	// exact shape of an upstream import arriving on a `go get`.
-	allow := without(gated[serverPkg], "latere.ai/x/pkg/llmdialect")
+	allow := without(gated[serverPkg].allow, "latere.ai/x/pkg/llmdialect")
 
 	unexpected, _, err := checkAll(serverPkg, allow)
 	if err != nil {
@@ -34,15 +34,21 @@ func TestTheGateFailsOnAModuleNobodyAllowed(t *testing.T) {
 	}
 
 	var out, errw strings.Builder
-	if code := run(map[string][]entry{serverPkg: allow}, false, &out, &errw); code != 1 {
+	if code := run(map[string]gate{serverPkg: {"009-D14", allow}}, false, &out, &errw); code != 1 {
 		t.Errorf("exit code %d on a violation, want 1", code)
 	}
 	if !strings.Contains(out.String(), "FAIL") ||
 		!strings.Contains(out.String(), "llmdialect") {
 		t.Errorf("the report does not name what failed:\n%s", out.String())
 	}
-	if !strings.Contains(errw.String(), "009-server.md") {
-		t.Errorf("the advice does not point at the argument the list defends:\n%s", errw.String())
+	// The decision that owns the list is named on the failing line, not in the
+	// advice: two packages are gated for two different reasons, and a message
+	// naming only one would misdirect half of them.
+	if !strings.Contains(out.String(), "009-D14") {
+		t.Errorf("the report does not name the decision the list defends:\n%s", out.String())
+	}
+	if !strings.Contains(errw.String(), "not an upgrade") {
+		t.Errorf("the advice does not say a dependency is a decision:\n%s", errw.String())
 	}
 }
 
@@ -60,12 +66,16 @@ func TestTheShippedListIsTheOneTheBuildNeeds(t *testing.T) {
 	if code := run(gated, true, &out, &errw); code != 0 {
 		t.Errorf("exit code %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errw.String())
 	}
-	for pkg, allow := range gated {
-		_, matched, err := checkAll(pkg, allow)
+	for pkg, g := range gated {
+		_, matched, err := checkAll(pkg, g.allow)
 		if err != nil {
 			t.Fatalf("checkAll %s: %v", pkg, err)
 		}
-		for _, e := range allow {
+		if g.decision == "" {
+			t.Errorf("%s is gated and no decision owns it; a failure would name "+
+				"this file rather than the argument the list defends", short(pkg))
+		}
+		for _, e := range g.allow {
 			if matched[e.prefix] == "" {
 				t.Errorf("%s reaches %s on none of the %d platforms; the "+
 					"allowance is stale, and a prefix no build uses can only "+
@@ -88,7 +98,7 @@ func TestTheShippedListIsTheOneTheBuildNeeds(t *testing.T) {
 // answer is not.
 func TestAnUnreadableBuildIsNotAViolation(t *testing.T) {
 	var errw strings.Builder
-	code := run(map[string][]entry{module + "/no/such/package": nil}, false, io.Discard, &errw)
+	code := run(map[string]gate{module + "/no/such/package": {"009-D14", nil}}, false, io.Discard, &errw)
 	if code != 2 {
 		t.Errorf("exit code %d on an unreadable build, want 2", code)
 	}
