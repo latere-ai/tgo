@@ -542,30 +542,67 @@ routes and their streaming forms, the admission refusal, and `cache_salt`.
   arrival stamp is designed, tested in 021 and unreachable from here until
   something calls `Scheduler.Evict`.
 
-**Not built.** Passes 2 and 3 of [§14](#14-this-is-not-one-pass), and they are
-the ones that change what a deployment gets by default.
+### Pass 2
 
-*Pass 2*: [§7](#7-the-empty-salt-means-the-opposite-thing-under-a-block-pool)'s
-synthesized per-request salt, so an unsalted request shares with nothing rather
-than with everybody — today the server forwards the empty salt and every
-unsalted request hashes into one domain, which is the hole §7 exists to close;
+Shipped 2026-08-29. [§7](#7-the-empty-salt-means-the-opposite-thing-under-a-block-pool)'s
+per-request salt, 022-D7's per-request reserve,
 [§8](#8-sessions-means-two-things-today-and-neither-of-them-afterwards)'s
-`--slots` and `--kv`, the deprecated `--sessions`, and the rest of the startup
-report; 022-D7's per-request reserve, which changes `Scheduler.Admit`'s
-signature and [021](021-admission-queue.md)'s `Admitter` with it; and removing
-[019 §8.6](019-session-affinity.md)'s startup refusal, which §4 says stops being
-necessary once every waiter is inside one queue.
+`--slots` and `--kv` with `--sessions` as the deprecated alias, and
+[019 §8.6](019-session-affinity.md)'s refusal turned off for the engine that no
+longer needs it.
 
-*Pass 3*: the default flip, and [020](020-device-sampling.md)'s measurement
-deciding what moves off the host.
+**§7 was a live isolation hole and its test measures it.** Without the minted
+salt, `TestUnsaltedRequestsDoNotShareBlocks` reuses **128 positions** of another
+request's prompt — the second caller's first token arrives fast, which is a
+membership test over the first one's prompt.
 
-*Rows of [§11](#11-tests) not written*: `TestBatchedThroughputBeatsSerial`,
+**What diverged**, and why the code is right.
+
+- **The runner mints the salt, not the server.** §7 puts it in the server on the
+  argument that the server has a per-request identity. So does every other
+  caller of a `Runner`, and leaving it to the server leaves all of them with the
+  hole — which is the shape `server.Wrap` already had once, when it dropped
+  `cache_salt` for a week and nothing noticed. 022-D8's conclusion is kept and
+  its placement is superseded.
+- **The minted salt carries sixteen random bytes, not a counter.** A caller's
+  salt is used verbatim, so a predictable namespace is one a request can name
+  and share into. `TestAMintedSaltCannotBeNamed` is the case.
+- **019 §8.6's refusal is conditional, not removed.** §4 says it "stops being
+  necessary"; it stops being necessary *for an engine that queues*. A pooled
+  engine still makes the surplus wait inside `NewSession` where this package
+  neither counts it nor times it out, so `server.New` still refuses that
+  configuration and now accepts a concurrency above the slot count for a
+  `queuedEngine`.
+- **Turning it off needed the engine's refusals on the wire first.**
+  `sessionError` gained three classes: a full queue and an elapsed budget are
+  429 with the Retry-After the engine's own budget promises, and a client that
+  hung up while queued is a 499 rather than a failure. Without that, dropping
+  the refusal would have turned a bounded wait into a 500.
+- **`Scheduler.Feasible`'s door refusal wraps `ErrContextExhausted` as well as
+  `prefix.ErrExhausted`.** What it means to a caller is that this request does
+  not fit and never will, which is the same answer a session gives a prompt
+  larger than its cache — and it is what a layer above turns into a refusal
+  rather than a wait.
+- **The default slot count differs by engine**: eight batched, four pooled. §8
+  names 8 and that is the batched number; a pooled session reserves a whole
+  context of key/value cache where a batched slot reserves a page table, so one
+  default for both would be generous for one and wasteful for the other. The
+  report prints which one the deployment got.
+- **`serveReserve` survives 022-D7 as a floor.** The runner passes each
+  request's own budget, so the deployment number is now only what a caller that
+  names none gets — and `NewScheduler` refuses a zero, so there has to be one.
+
+**Not built.** Pass 3 of [§14](#14-this-is-not-one-pass): the default flip, and
+[020](020-device-sampling.md)'s measurement deciding what moves off the host.
+[020 §8](020-device-sampling.md)'s gate is a curve on a Qwen3-0.6B f16
+checkpoint that is not on this machine, so pass 3 waits on that rather than on
+work here.
+
+*Rows of [§11](#11-tests) still not written*: `TestBatchedThroughputBeatsSerial`,
 which is [027](027-batched-benchmarks.md)'s instrument rather than a unit test;
 `TestNoLogitsCopyPerToken`, which needs a fake batch that poisons a slot's
-buffer; `TestUnsaltedRequestsDoNotShareBlocks` and
-`TestSaltedRequestsShareBlocks`, which are §7's pair and belong with the salt
-that makes the first of them true; and `TestCancelledSlotProducesNoTokens`,
-asserted here as a postcondition on the scheduler rather than on a grammar.
+buffer; and `TestCancelledSlotProducesNoTokens`, asserted here as a
+postcondition on the scheduler rather than on a grammar. §7's pair is written.
 
 ## Decision record
 

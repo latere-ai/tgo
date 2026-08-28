@@ -147,7 +147,7 @@ where the code is, what diverged, and what is open.
 | [018](018-hybrid-models.md) | complete | the two linear-attention blocks, and what a hybrid still needs | — |
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
 | [021](021-admission-queue.md) | complete | one queue in front of admission, so a full batch defers rather than refuses | — |
-| [022](022-batched-serving.md) | implemented | the server drives a scheduler; batched serving becomes the default | §14's passes 2 and 3: the synthesized salt, `--slots`/`--kv`, the per-request reserve, and the default flip |
+| [022](022-batched-serving.md) | implemented | the server drives a scheduler; batched serving becomes the default | §14's pass 3: the default flip, which waits on 020's checkpoint |
 | [030](030-logprobs.md) | implemented | reporting the distribution a token was drawn from | the three `llmdialect` routes, whose IR has no field for a logprob |
 
 **What is next.** Eight specs, each scoped to be finished in one pass. Four are
@@ -217,11 +217,12 @@ idle one, and today `server/` imports no `Scheduler`:
    3. Its oracle is 006's host path, which is why the top-*k* fix came first.
 5. **The admission queue** ([021](021-admission-queue.md)). **Built**, Wave 13.
 6. **The server drives the scheduler** ([022](022-batched-serving.md)). Three
-   passes ([022 §14](022-batched-serving.md)). **Pass 1 is built**, opt-in
-   behind `--batched`: the scheduler engine, the driver goroutine, the
-   channel-backed stream and per-slot host sampling. *Pass 2* is the synthesized
-   salt, `--slots`/`--kv`, the per-request reserve and the report — *medium*,
-   blocked by nothing. *Pass 3* flips the default and is where 4 lands.
+   passes ([022 §14](022-batched-serving.md)). **Passes 1 and 2 are built**,
+   opt-in behind `--batched`: the scheduler engine, the driver goroutine, the
+   channel-backed stream, per-slot host sampling, the per-request salt and
+   reserve, `--slots`/`--kv`, and the 429 the engine's own queue raises.
+   *Pass 3* flips the default and is where 4 lands, so it waits on 3's
+   checkpoint.
 7. **Instrument the batched path** ([027](027-batched-benchmarks.md)), then the
    **performance gate** ([028](028-performance-gate.md)), which needs a baseline
    worth committing.

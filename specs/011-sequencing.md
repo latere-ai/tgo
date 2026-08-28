@@ -305,6 +305,53 @@ it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
 remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
 and it blocks no milestone.
 
+### 2026-08-29 — Wave 15: an unsalted request shares with nothing
+
+[022](022-batched-serving.md)'s second pass. The headline is a correctness fix
+rather than a feature: under a shared block pool, a request carrying no
+`cache_salt` was sharing with **everybody**.
+
+[016-D7](016-prefix-cache.md) and 019-D3 both say the opposite, and under a
+pooled session they are right by construction because routing compares the key.
+Under the pool the seed's domain is empty for `CacheProcess`, so every unsalted
+request hashed into one domain and two tenants with the same system prompt
+seeded identically — the second one's first token arrives fast, which is a
+membership test over the first one's prompt.
+`TestUnsaltedRequestsDoNotShareBlocks` reuses 128 positions of another request's
+prompt without the fix.
+
+**The runner mints the salt and not the server**, which is where
+[022 §7](022-batched-serving.md) puts it. The server has a per-request identity
+and so does every other caller of a `Runner`, and leaving it to the server
+leaves all of them with the hole — the shape `server.Wrap` already had once,
+when it dropped `cache_salt` for a week and nothing noticed. And the minted salt
+carries **sixteen random bytes** rather than a counter: a caller's salt is used
+verbatim, so a predictable namespace is one a request can name and share into.
+
+**022-D7: the reserve is the request's own budget.** One $R$ for the whole
+deployment is either larger than most requests need, which admits fewer
+sequences than the device holds, or smaller than some request needs, which is
+the admission the promise exists to prevent — and the request already carries
+the number.
+
+**The wait moved into the engine, so the 429 moved with it.**
+[019 §8.6](019-session-affinity.md) refuses a concurrency above what the engine
+runs at once, because a pooled engine makes the surplus wait inside `NewSession`
+where `server` neither counts it nor times it out. A batched engine answers for
+its own wait, so the refusal is now conditional on that rather than removed —
+and turning it off first required the engine's refusals to reach the wire as
+what they are: a full queue and an elapsed budget are 429 with the engine's own
+Retry-After, and a client that hung up while queued is a 499. Without that,
+dropping the refusal would have turned a bounded wait into a 500.
+
+**`--sessions` was two numbers and is now the old name for one of them.**
+`--slots` is how many requests generate at once and `--kv` is the shared pool in
+positions. A slot costs a different thing under each engine — a context of
+key/value cache pooled, a page table batched — so the default is eight batched
+and four pooled and the report says which. `--kv` under a scope that has no
+shared pool is refused rather than ignored: a number an operator passed and
+nothing read is the shape of a deployment that thinks it configured something.
+
 ### 2026-08-28 — Wave 14: several conversations in one forward pass, opt-in
 
 [022](022-batched-serving.md)'s first pass is built, which is the third and last
