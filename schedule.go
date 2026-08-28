@@ -39,6 +39,10 @@ type schedState struct {
 	// step sampled.
 	feed int
 
+	// reused is how many leading prompt positions the pool already held at
+	// admission. prefilled starts there and then moves; this does not.
+	reused int
+
 	// arrived orders admission for eviction. Last arrived is first evicted
 	// (008-D5), which bounds the worst-case latency of the sequences already
 	// in flight rather than spreading the damage across all of them.

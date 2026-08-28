@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"golang.design/x/accel"
 	"golang.design/x/accel/tensor"
@@ -298,13 +299,26 @@ func (b *Batch) Length(slot int) int {
 // can keep is not a lifetime, and the copy that fixes it is host-to-host
 // against a readback of the same bytes off the device.
 func (b *Batch) Step(work []Work) ([][]float32, error) {
+	out, _, err := b.step(work)
+	return out, err
+}
+
+// step is [Batch.Step] with the three device terms measured.
+//
+// The split is [Session.run]'s and means the same things: submit is building
+// the bindings and handing the plan to the queue, device is the fence wait, and
+// readback is the logits coming back. specs/017-benchmarks.md §1 treats the
+// four terms as exhaustive, so a batched loop that recorded a wall clock under
+// one of their names would report a device cost as host time.
+func (b *Batch) step(work []Work) ([][]float32, timings, error) {
+	var t timings
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
-		return nil, errors.New("tgo: the batch is closed")
+		return nil, t, errors.New("tgo: the batch is closed")
 	}
 	if len(work) == 0 {
-		return nil, errors.New("tgo: a step with no work computes nothing")
+		return nil, t, errors.New("tgo: a step with no work computes nothing")
 	}
 
 	members := make([]model.Member, len(b.slots))
@@ -312,21 +326,21 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	total := 0
 	for _, w := range work {
 		if err := b.usable(w.Slot); err != nil {
-			return nil, err
+			return nil, t, err
 		}
 		if seen[w.Slot] {
-			return nil, fmt.Errorf("tgo: slot %d appears twice in one step; a slot is "+
+			return nil, t, fmt.Errorf("tgo: slot %d appears twice in one step; a slot is "+
 				"one sequence and its tokens are consecutive", w.Slot)
 		}
 		seen[w.Slot] = true
 		if len(w.Tokens) == 0 {
-			return nil, fmt.Errorf("tgo: slot %d contributes no tokens; a slot with "+
+			return nil, t, fmt.Errorf("tgo: slot %d contributes no tokens; a slot with "+
 				"nothing to do is absent from the work rather than empty in it", w.Slot)
 		}
 		total += len(w.Tokens)
 	}
 	if total > b.rows {
-		return nil, fmt.Errorf("tgo: %d tokens do not fit a batch sized for %d",
+		return nil, t, fmt.Errorf("tgo: %d tokens do not fit a batch sized for %d",
 			total, b.rows)
 	}
 
@@ -338,7 +352,7 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	for _, w := range work {
 		s := b.slots[w.Slot]
 		if err := s.reserve(w.Tokens); err != nil {
-			return nil, fmt.Errorf("tgo: slot %d: %w", w.Slot, err)
+			return nil, t, fmt.Errorf("tgo: slot %d: %w", w.Slot, err)
 		}
 		members[w.Slot].Tokens = w.Tokens
 		members[w.Slot].Pages = s.pages
@@ -346,26 +360,27 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 
 	rows, err := b.buckets.For(total)
 	if err != nil {
-		return nil, fmt.Errorf("tgo: %w", err)
+		return nil, t, fmt.Errorf("tgo: %w", err)
 	}
 	step, err := model.NewBatchStep(b.m.cfg, rows, members, CacheBlock, b.m.blocks.positions)
 	if err != nil {
-		return nil, err
+		return nil, t, err
 	}
 	b.host = step
 
 	plan, err := b.m.plan(rows, b.m.blocks.positions, CacheBlock, len(b.slots), b.m.blocks.dtype)
 	if err != nil {
-		return nil, err
+		return nil, t, err
 	}
 	bind, err := b.bindings(rows)
 	if err != nil {
-		return nil, err
+		return nil, t, err
 	}
 
 	b.m.mu.Lock()
 	defer b.m.mu.Unlock()
 	q := b.m.dev.Queue()
+	mark := time.Now()
 	for _, wr := range []struct {
 		buf  *accel.Buffer
 		data any
@@ -375,7 +390,7 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 		{b.extents, step.Extents}, {b.last, step.Last},
 	} {
 		if err := q.WriteBuffer(wr.buf, 0, wr.data); err != nil {
-			return nil, fmt.Errorf("tgo: binding a batched step's inputs: %w", err)
+			return nil, t, fmt.Errorf("tgo: binding a batched step's inputs: %w", err)
 		}
 	}
 	table := make([]uint32, len(b.slots)*b.m.blocks.maxPages())
@@ -385,12 +400,17 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 		}
 	}
 	if err := q.WriteBuffer(b.pageBuf, 0, table); err != nil {
-		return nil, fmt.Errorf("tgo: binding the batch's page tables: %w", err)
+		return nil, t, fmt.Errorf("tgo: binding the batch's page tables: %w", err)
 	}
-	if err := plan.Submit(q, bind).Wait(); err != nil {
-		return nil, fmt.Errorf("tgo: submitting a %d-slot step of %d tokens: %w",
+	fence := plan.Submit(q, bind)
+	t.submit = time.Since(mark)
+	mark = time.Now()
+	if err := fence.Wait(); err != nil {
+		return nil, t, fmt.Errorf("tgo: submitting a %d-slot step of %d tokens: %w",
 			len(work), total, err)
 	}
+	t.device = time.Since(mark)
+	mark = time.Now()
 	// Only the rows this step produced, as one read.
 	//
 	// A batched readback is V floats per slot and V is 151936, so a step is
@@ -411,8 +431,9 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	v := b.m.cfg.VocabSize
 	span := b.hLogits[lo*v : (hi+1)*v]
 	if err := q.ReadBuffer(b.logits, lo*v, span); err != nil {
-		return nil, fmt.Errorf("tgo: reading a batched step's logits back: %w", err)
+		return nil, t, fmt.Errorf("tgo: reading a batched step's logits back: %w", err)
 	}
+	t.readback = time.Since(mark)
 
 	// The step landed, so the slots advance and their complete blocks are
 	// offered to the pool. After the step and never before: a published block
@@ -422,7 +443,7 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 	for i, w := range work {
 		s := b.slots[w.Slot]
 		if err := s.commit(w.Tokens); err != nil {
-			return nil, fmt.Errorf("tgo: slot %d: %w", w.Slot, err)
+			return nil, t, fmt.Errorf("tgo: slot %d: %w", w.Slot, err)
 		}
 		s.history = append(s.history, w.Tokens...)
 		s.length += len(w.Tokens)
@@ -432,7 +453,7 @@ func (b *Batch) Step(work []Work) ([][]float32, error) {
 		copy(s.out, b.hLogits[w.Slot*v:(w.Slot+1)*v])
 		out[i] = s.out
 	}
-	return out, nil
+	return out, t, nil
 }
 
 // usable reports whether a slot index names a slot of a live batch.

@@ -66,22 +66,34 @@ type Report struct {
 	Dropped int `json:"dropped"`
 }
 
+// Steps is the raw observations, oldest first.
+//
+// [Recorder.Report] aggregates, and aggregation drops the fields a distribution
+// has no place for -- the batch width among them, which is the number
+// specs/022-batched-serving.md §11's gate reads. This is for a caller that
+// needs one of those. It allocates, so it belongs off the hot path.
+//
+// Order matters here where it does not in a quantile: a report whose entries
+// are rotated by an arbitrary amount is one nobody can line up against a log.
+func (r *Recorder) Steps() []Step {
+	if r == nil {
+		return nil
+	}
+	out := make([]Step, 0, r.n)
+	for i := range r.n {
+		out = append(out, r.steps[(r.first+i)%len(r.steps)])
+	}
+	return out
+}
+
 // Report aggregates what has been recorded. It allocates and sorts, so it
 // belongs off the hot path; a nil or disabled Recorder returns the zero Report
 // with its share maps populated.
 func (r *Recorder) Report() Report {
-	var steps []Step
 	var ttfts []time.Duration
 	var dropped int
+	steps := r.Steps()
 	if r != nil {
-		// Read the ring oldest-first. Order does not change a quantile, but it
-		// does change what a reader sees in a dump of Steps, and a report whose
-		// entries are rotated by an arbitrary amount is one nobody can line up
-		// against a log.
-		steps = make([]Step, 0, r.n)
-		for i := range r.n {
-			steps = append(steps, r.steps[(r.first+i)%len(r.steps)])
-		}
 		ttfts = make([]time.Duration, 0, r.nttft)
 		for i := range r.nttft {
 			ttfts = append(ttfts, r.ttfts[(r.ttftFirst+i)%len(r.ttfts)])

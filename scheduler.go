@@ -174,9 +174,21 @@ func (s *Scheduler) Admit(prompt []int, salt string) (int, error) {
 		// about to submit next. That is one request silently rewriting
 		// another's prompt, and both answers stay fluent.
 		live: true, prompt: append([]int(nil), prompt...),
-		prefilled: reused, arrived: s.next,
+		prefilled: reused, reused: reused, arrived: s.next,
 	}
 	return free, nil
+}
+
+// Reused is how many leading positions of a slot's prompt the shared pool
+// already held when it was admitted, which is the prefill this request did not
+// pay for. It is [Usage.CachedPromptTokens] for a caller holding a slot.
+func (s *Scheduler) Reused(slot int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if slot < 0 || slot >= len(s.slots) || !s.slots[slot].live {
+		return 0
+	}
+	return s.slots[slot].reused
 }
 
 // Finish frees a slot and gives its blocks back.
@@ -260,18 +272,28 @@ type StepResult struct {
 // are read once for both -- which is what makes chunking recover throughput
 // rather than only bound latency (§5).
 func (s *Scheduler) Step() (StepResult, error) {
+	res, _, err := s.step()
+	return res, err
+}
+
+// step is [Scheduler.Step] with the three device terms measured, for a caller
+// that instruments the batched loop. specs/017-benchmarks.md §1 treats the four
+// terms as exhaustive, and a wall clock recorded under one of their names would
+// report a device cost as host time.
+func (s *Scheduler) step() (StepResult, timings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var t timings
 	p, err := nextStep(s.slots, s.chunk, s.b.rows)
 	if err != nil {
-		return StepResult{}, err
+		return StepResult{}, t, err
 	}
 	if len(p.Work) == 0 {
-		return StepResult{}, nil
+		return StepResult{}, t, nil
 	}
-	out, err := s.b.Step(p.Work)
+	out, t, err := s.b.step(p.Work)
 	if err != nil {
-		return StepResult{}, err
+		return StepResult{}, t, err
 	}
 	res := StepResult{PrefillTokens: p.Prefill, Decodes: p.Decode}
 	for i, w := range p.Work {
@@ -291,7 +313,7 @@ func (s *Scheduler) Step() (StepResult, error) {
 	// pass raced with a release would otherwise sleep until the next one. The
 	// cost of a signal nobody needed is one re-evaluation over the waiter list.
 	s.signal()
-	return res, nil
+	return res, t, nil
 }
 
 // Feed sets the token a slot contributes next.
