@@ -88,6 +88,9 @@ func serveFlagSet() (*flag.FlagSet, *serveFlags) {
 			"pooled sessions, which is the concurrency and the reuse depth "+
 				"(0 takes 4, or fewer if the device holds fewer)"),
 		prefixCache: registerScope(fs),
+		batched: fs.Bool("batched", false,
+			"put every in-flight request in one forward pass; implies "+
+				"--prefix-cache process"),
 	}
 }
 
@@ -106,6 +109,7 @@ type serveFlags struct {
 	addr, precision, device *string
 	public                  *bool
 	prefixCache             *scopeFlag
+	batched                 *bool
 	context, sessions       *int
 }
 
@@ -134,6 +138,23 @@ func parseServe(args []string) (serveOptions, error) {
 		return serveOptions{}, fmt.Errorf("%w: --sessions is %d; a pool holds at least one "+
 			"conversation", errUsage, *f.sessions)
 	}
+	// 022-D1: the batched path and the process scope are one configuration,
+	// because NewBatch refuses a model with no shared block pool. So --batched
+	// implies the scope rather than failing later with an error about a pool
+	// the operator never mentioned -- and an operator who asked for a different
+	// scope is told the two cannot both hold rather than having theirs
+	// overwritten.
+	scope := f.prefixCache.scope
+	if *f.batched {
+		if f.prefixCache.set && scope != tgo.CacheProcess {
+			return serveOptions{}, fmt.Errorf("%w: --batched needs --prefix-cache "+
+				"process and this is %s; sequences that step together have different "+
+				"lengths, so a contiguous per-session cache would pad every one of "+
+				"them to the longest (specs/022-batched-serving.md 022-D1)",
+				errUsage, scope)
+		}
+		scope = tgo.CacheProcess
+	}
 	addr := strings.TrimSpace(*f.addr)
 	if addr == "" {
 		addr = server.DefaultAddr
@@ -148,7 +169,7 @@ func parseServe(args []string) (serveOptions, error) {
 	return serveOptions{
 		Dir: dir, Addr: addr, Name: modelID(dir), Public: *f.public, Sessions: *f.sessions,
 		Engine: engineOptions{Precision: policy, Context: *f.context, Device: dev,
-			PrefixCache: f.prefixCache.scope, Sessions: *f.sessions},
+			PrefixCache: scope, Sessions: *f.sessions, Batched: *f.batched},
 	}, nil
 }
 
@@ -265,8 +286,19 @@ var openServable = func(dir, name string, o engineOptions) (servable, error) {
 	}
 	i := m.Info()
 	var pool *server.PoolEngine
+	var batch *server.RunnerEngine
 	return servable{
 		Pool: func(sessions int) (server.Engine, error) {
+			if o.Batched {
+				e, err := server.WrapRunner(m, name, tgo.RunnerOptions{
+					Slots: sessions, Reserve: serveReserve(o.Context),
+				})
+				if err != nil {
+					return nil, err
+				}
+				batch = e
+				return e, nil
+			}
 			p, err := server.WrapPool(m, name, sessions)
 			if err != nil {
 				return nil, err
@@ -283,9 +315,32 @@ var openServable = func(dir, name string, o engineOptions) (servable, error) {
 			if pool != nil {
 				errs = append(errs, pool.Close())
 			}
+			if batch != nil {
+				errs = append(errs, batch.Close())
+			}
 			return errors.Join(append(errs, m.Close())...)
 		},
 	}, nil
+}
+
+// serveReserve is §3's R for a batched deployment: how many positions beyond
+// its prompt an admitted sequence holds blocks for.
+//
+// [tgo.DefaultReserve], capped at half the context. The cap is what keeps the
+// promise payable on a short context: a reserve larger than the context admits
+// nobody, because ceil((T+R)/B) is then more blocks than one sequence's share
+// of the pool. It is one number for the whole deployment, which
+// [022-D7](../../specs/022-batched-serving.md) makes per request in a later
+// pass.
+func serveReserve(context int) int {
+	r := tgo.DefaultReserve
+	if half := context / 2; r > half {
+		r = half
+	}
+	if r < tgo.CacheBlock {
+		r = tgo.CacheBlock
+	}
+	return r
 }
 
 // admission is specs/009-server.md §6's limit with the terms that produced it.
@@ -521,8 +576,13 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 		fmt.Fprintf(w, "  %-4s %-22s %s\n", r.Method, r.Path, r.What)
 	}
 
-	fmt.Fprintf(w, "\nsessions   %d pooled, reserved now and held until this process exits\n",
-		srv.Concurrency())
+	if o.Engine.Batched {
+		fmt.Fprintf(w, "\nslots      %d, and every in-flight request is in one forward pass\n",
+			srv.Concurrency())
+	} else {
+		fmt.Fprintf(w, "\nsessions   %d pooled, reserved now and held until this process exits\n",
+			srv.Concurrency())
+	}
 	fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
 		humanBytes(int64(adm.Sessions)*adm.PerSession), adm.Sessions,
 		humanBytes(adm.PerSession), rep.Memory.Context)
@@ -531,10 +591,22 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 	fmt.Fprintf(w, "  admission         %d generating at once, %d waiting, refused with 429 after %s\n",
 		srv.Concurrency(), server.DefaultQueue, humanDuration(server.DefaultQueueWait))
 	fmt.Fprintf(w, "  prefix cache      %s\n", prefixCacheLine(o.Engine.PrefixCache))
-	fmt.Fprintf(w, "  note              the device pool is a cap on one allocation, not free memory;\n"+
-		"                    without batching, concurrent requests interleave rather than\n"+
-		"                    go faster, and a session's cache is not returned between requests\n")
+	fmt.Fprintf(w, "  note              %s\n", batchingNote(o.Engine.Batched))
 	fmt.Fprintf(w, "\nCtrl-C stops it, letting in-flight requests finish.\n")
+}
+
+// batchingNote is what the concurrency buys, which is a different thing under
+// each engine and is the sentence an operator reads before believing a number.
+func batchingNote(batched bool) string {
+	if batched {
+		return "the device pool is a cap on one allocation, not free memory;\n" +
+			"                    concurrent requests share one forward pass, so the weights are\n" +
+			"                    read once for all of them, and their key/value state is one\n" +
+			"                    shared pool rather than a reservation each"
+	}
+	return "the device pool is a cap on one allocation, not free memory;\n" +
+		"                    without batching, concurrent requests interleave rather than\n" +
+		"                    go faster, and a session's cache is not returned between requests"
 }
 
 // prefixCacheLine says what --prefix-cache did, in the terms an operator

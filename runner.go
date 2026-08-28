@@ -175,12 +175,6 @@ func (r *Runner) Slots() int { return r.sched.Slots() }
 // what it measured (021 §7).
 func (r *Runner) Queue() *Queue { return r.q }
 
-// Ticket stamps a request's arrival for [Runner.Chat] and [Runner.Complete].
-//
-// One per request, not one per call: a request the scheduler evicts and that
-// its caller resubmits re-enters where it arrived (021-D5).
-func (r *Runner) Ticket() Ticket { return r.q.NewTicket() }
-
 // Chat renders messages through the model's template and generates.
 func (r *Runner) Chat(ctx context.Context, req RunRequest, msgs []chat.Message,
 	p Policy) (*SlotStream, error) {

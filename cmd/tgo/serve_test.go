@@ -900,6 +900,13 @@ func TestServeReportsThePoolAndWhatItReuses(t *testing.T) {
 			"1 pooled",
 			"1 x " + humanBytes(fakeCacheBytes),
 		}},
+		// The two lines that stop being true under a batch: what the number
+		// counts, and what concurrency buys.
+		{"batched", []string{"--batched"}, []string{
+			"every in-flight request is in one forward pass",
+			"the weights are\n                    read once for all of them",
+			"on, shared across every session",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr strings.Builder
@@ -1064,5 +1071,64 @@ func TestServePoolSizeIsTheAdmissionLimit(t *testing.T) {
 					"the two are one number", tc.args, got, built.sessions)
 			}
 		}()
+	}
+}
+
+// TestServeBatchedImpliesTheProcessScope is 022-D1 at the command line: the
+// batched path and the process scope are one configuration, because a batch
+// refuses a model with no shared block pool.
+//
+// So --batched sets the scope rather than failing later with an error about a
+// pool the operator never mentioned, and an operator who asked for a different
+// scope is told the two cannot both hold rather than having theirs overwritten.
+func TestServeBatchedImpliesTheProcessScope(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		scope tgo.CacheScope
+	}{
+		{"bare", []string{"--batched"}, tgo.CacheProcess},
+		{"asked for the same scope", []string{"--batched", "--prefix-cache=process"},
+			tgo.CacheProcess},
+		{"not asked for at all", nil, tgo.CacheOff},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, err := parseServe(append(tc.args, filepath.Join("models", "qwen3")))
+			if err != nil {
+				t.Fatalf("parseServe(%v): %v", tc.args, err)
+			}
+			if o.Engine.PrefixCache != tc.scope {
+				t.Errorf("scope = %v, want %v", o.Engine.PrefixCache, tc.scope)
+			}
+			if want := len(tc.args) > 0; o.Engine.Batched != want {
+				t.Errorf("Batched = %v, want %v", o.Engine.Batched, want)
+			}
+		})
+	}
+	for _, args := range [][]string{
+		{"--batched", "--prefix-cache=session"},
+		{"--batched", "--prefix-cache=off"},
+	} {
+		if _, err := parseServe(append(args, "d")); err == nil {
+			t.Errorf("parseServe(%v) was accepted; a batch has no shared pool under "+
+				"either of those scopes", args)
+		}
+	}
+}
+
+// TestServeReserveFitsTheContext is what keeps §3's promise payable on a short
+// context: a reserve larger than the context admits nobody, because
+// ceil((T+R)/B) is then more blocks than one sequence's share of the pool.
+func TestServeReserveFitsTheContext(t *testing.T) {
+	for _, c := range []struct{ context, want int }{
+		{4096, tgo.DefaultReserve},
+		{1024, tgo.DefaultReserve},
+		{256, 128},
+		{32, tgo.CacheBlock},
+		{8, tgo.CacheBlock},
+	} {
+		if got := serveReserve(c.context); got != c.want {
+			t.Errorf("serveReserve(%d) = %d, want %d", c.context, got, c.want)
+		}
 	}
 }

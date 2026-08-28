@@ -5,7 +5,7 @@
 //
 //	tgo run   [--prompt P] [--max-tokens N] [--temp T] [--seed S] [--precision f16|int8|auto] <model-dir>
 //	tgo bench [--tokens N] [--prompt-tokens N] [--batch N] [--json out.json] <model-dir>
-//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--sessions N] [--prefix-cache S] [--device D] <model-dir>
+//	tgo serve [--addr host:port] [--public] [--precision P] [--context C] [--sessions N] [--prefix-cache S] [--batched] [--device D] <model-dir>
 //	tgo info  <model-dir>
 //	tgo pull  [--revision R] [--token T] <repo-id>
 //
@@ -149,6 +149,13 @@ serve flags:
                       A warm answer matches a cold one in distribution rather
                       than bit for bit (default off; bare --prefix-cache is
                       session)
+  --batched           put every in-flight request in one forward pass instead
+                      of giving each one a session of its own, so the weights
+                      are read once for all of them rather than once each.
+                      Implies --prefix-cache process, because sequences that
+                      step together have different lengths and a per-session
+                      cache would pad every one of them to the longest
+                      (default off)
   --device D          auto, cpu or metal (default auto)
 
 info flags:

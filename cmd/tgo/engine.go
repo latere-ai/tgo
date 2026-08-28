@@ -136,6 +136,15 @@ type engineOptions struct {
 	// deliverable, and a throughput number without it cannot say whether a
 	// regression is tgo's or accel's. Nil disables the instrument (017-D3).
 	Recorder *bench.Recorder
+
+	// Batched puts every in-flight request in one forward pass, rather than
+	// giving each of them a session of its own (specs/022-batched-serving.md).
+	//
+	// Off unless asked for. It is the change with the largest effect on what a
+	// deployment measures -- throughput stops being what one sequence gets --
+	// and the pass that makes it the default is the one that cannot be tested
+	// only by the person making it (022-D10).
+	Batched bool
 }
 
 // livePrecision maps the loader's precision onto the engine's.
