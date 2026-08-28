@@ -48,7 +48,7 @@ func adapt(d ir.Dialect, req *ir.Request, ex extras, raw map[string]bool, eng En
 	if aerr != nil {
 		return nil, aerr
 	}
-	pol, aerr := mapPolicy(req, ex, eng.VocabSize())
+	pol, aerr := mapPolicy(d, req, ex, eng.VocabSize())
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -108,6 +108,11 @@ func mapSchema(d ir.Dialect, req *ir.Request, eng Engine, pol *tgo.Policy) *apiE
 	pol.Schema = req.Schema.Schema
 	return nil
 }
+
+// maxTopLogProbs is the wire's ceiling on top_logprobs, which OpenAI documents
+// as 20. It is below sample.TopMaxRounds, so a request that clears it is one
+// tgo can serve.
+const maxTopLogProbs = 20
 
 // schemaField is what one dialect calls the member that asked for a schema.
 // A refusal names what the caller sent rather than what the IR called it.
@@ -269,7 +274,7 @@ func mapTools(tools []ir.Tool) []chat.ToolSpec {
 // max_tokens and the stop strings come from ir.Request, and the seed, the
 // penalties and the bias come from [extras], because the IR has no room for
 // them (§4.1).
-func mapPolicy(req *ir.Request, ex extras, vocab int) (tgo.Policy, *apiError) {
+func mapPolicy(d ir.Dialect, req *ir.Request, ex extras, vocab int) (tgo.Policy, *apiError) {
 	var p tgo.Policy
 	if req.Temperature != nil {
 		p.Temperature = float32(*req.Temperature)
@@ -284,6 +289,23 @@ func mapPolicy(req *ir.Request, ex extras, vocab int) (tgo.Policy, *apiError) {
 		// Only the Anthropic dialect has a top_k field, so on the OpenAI
 		// surfaces the IR never sees one and the raw body is the only source.
 		p.TopK = *ex.topK
+	}
+	// specs/030-logprobs.md §4, and the dialect is why this is not just
+	// `p.LogProbs = ex.logProbs`. Only /v1/completions can encode a logprob,
+	// because llmdialect's ir carries no shape for one, so asking the engine
+	// for them on any other route would run a whole-vocabulary exp per step
+	// and throw the answer away -- which is the cost 030-D4 turns off by
+	// default. The member is reported as a loss on those routes instead.
+	//
+	// The count is bounded here rather than in Policy.check because the
+	// ceiling is the wire's: OpenAI documents top_logprobs at 20, and a caller
+	// asking for 200 has made a mistake worth naming.
+	if ex.topLogProbs > maxTopLogProbs {
+		return p, badRequest("tgo: top_logprobs is %d and the maximum is %d",
+			ex.topLogProbs, maxTopLogProbs)
+	}
+	if d == dialectLegacy {
+		p.LogProbs, p.TopLogProbs = ex.logProbs, ex.topLogProbs
 	}
 	if req.MaxTokens != nil {
 		if *req.MaxTokens <= 0 {

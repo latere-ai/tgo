@@ -42,6 +42,14 @@ type honourCase struct {
 // max_output_tokens and max_completion_tokens are different bugs from
 // max_tokens.
 var honourCases = []honourCase{
+	// specs/030-logprobs.md §4: one member, two Policy fields, one route.
+	// /v1/completions spells the count in `logprobs` itself, and it is the only
+	// surface whose encoder can carry the answer -- llmdialect's ir has no
+	// logprobs shape, so the other three drop it and say so.
+	{field: "LogProbs", wire: "logprobs", route: 3, extra: `,"logprobs":3`,
+		got: func(p tgo.Policy) any { return p.LogProbs }, want: true},
+	{field: "TopLogProbs", wire: "logprobs", route: 3, extra: `,"logprobs":3`,
+		got: func(p tgo.Policy) any { return p.TopLogProbs }, want: 3},
 	{field: "Temperature", wire: "temperature", route: 0, extra: `,"temperature":0.25`,
 		got: func(p tgo.Policy) any { return p.Temperature }, want: float32(0.25)},
 	{field: "TopP", wire: "top_p", route: 0, extra: `,"top_p":0.9`,
@@ -274,7 +282,13 @@ func TestAnAdvisoryFieldRunsAndIsReported(t *testing.T) {
 		// The legacy route's codec is tgo's own, so a member it accepts and does
 		// not act on is one this package has to remember to report: it answers
 		// logprobs:null on every choice.
-		{"logprobs on completions", 3, `,"logprobs":2`, "logprobs"},
+		// logprobs is NOT here for route 3. specs/030-logprobs.md §4 serves it
+		// on /v1/completions, which is the only route whose encoder tgo wrote
+		// and therefore the only one that can carry the shape -- the case
+		// above keeps it as a loss on /v1/chat/completions, where
+		// llmdialect's ir has no field for it. The honourCases table holds
+		// the served half, so the two sides of the same member are asserted
+		// against each other.
 		{"user on completions", 3, `,"user":"u-1"`, "user"},
 		{"thinking budget", 1, `,"thinking":{"type":"enabled","budget_tokens":128}`,
 			"thinking.budget_tokens"},

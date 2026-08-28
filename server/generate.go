@@ -126,8 +126,17 @@ func (s *Server) stream(w http.ResponseWriter, ctx context.Context, front llmdia
 
 	enc := front.NewEventEncoder(w)
 	id := requestID(req.dialect)
+
+	// probs is the tokens the step that produced the pending event reported,
+	// and it is nil on every route but /v1/completions -- [mapPolicy] does not
+	// ask the engine for work no encoder can carry (specs/030-logprobs.md §4).
+	// A streaming request must serve them wherever the whole-body one does, or
+	// a caller gets a number that depends on a flag about delivery.
+	var probs []tgo.TokenProb
 	emit := func(ev ir.Event) bool {
-		if err := enc.Encode(ev); err != nil {
+		err := encodeEvent(enc, ev, probs)
+		probs = nil
+		if err != nil {
 			s.notice("tgo: encoding a %s event: %v", ev.Type, err)
 			return false
 		}
@@ -152,9 +161,11 @@ func (s *Server) stream(w http.ResponseWriter, ctx context.Context, front llmdia
 			return
 		}
 		ev, ok := blocks.translate(st.Event())
+		probs = st.LogProbs()
 		if ok && !emit(ev) {
 			return
 		}
+		probs = nil
 		more = st.Next()
 	}
 	if ev, ok := blocks.closeOpen(); ok {
@@ -184,7 +195,11 @@ func (s *Server) whole(w http.ResponseWriter, ctx context.Context, front llmdial
 	req *request, st Stream) {
 
 	var blocks []ir.Block
+	var probs []tgo.TokenProb
 	for st.Next() {
+		// Appended rather than kept: LogProbs is valid only until the next
+		// Next (specs/030-logprobs.md §2), and the backing array is reused.
+		probs = append(probs, st.LogProbs()...)
 		if ctx.Err() != nil {
 			// Nothing has been written yet on this path, so returning here
 			// would let Go synthesize 200 with an empty body -- which a proxy
@@ -217,14 +232,15 @@ func (s *Server) whole(w http.ResponseWriter, ctx context.Context, front llmdial
 		return
 	}
 
-	body, err := front.EncodeResponse(&ir.Response{
+	resp := &ir.Response{
 		ID:           requestID(req.dialect),
 		Model:        s.eng.Name(),
 		Blocks:       blocks,
 		StopReason:   stopReason(st, req.policy, st.Usage()),
 		StopSequence: st.StopSequence(),
 		Usage:        *usageOf(st.Usage()),
-	})
+	}
+	body, err := encodeResponse(front, resp, probs)
 	if err != nil {
 		s.fail(w, req.dialect, &apiError{kind: errInternal, reason: "internal",
 			msg: fmt.Sprintf("tgo: encoding the response: %v", err)})
@@ -294,6 +310,43 @@ func irBlockType(t chat.BlockType) ir.BlockType {
 		return ir.BlockThinking
 	}
 	return ir.BlockText
+}
+
+// logProbEncoder is the half of a Frontend that can carry per-token
+// probabilities. Only tgo's own /v1/completions codec implements it.
+//
+// An optional interface rather than a field on ir.Response, because the IR is
+// llmdialect's and has no logprobs shape: specs/030-logprobs.md 030-D5 reports
+// that gap rather than reaching past the codec to append a member to a body
+// tgo did not write, which is what 009-D10 exists to prevent.
+type logProbEncoder interface {
+	EncodeResponseWithLogProbs(*ir.Response, []tgo.TokenProb) ([]byte, error)
+}
+
+// encodeResponse hands the probabilities to a Frontend that can carry them, and
+// encodes normally otherwise.
+//
+// probs is empty on the three routes that cannot serve them, because
+// [mapPolicy] does not ask the engine for work no encoder can use.
+func encodeResponse(front llmdialect.Frontend, resp *ir.Response, probs []tgo.TokenProb) ([]byte, error) {
+	if e, ok := front.(logProbEncoder); ok && len(probs) > 0 {
+		return e.EncodeResponseWithLogProbs(resp, probs)
+	}
+	return front.EncodeResponse(resp)
+}
+
+// logProbEventEncoder is the streaming half of [logProbEncoder].
+type logProbEventEncoder interface {
+	EncodeWithLogProbs(ir.Event, []tgo.TokenProb) error
+}
+
+// encodeEvent writes one SSE frame, carrying the step's probabilities where the
+// encoder can hold them.
+func encodeEvent(enc llmdialect.EventEncoder, ev ir.Event, probs []tgo.TokenProb) error {
+	if e, ok := enc.(logProbEventEncoder); ok && len(probs) > 0 {
+		return e.EncodeWithLogProbs(ev, probs)
+	}
+	return enc.Encode(ev)
 }
 
 // usageOf converts one request's token counts.

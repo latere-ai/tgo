@@ -35,6 +35,18 @@ type extras struct {
 	// from the loss report by [honouredSession] rather than by [honoured].
 	cacheSalt string
 
+	// logProbs and topLogProbs are specs/030-logprobs.md §4's two wire shapes,
+	// already reduced to tgo's one.
+	//
+	// The member is a different type on each surface that has it. On
+	// /v1/chat/completions `logprobs` is a bool and `top_logprobs` an int; on
+	// /v1/completions `logprobs` is itself the count of alternatives and there
+	// is no second member. Reading them here rather than in each frontend
+	// keeps one place that knows what tgo does with the answer -- the type is
+	// the dialect's, the meaning is not.
+	logProbs    bool
+	topLogProbs int
+
 	// thinkingOff is the one signal that does not survive into ir.Request:
 	// Anthropic's thinking:{"type":"disabled"} and OpenAI's
 	// reasoning_effort:"none" both decode to no ir.Reasoning at all, which is
@@ -98,8 +110,60 @@ func parseExtras(top map[string]json.RawMessage) (extras, error) {
 	if ex.cacheSalt, err = jsonString(top, "cache_salt"); err != nil {
 		return ex, err
 	}
+	if err := parseLogProbs(top, &ex); err != nil {
+		return ex, err
+	}
 	ex.thinkingOff = thinkingOff(top)
 	return ex, nil
+}
+
+// parseLogProbs reads the two wire shapes of specs/030-logprobs.md §4.
+//
+// A bool `logprobs` is the chat surface's; an integer one is /v1/completions',
+// where the number *is* the count of alternatives. Both are accepted from any
+// body because this does not know the dialect, and neither can be mistaken for
+// the other: a bool is not a number.
+//
+// A member of the wrong type is an error naming the field. A caller who asked
+// for logprobs and is silently given none has a response that looks like a
+// model with nothing to say about its own tokens.
+func parseLogProbs(top map[string]json.RawMessage, ex *extras) error {
+	raw, ok := top["logprobs"]
+	if ok && !isNull(raw) {
+		var b bool
+		var n int
+		switch {
+		case json.Unmarshal(raw, &b) == nil:
+			ex.logProbs = b
+		case json.Unmarshal(raw, &n) == nil:
+			if n < 0 {
+				return fmt.Errorf("logprobs is %d; it is a count of alternatives", n)
+			}
+			// The legacy shape: logprobs:0 asks for the drawn token's own
+			// number and no alternatives, which is not the same as omitting
+			// the member.
+			ex.logProbs, ex.topLogProbs = true, n
+		default:
+			return fmt.Errorf("logprobs must be a boolean or a count")
+		}
+	}
+	n, err := jsonInt(top, "top_logprobs")
+	if err != nil {
+		return err
+	}
+	if n != nil {
+		if *n < 0 {
+			return fmt.Errorf("top_logprobs is %d; it is not negative", *n)
+		}
+		ex.topLogProbs = *n
+	}
+	// top_logprobs without logprobs asks for alternatives to a number the
+	// caller did not ask for, which tgo.Policy refuses. Reading it as a
+	// request for both is what every OpenAI client means by it.
+	if ex.topLogProbs > 0 {
+		ex.logProbs = true
+	}
+	return nil
 }
 
 // jsonString reads an optional string member.

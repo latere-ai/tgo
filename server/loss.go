@@ -51,6 +51,13 @@ var honoured = map[string][]string{
 	"MaxTokens":         {"max_tokens", "max_completion_tokens", "max_output_tokens"},
 	"Stop":              {"stop", "stop_sequences"},
 	"Schema":            {"response_format", "output_format", "text"},
+	// Both reached by one member, and it is not top_logprobs. specs/030-logprobs.md
+	// §4: the only route that can encode a logprob is /v1/completions, whose
+	// member is `logprobs` and whose value *is* the count of alternatives.
+	// `top_logprobs` belongs to /v1/chat/completions, which llmdialect's ir
+	// cannot express, so it reaches no output and stays a loss everywhere.
+	"LogProbs":    {"logprobs"},
+	"TopLogProbs": {"logprobs"},
 }
 
 // honouredSession are the wire names that configure the *session* rather than
@@ -105,7 +112,15 @@ var honouredHere = map[ir.Dialect][]string{
 	ir.DialectOpenAIChat:        {"max_tokens", "max_completion_tokens", "stop", "response_format"},
 	ir.DialectAnthropicMessages: {"max_tokens", "stop_sequences", "output_format"},
 	ir.DialectOpenAIResponses:   {"max_output_tokens", "text"},
-	dialectLegacy:               {"max_tokens", "stop"},
+	// specs/030-logprobs.md §4: one route serves logprobs and it is this one,
+	// because it is the only Frontend tgo wrote. llmdialect's ir carries no
+	// logprobs shape at all, so the three dialects it encodes cannot express
+	// one whatever tgo computes -- 030-D5 reports that rather than reaching
+	// past the codec to append a member to a body it did not write.
+	//
+	// top_logprobs is not here: this surface has no such member, and its
+	// logprobs is itself the count.
+	dialectLegacy: {"max_tokens", "stop", "logprobs"},
 }
 
 // honouredOn is what the subtraction reads: for one dialect, the wire names a

@@ -52,6 +52,15 @@ type fakeEngine struct {
 	// streamErr ends the stream after the script, as a device failure does.
 	streamErr error
 
+	// probs is one entry per scripted *delta*, not per scripted event: a
+	// BlockStart is a boundary the engine draws and not a step that produced a
+	// token, so it reports none. Pairing them with script slots instead would
+	// make every test here encode where the structural events sit.
+	//
+	// A shorter slice than the deltas is a stream that reported none past its
+	// end, which is what a request with Policy.LogProbs unset does.
+	probs [][]tgo.TokenProb
+
 	// stopReason and stopSequence are what the engine says ended the stream.
 	// The zero value is tgo.StopRunning, which is a stream that ended on the
 	// end-of-turn token as far as stopReason is concerned.
@@ -259,10 +268,13 @@ type fakeStream struct {
 	ctx context.Context
 	eng *fakeEngine
 
-	i     int
-	cur   tgo.Event
-	usage tgo.Usage
-	err   error
+	i int
+	// deltas counts the events that carried text, which is what a step
+	// producing a token looks like from out here.
+	deltas int
+	cur    tgo.Event
+	usage  tgo.Usage
+	err    error
 
 	// stopped closes when Next has returned false, whatever the reason. The
 	// cancellation test waits on it rather than on a duration.
@@ -282,6 +294,15 @@ type fakeStream struct {
 
 func (st *fakeStream) StopReason() tgo.StopReason { return st.reason }
 func (st *fakeStream) StopSequence() string       { return st.seq }
+
+// LogProbs returns the entry scripted for the delta just yielded, so a fake
+// stream can drive the encoder without a model.
+func (st *fakeStream) LogProbs() []tgo.TokenProb {
+	if st.cur.Text == "" || st.deltas == 0 || st.deltas > len(st.eng.probs) {
+		return nil
+	}
+	return st.eng.probs[st.deltas-1]
+}
 
 func (st *fakeStream) Next() bool {
 	if st.i > 0 && st.eng.gate != nil {
@@ -303,6 +324,7 @@ func (st *fakeStream) Next() bool {
 	st.i++
 	if st.cur.Text != "" {
 		st.usage.CompletionTokens++
+		st.deltas++
 	}
 	// One recorded step per event, so the metrics path has something to
 	// report. The durations are fixed rather than measured: a test that

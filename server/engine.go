@@ -117,6 +117,11 @@ type Stream interface {
 	// [tgo.StopRunning], and so does one that failed, whose answer is Err.
 	StopReason() tgo.StopReason
 	StopSequence() string
+
+	// LogProbs is the tokens the last Next produced, and is empty unless the
+	// request asked for them. It is valid until the next Next
+	// (specs/030-logprobs.md §2), so a handler that keeps them appends.
+	LogProbs() []tgo.TokenProb
 }
 
 // Wrap adapts a loaded model to [Engine], serving it under the id name.
