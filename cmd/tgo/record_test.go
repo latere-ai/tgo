@@ -297,12 +297,11 @@ func TestHumanFormats(t *testing.T) {
 // TestBreakdownIsReportedAsMissingRatherThanAsZeros is the arm every real run
 // takes today, and the one no other test here reaches.
 //
-// specs/007-engine.md §1 exports no way to set or read the engine's
-// bench.Recorder, so a `tgo bench` against the built engine has a time to first
-// token and no four-way breakdown. A Report from a recorder nothing wrote to
-// marshals as a full set of fields holding zero times and zero shares, which
-// reads as a measurement of an impossibly fast model. The record says the terms
-// are missing, and names the spec that owns the gap.
+// A session opened without a tgo.WithRecorder has a time to first token and no
+// four-way breakdown. A Report from a recorder nothing wrote to marshals as a
+// full set of fields holding zero times and zero shares, which reads as a
+// measurement of an impossibly fast model. The record says the terms are
+// missing, and names the option that supplies them.
 func TestBreakdownIsReportedAsMissingRatherThanAsZeros(t *testing.T) {
 	r := bench.NewRecorder(8)
 	r.TTFT(30 * time.Millisecond)
@@ -312,7 +311,7 @@ func TestBreakdownIsReportedAsMissingRatherThanAsZeros(t *testing.T) {
 	if rec.Breakdown.Available {
 		t.Fatal("a report holding only a time to first token claims to carry the breakdown")
 	}
-	for _, want := range []string{"017-D1", "007-engine.md", "table of zeros"} {
+	for _, want := range []string{"017-D1", "WithRecorder", "table of zeros"} {
 		if !strings.Contains(rec.Breakdown.Note, want) {
 			t.Errorf("the note does not mention %q: %q", want, rec.Breakdown.Note)
 		}
@@ -389,6 +388,32 @@ func TestNewRecordDividesTheThroughput(t *testing.T) {
 // reason. A check that cannot tell "not measured here" from "no such axis"
 // silently stops gating the axis the day it disappears, which is the drift
 // 017-D6 exists to catch.
+// TestAnUnmeasuredAxisNamesAGapThatIsStillOpen is the other half. A note has to
+// cite a spec, and it also has to be true: a note naming a gap somebody closed
+// sends a reader to fix something that works, and nothing here would have said
+// so -- the note for the breakdown claimed specs/007-engine.md §1 exports no
+// way to set a bench.Recorder for three waves after WithRecorder shipped, past
+// a test that only checked it cited a spec.
+func TestAnUnmeasuredAxisNamesAGapThatIsStillOpen(t *testing.T) {
+	// The API each note says is missing, against what the engine exports. A
+	// claim about a name that exists is a claim that has expired.
+	for what, note := range map[string]string{
+		"the breakdown":  noBreakdownNote,
+		"the plan cache": noPlanStatsNote,
+	} {
+		if strings.Contains(note, "no way to set") || strings.Contains(note, "no way to read") {
+			t.Errorf("the note for %s says the engine exports no way to set or read a "+
+				"recorder, and tgo.WithRecorder does exactly that: %q", what, note)
+		}
+	}
+	// WithRecorder is the name the corrected note points a reader at, so a
+	// rename that leaves the note behind is caught here rather than by a reader.
+	if !strings.Contains(noBreakdownNote, "WithRecorder") {
+		t.Error("the breakdown note does not name the option a caller has to pass, " +
+			"which is the whole of what a reader who sees no breakdown needs")
+	}
+}
+
 func TestEveryUnmeasuredAxisIsNamed(t *testing.T) {
 	rec := newRecord(conditions{}, batchAxis{Points: []int{1}, Note: singleBatchNote}, nil)
 	for what, note := range map[string]string{

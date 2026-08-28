@@ -153,13 +153,20 @@ type breakdownFacts struct {
 }
 
 // noBreakdownNote is the reason the four terms can be missing.
+//
+// It said until 2026-08-28 that specs/007-engine.md §1 exports no way to set or
+// read a bench.Recorder, which was true when 017-D7 was filed and stopped being
+// true in Wave 4 when WithRecorder shipped. A note that names a gap somebody
+// closed sends a reader to fix something that works, so this says the one thing
+// that can still produce an empty breakdown: nobody passed a recorder.
 const noBreakdownNote = "The host/submit/device/readback breakdown is not in this record. " +
-	"017-D1 makes that breakdown the deliverable, and the engine of specs/007-engine.md " +
-	"instruments its own decode loop with a bench.Recorder that its public surface (§1) exports " +
-	"no way to set and no way to read, so a process outside that package cannot obtain the four " +
-	"terms. What is left is the wall-clock throughput and the time to first token, and a " +
-	"throughput on its own is precisely the number 017-D1 says cannot attribute a regression to " +
-	"tgo or to accel. It is reported as missing rather than as a table of zeros."
+	"017-D1 makes that breakdown the deliverable, and every term of it comes from a " +
+	"bench.Recorder the caller supplies through tgo.WithRecorder (017-D7). A record without " +
+	"the four terms is therefore a run whose session was opened without one, or one whose " +
+	"steps all measured zero. What is left is the wall-clock throughput and the time to " +
+	"first token, and a throughput on its own is precisely the number 017-D1 says cannot " +
+	"attribute a regression to tgo or to accel. It is reported as missing rather than as a " +
+	"table of zeros."
 
 // noPlanStatsNote is the other row of specs/017-benchmarks.md §3 this record
 // cannot carry.

@@ -291,8 +291,11 @@ func TestCmdBenchOnAnEngineWithNoBreakdown(t *testing.T) {
 	if rec.Breakdown.Available {
 		t.Error("the record claims a breakdown it does not carry")
 	}
-	if !strings.Contains(rec.Breakdown.Note, "007-engine.md") {
-		t.Errorf("the record does not name the gap: %q", rec.Breakdown.Note)
+	// The note names what a reader has to do about it. It cited
+	// specs/007-engine.md until 2026-08-28, on a claim that stopped being true
+	// three waves earlier.
+	if !strings.Contains(rec.Breakdown.Note, "WithRecorder") {
+		t.Errorf("the record does not say how to get a breakdown: %q", rec.Breakdown.Note)
 	}
 	// The throughput and the time to first token are still measured, and the
 	// conditions still qualify them (017-D4).

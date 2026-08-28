@@ -49,11 +49,11 @@
 //     It has one point, and the output says why rather than omitting the column
 //     (017-D5, specs/008-scheduler.md).
 //   - 017-D1's host/submit/device/readback breakdown is the deliverable of
-//     `tgo bench`, and against the engine as it stands it cannot be obtained:
-//     specs/007-engine.md §1 exports no way to set or read the bench.Recorder
-//     its decode loop writes to. The record says the four terms are missing and
-//     names the gap, rather than marshalling a report of zeros that reads as a
-//     measurement. See noBreakdownNote in record.go.
+//     `tgo bench`, and it is obtained: the engine takes the caller's recorder
+//     through tgo.WithRecorder (017-D7, options.go), so every run here carries
+//     the four terms. A record without them is a session opened without a
+//     recorder, and it says so rather than marshalling a report of zeros that
+//     reads as a measurement. See noBreakdownNote in record.go.
 //   - `tgo serve` prints the admission limit with the three terms it was
 //     divided out of, not as a bare count (specs/009-server.md §6). The
 //     available memory in that arithmetic is the device's MaxPoolBytes, which
