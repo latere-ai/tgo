@@ -1,6 +1,6 @@
 ---
 title: "The qwen3_5 architecture: forty-eight linear layers and sixteen softmax ones in one pass"
-status: drafted
+status: implemented
 layer: graph
 depends_on:
   - 000-decisions.md
@@ -799,6 +799,71 @@ Build **B** first. It is the half that is testable with a synthetic fixture, it
 makes the refusals real, and it is what turns "tgo does not know this
 architecture" into "tgo knows this architecture and says what it cannot do yet" —
 which is [000 D1](000-decisions.md)'s output.
+
+## Outcome
+
+**Sub-scope B shipped 2026-08-29**, and its first task — confirming the field
+names — rewrote four of this spec's tables before a line of the parser was
+written. What is built is `model/qwen3_5.go` and `model/qwen3_5_weights.go`: the
+config with its two-level allow list, [§3.2](#32-the-rule)'s schedule and its
+refusals, [§4.5](#45-the-weight-map-read-from-the-checkpoint)'s map, the
+registry entry, and a `Forward` that refuses by name.
+
+**The confirmation is the finding.** [§2](#2-the-config-read-from-the-checkpoint)
+marked every name a guess and said so; four were wrong, and the draft had named
+two of them as "the alternative a reader should expect if these are wrong".
+Both alternatives are what shipped. The one that would have cost most is the
+`text_config` nesting: a parser built from
+[018 §1](018-hybrid-models.md)'s quote reads **zero** for every width, and a
+config of zeros is not a refusal — it is a model with no width. 024-D14 is that
+rule.
+
+**What shipped.** §2's fields, read at two levels with two allow lists; §2.4's
+mRoPE reduction, checked rather than assumed — the parser refuses sections that
+do not partition the rotary pairs, because that partition is the whole of why
+the reduction is exact; §3.2's rule, with both branches and the cross-check;
+§4.5's map, one of two row sets per layer; 024-D13's named ignore set for the
+333 vision and 15 multi-token tensors; §7's table, every row with a test that
+names the field. `model/weights.go` did not change, as §4.5 predicted.
+
+**What diverged.**
+
+- **`Recurrent` carries $H_v$ explicitly**, which [023 §2.2](023-cache-kinds.md)
+  did not. The folding — 48 value heads as 16 bands of 384 — is an identity for
+  the *state* and not for the output norm, which the file ships at `[128]`: one
+  gain per value head. A graph holding only the folded geometry would scale
+  three value heads by one head's gain, which is [C25](010-conformance.md)'s
+  class exactly.
+- **The gate's location is settled and the row is a split, not a tensor.**
+  §4.5 stated both readings and built neither. `q_proj` is `[12288, 5120]` =
+  $2 H d_h$ and there is no `gate_proj`, so the map emits a wider `wq`.
+- **§4.4's evidence is the checkpoint and not ollama.** `in_proj_b` and
+  `in_proj_a` are `[48, 5120]` each. The earlier note cited a fused `in_proj_ba`
+  that `qwen3_5` does not have; the conclusion was right and the artifact was a
+  sibling's, which is the difference [010-D7](010-conformance.md) is about.
+- **`New` takes one argument.** §6.1 writes `New(arch, config)`; it is
+  `New(config)` and reads `architectures[0]` itself. Nothing else in §6.1 moved.
+
+**Not built.**
+
+*Sub-scope A*: [§5.1](#51-partial_rotary_factor-needs-a-field-attentionconfig-does-not-have)'s
+`AttentionConfig.RotaryDim` and [§5.2](#52-attn_output_gate-is-a-fifth-projection-and-it-multiplies-before-o)'s
+gate, both `nn` changes that default to today's behaviour by zero value. They
+are buildable now — the field names they waited on are read — and they are
+small.
+
+*Sub-scope C*: `nn.GatedDelta` and `model/qwen3_5_graph.go`, **blocked on
+[accel#27](https://github.com/golang-design/accel/issues/27)**. The evidence
+that it blocks is now the target checkpoint's own header rather than an
+inference, and `Forward` refuses with that reason rather than returning
+something.
+
+*Also open*: §4.5's `conv1d.weight` row, `[10240, 1, 4]` in the file and
+`[K, C]` in the block. `WeightSpec.Transpose` reverses a rank-2 shape and
+`weights.targetShape` refuses any other rank, so the map states the file's shape
+and the loader cannot yet honour it. That is a `WeightSpec` reshape or a rank-3
+case in the loader, and it belongs with sub-scope C, which is the first thing
+that would load one.
 
 ## Decision record
 

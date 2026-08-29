@@ -305,6 +305,56 @@ it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
 remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
 and it blocks no milestone.
 
+### 2026-08-29 — Wave 17: tgo knows `qwen3_5` and says what it cannot run
+
+[024](024-qwen3-5-architecture.md)'s sub-scope B. The config, the layer
+schedule, the refusals, the weight map and the registry entry are built; the
+forward pass refuses by name, because 48 gated-delta layers give each of 48
+value heads its own decay and accel's gate is per token. That refusal is
+[000 D1](000-decisions.md)'s output rather than a gap in it.
+
+**The first task rewrote the spec.** [024 §2](024-qwen3-5-architecture.md)
+marked every field name a guess, said confirming them was sub-scope B's first
+task, and priced it as one `curl` and half an hour. It was, and **four of the
+draft's readings were wrong** — two of which the draft itself had named as "the
+alternative a reader should expect if these are wrong". Both alternatives are
+what shipped.
+
+The one that would have cost most: **every field the graph needs is under
+`text_config`**, and `ParseConfig` reads the top level. A parser written from
+[018 §1](018-hybrid-models.md)'s quote reads zero for `hidden_size` and every
+other width — and a config of zeros is not a refusal, it is a model with no
+width. That is why the allow list is two levels with two sets: a field at the
+wrong level is now a named refusal.
+
+The other three: the linear projection is **split** into `in_proj_qkv`,
+`in_proj_z`, `in_proj_b` and `in_proj_a` rather than fused into Qwen3-Next's
+two; the output gate has **no tensor of its own** and is the second half of
+`q_proj`, whose 12288 rows are $2 H d_h$; and the tensor prefix is
+`model.language_model.layers.ℓ.`, because a multimodal checkpoint nests the
+text tower beside the vision one.
+
+**And one number that changes a graph.** `linear_attn.norm.weight` is `[128]` —
+one gain per *value* head — where [023 §2.2](023-cache-kinds.md)'s folding holds
+48 value heads as 16 bands of 384. The folding is an identity for the state and
+not for that norm, so `model.Recurrent` now carries $H_v$ explicitly rather than
+deriving it. A graph with only the folded geometry would scale three value heads
+by one head's gain, which is [C25](010-conformance.md)'s class: correct shapes,
+no refusal, wrong values.
+
+**[C27](010-conformance.md)'s evidence is the checkpoint now.** `in_proj_b` and
+`in_proj_a` are `[48, 5120]` each, read from the model in question. The earlier
+note in [specs/README](README.md) cited ollama's permutation of a fused
+`in_proj_ba` — a tensor `qwen3_5` does not have. The conclusion was right and
+the artifact was a sibling's, and [010-D7](010-conformance.md) is that
+difference: an inference from an adjacent implementation and a measurement of
+the thing itself do not close the same row.
+
+**The checkpoint's own `config.json` is in `model/testdata`**, 4 KiB verbatim.
+It is not a weight, so [000 D8](000-decisions.md) is untouched — and it is what
+makes the parser checkable against the thing it parses rather than against a
+fixture written from the same misreading.
+
 ### 2026-08-29 — Wave 16: three cache kinds, and the probe that kept them one pass
 
 [023](023-cache-kinds.md) is built, and it is the first of
