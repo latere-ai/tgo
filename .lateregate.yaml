@@ -1,0 +1,81 @@
+# The per-push gate configuration for tgo. Every check runs from
+# latere.ai/x/ci-gate, pinned in go.mod, so each one runs the same on a laptop
+# as it does on a runner.
+
+cover:
+  # Ninety, because specs/000-decisions.md decision 8 puts the pure logic --
+  # tokenizer, safetensors, templates, sampling -- in packages with no device
+  # and no network, which makes the number reachable rather than aspirational.
+  threshold: 90.0
+  trim_prefix: github.com/latere-ai/tgo/
+  exempt:
+    # A short list on purpose. Every entry is a promise that the package is
+    # thin enough that its coverage would measure the test harness rather than
+    # the code. The value is the reason; lateregate rejects an empty one.
+    cmd/tgo: >-
+      argument parsing and process wiring; the packages under it carry the
+      logic
+    internal/conformance: >-
+      device-open and Metal-present branches, unreachable without a Metal
+      device; the tier decisions they act on are pure and fully covered.
+      specs/010-conformance.md section 4. ci-metal.yml has a machine with
+      Metal; this gate does not, and a mock device here would cover the
+      statements and prove nothing about accel
+
+hermetic:
+  # Nothing besides the toolchain. tgo's tests reach no system binary, and the
+  # empty list is what keeps that true.
+  allow: []
+
+modernize:
+  # newexpr rewrites pointer helpers to new(v) and inlines call sites unevenly;
+  # errorsastype rewrites errors.As to a form whose type parameter a local
+  # non-error interface target does not satisfy. Both for the reasons llmops
+  # records. lateregate checks each still exists, because `go fix` rejects an
+  # unknown -name=false and the gate would then pass silently.
+  disable: [newexpr, errorsastype]
+
+spec:
+  dir: specs
+  status: [drafted, validated, dispatched, implemented, complete, blocked, deferred, record]
+  require: [title, status]
+  index: specs/README.md
+  tables: true
+  vocabulary:
+    layer: [load, text, graph, engine, api, all]
+  status_requires:
+    blocked:
+      field: blocked_on
+      match: 'accel#[0-9]+|/issues/[0-9]+|`[^`]+`'
+      hint: 'want an "accel#N" reference or a `backticked` upstream name; a bare file path is a belief about whose problem it is, not a record anyone can act on'
+  require_section: ["Decision record"]
+  require_section_by_status:
+    implemented: ["Outcome"]
+    complete: ["Outcome"]
+  section_exempt: [000-decisions.md, 011-sequencing.md]
+  scoped_ids: '\| (\d{3})-D(\d+) \|'
+
+depcheck:
+  platforms:
+    - linux/amd64
+    - linux/arm64
+    - linux/arm
+    - darwin/amd64
+    - darwin/arm64
+    - windows/amd64
+    - windows/arm64
+    - freebsd/amd64
+    - openbsd/amd64
+    - netbsd/amd64
+  packages:
+    github.com/latere-ai/tgo/server:
+      decision: 009-D14
+      allow:
+        golang.design/x/accel: the compute layer; 000 D1 makes every package here reach it
+        golang.org/x/text: Unicode normalisation for the tokenizer, 002-D10
+        latere.ai/x/pkg/llmdialect: the three wire dialects, 009-D10; this is the one 009-D14 exists to watch
+        github.com/ebitengine/purego: accel's cgo-free dynamic loading of Metal, reached through accel on darwin only
+    github.com/latere-ai/tgo/tokenizer:
+      decision: 002-D10
+      allow:
+        golang.org/x/text: Unicode normalisation, 002-D10; pure Go, so 000 D2 holds

@@ -1,0 +1,38 @@
+name: windows
+
+# tgo builds and tests on Windows, and that guarantee predates the shared
+# pipeline. It is here rather than in go-verify's matrix because the Windows
+# runner image ships no GNU make, and the shared contract is make targets.
+#
+# So this job runs the three commands the Makefile's `test` target runs, and
+# nothing else: the gates that need a tool -- coverage, spec-lint, depcheck --
+# are platform-independent and run once on ubuntu through the caller.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  # specs/000-decisions.md decision 2. cgo-free is the point, not an
+  # optimization, so the build that must pass is the one without it. The
+  # Makefile exports the same value for every other job.
+  CGO_ENABLED: '0'
+
+jobs:
+  test:
+    name: test on windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...

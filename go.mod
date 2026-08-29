@@ -8,4 +8,10 @@ require (
 	latere.ai/x/pkg v0.41.0
 )
 
-require github.com/ebitengine/purego v0.10.1 // indirect
+require (
+	github.com/ebitengine/purego v0.10.1 // indirect
+	github.com/goccy/go-yaml v1.19.2 // indirect
+	latere.ai/x/ci-gate v0.4.0 // indirect
+)
+
+tool latere.ai/x/ci-gate/cmd/lateregate
