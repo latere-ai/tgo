@@ -5,6 +5,7 @@ package tgo
 
 import (
 	"fmt"
+
 	"github.com/latere-ai/tgo/bench"
 
 	"github.com/latere-ai/tgo/chat"

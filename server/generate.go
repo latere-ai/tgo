@@ -11,11 +11,12 @@ import (
 	"fmt"
 	"net/http"
 
+	"latere.ai/x/pkg/llmdialect"
+	"latere.ai/x/pkg/llmdialect/ir"
+
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
-	"latere.ai/x/pkg/llmdialect"
-	"latere.ai/x/pkg/llmdialect/ir"
 )
 
 // One canonical event sequence, three wire formats.

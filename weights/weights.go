@@ -46,9 +46,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/latere-ai/tgo/safetensors"
 	"golang.design/x/accel"
 	"golang.design/x/accel/quant"
+
+	"github.com/latere-ai/tgo/safetensors"
 )
 
 // Precision is the form a weight takes on the device.

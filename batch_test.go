@@ -6,9 +6,10 @@ package tgo
 import (
 	"errors"
 
-	"github.com/latere-ai/tgo/internal/prefix"
 	"strings"
 	"testing"
+
+	"github.com/latere-ai/tgo/internal/prefix"
 )
 
 // batchModel is the fixture with a shared block pool large enough for a few

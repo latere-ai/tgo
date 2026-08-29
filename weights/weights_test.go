@@ -16,9 +16,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/latere-ai/tgo/safetensors"
 	"golang.design/x/accel"
 	"golang.design/x/accel/quant"
+
+	"github.com/latere-ai/tgo/safetensors"
 )
 
 // tensorSpec is one tensor to put in a synthesised checkpoint.

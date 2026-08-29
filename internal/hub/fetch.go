@@ -103,9 +103,7 @@ func (c *Client) fetchAll(ctx context.Context, ref Ref, sha string, files []File
 	errs := make([]error, len(files))
 	var wg sync.WaitGroup
 	for i, f := range files {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -116,7 +114,7 @@ func (c *Client) fetchAll(ctx context.Context, ref Ref, sha string, files []File
 			if errs[i] = c.fetchFile(ctx, ref, sha, f, dir); errs[i] != nil {
 				cancel()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

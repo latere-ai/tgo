@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/latere-ai/tgo/safetensors"
 	"golang.design/x/accel"
 	"golang.design/x/accel/quant"
+
+	"github.com/latere-ai/tgo/safetensors"
 )
 
 // The f16 constants specs/001-weights.md §3 states the rule in terms of.

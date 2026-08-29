@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,12 +145,7 @@ func TestAnInterruptedFetchLeavesNothingThatLooksWhole(t *testing.T) {
 }
 
 func containsString(all []string, want string) bool {
-	for _, s := range all {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(all, want)
 }
 
 func TestAServerThatIgnoresTheRangeRestartsTheHashToo(t *testing.T) {

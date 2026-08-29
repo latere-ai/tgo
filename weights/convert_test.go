@@ -8,9 +8,10 @@ import (
 	"math"
 	"testing"
 
-	"github.com/latere-ai/tgo/safetensors"
 	"golang.design/x/accel"
 	"golang.design/x/accel/quant"
+
+	"github.com/latere-ai/tgo/safetensors"
 )
 
 // bf16Plane encodes f32 values as the bf16 bytes a checkpoint holds. Widening

@@ -8,9 +8,10 @@ import (
 	"math"
 	"strings"
 
+	"latere.ai/x/pkg/llmdialect/ir"
+
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/chat"
-	"latere.ai/x/pkg/llmdialect/ir"
 )
 
 // This file is the whole of the mapping between llmdialect's vocabulary and

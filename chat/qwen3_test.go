@@ -319,7 +319,7 @@ func TestQwen3ToolResultsMergeIntoOneTurn(t *testing.T) {
 // A tool turn carrying no result block still renders one empty response, which
 // is what the reference template does with an empty content string.
 func TestQwen3EmptyToolTurn(t *testing.T) {
-	got := render(t, []Message{Message{Role: Tool}}, Options{Thinking: true}).String()
+	got := render(t, []Message{{Role: Tool}}, Options{Thinking: true}).String()
 	const want = "<|im_start|>user\n<tool_response>\n\n</tool_response><|im_end|>\n"
 	if got != want {
 		t.Errorf("prompt mismatch\n got: %q\nwant: %q", got, want)

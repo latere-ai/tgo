@@ -16,11 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"latere.ai/x/pkg/llmdialect/ir"
+
 	"github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/chat"
 	"github.com/latere-ai/tgo/internal/grammar"
-	"latere.ai/x/pkg/llmdialect/ir"
 )
 
 // The fake engine: a scripted event stream, so every handler test runs with no

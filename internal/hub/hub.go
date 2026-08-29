@@ -53,6 +53,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -231,10 +232,8 @@ func safePath(name string) error {
 	case path.Clean(name) != name:
 		return fmt.Errorf("%w: %q is not a clean relative path", ErrUnsafePath, name)
 	}
-	for _, elem := range strings.Split(name, "/") {
-		if elem == ".." {
-			return fmt.Errorf("%w: %q climbs out of the directory", ErrUnsafePath, name)
-		}
+	if slices.Contains(strings.Split(name, "/"), "..") {
+		return fmt.Errorf("%w: %q climbs out of the directory", ErrUnsafePath, name)
 	}
 	for _, r := range name {
 		if r < 0x20 || r == 0x7f {

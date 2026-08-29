@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/latere-ai/tgo"
 	"latere.ai/x/pkg/llmdialect/ir"
+
+	"github.com/latere-ai/tgo"
 )
 
 // §5.1 and 009-D13. Frontend has no error path and ir defines no error type, so
