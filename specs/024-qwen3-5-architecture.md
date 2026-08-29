@@ -47,41 +47,110 @@ anything else. Adding a rotary-dim field to `AttentionConfig` is therefore a
 prerequisite this spec owns, not a thing already done
 ([§5.1](#51-partial_rotary_factor-needs-a-field-attentionconfig-does-not-have)).
 
-## 2. The config, and which field names are guesses
+## 2. The config, read from the checkpoint
 
-[018 §1](018-hybrid-models.md) and [011 §2.3](011-sequencing.md) quote the same
-`config.json`. **They are the only source in this tree, and neither cites a
-checkpoint.** No `qwen3_5` file has been opened here. Every name below is
-therefore marked for confirmation against a real checkpoint before the parser is
-written, because a parser keyed on an invented name reads zero and silently
-builds a dense model.
+**Confirmed 2026-08-29 against `Qwen/Qwen3.5-27B`'s `config.json` and its
+safetensors headers**, both read over HTTP without downloading a weight. The
+tables below were provisional and marked as guesses; they are now the file's.
+What changed is recorded here rather than silently corrected, because the two
+readings this spec could not choose between were both plausible and one of them
+is wrong.
 
-| field | symbol | used for | confirmed? |
-| --- | --- | --- | --- |
-| `architectures[0]` = `Qwen3_5ForConditionalGeneration` | — | the registry key | **no** |
-| `num_hidden_layers` = 64 | $L$ | the schedule's length | yes, §5 of 004 |
-| `layer_types` | — | the schedule, verbatim | **no**, and its *shape* is also unknown ([§3.1](#31-layer_types-may-be-a-list-or-a-pattern-and-that-decides-the-check)) |
-| `full_attention_interval` = 4 | $I$ | the schedule, derived | **no** |
-| `hidden_size` = 5120 | $d$ | everything | yes |
-| `head_dim` = 256, `num_attention_heads` = 24, `num_key_value_heads` = 4 | $d_h, H, H_{kv}$ | the full layers | yes |
-| `partial_rotary_factor` = 0.25 | $\rho$ | rotary width $\rho d_h = 64$ | **no** |
-| `attn_output_gate` = true | — | a fifth projection on the full layers | **no** |
-| `linear_conv_kernel_dim` = 4 | $K$ | `DepthwiseCausalConv` | **no** |
-| `linear_num_key_heads` = 16, `linear_key_head_dim` = 128 | $H_k, d_k$ | q and k of the linear layers | **no** |
-| `linear_num_value_heads` = 48, `linear_value_head_dim` = 128 | $H_v, d_v$ | v, z and the state | **no** |
-| `mamba_ssm_dtype` = `"float32"` | — | refused unless `float32` | **no** |
-| `image_token_id`, `video_token_id` | — | [026](026-image-tokens.md); not read here | **no** |
+### 2.1 Everything the graph needs is under `text_config`
 
-Confirming them is one `curl` of a `config.json` and half an hour. It is the
-first task of [§11](#11-scope-this-is-not-one-pass)'s sub-scope B, and every table
-below is provisional until it is done.
+The top level holds the architecture, the model type, the multimodal token ids,
+the tie flag and the vision tower. **Every field this graph parses is one level
+down.**
 
-**`Config` is not widened.** `model.Config` is [004 §5](004-model-graph.md)'s
-table and is shared by every architecture. The `qwen3_5` fields go on a
-`qwen35Config` that embeds it, reachable through the concrete builder, which is
-what `Builder.Config` already promises at `model/model.go:55`: *"Fields a
-specific architecture adds beyond §5's table are reachable through the concrete
-builder type."*
+```json
+{
+  "architectures": ["Qwen3_5ForConditionalGeneration"],
+  "model_type": "qwen3_5",
+  "image_token_id": 248056, "video_token_id": 248057,
+  "vision_start_token_id": 248053, "vision_end_token_id": 248054,
+  "tie_word_embeddings": false,
+  "text_config": { ... },
+  "vision_config": { ... }
+}
+```
+
+`ParseConfig` reads the top level (`model/config.go:95`), so a parser built from
+this spec's first draft would have read **zero** for `hidden_size`, `head_dim`
+and every other field — and a config of zeros is not a refusal, it is a model
+with no width. That is the failure §2's "confirmed?" column existed to prevent,
+and it is the one it caught.
+
+### 2.2 The fields, with the values the 27B ships
+
+| field | where | symbol | value | note |
+| --- | --- | --- | --- | --- |
+| `architectures[0]` | top | — | `Qwen3_5ForConditionalGeneration` | the registry key |
+| `model_type` | top | — | `qwen3_5` | not read; the architecture is the key |
+| `tie_word_embeddings` | **top** | — | `false` | and `lm_head.weight` is in the file |
+| `image_token_id`, `video_token_id`, `vision_start_token_id`, `vision_end_token_id` | top | — | 248056, 248057, 248053, 248054 | [026](026-image-tokens.md)'s; parsed and refused here |
+| `num_hidden_layers` | text | $L$ | 64 | |
+| `layer_types` | text | — | a **64-entry list** | §3.1's first reading |
+| `full_attention_interval` | text | $I$ | 4 | and it agrees with the list |
+| `hidden_size` | text | $d$ | 5120 | |
+| `intermediate_size` | text | $f$ | 17408 | dense MLP, no experts |
+| `head_dim`, `num_attention_heads`, `num_key_value_heads` | text | $d_h, H, H_{kv}$ | 256, 24, 4 | |
+| `attn_output_gate` | text | — | `true` | and there is no gate tensor: §4.5 |
+| `linear_conv_kernel_dim` | text | $K$ | 4 | |
+| `linear_num_key_heads`, `linear_key_head_dim` | text | $H_k, d_k$ | 16, 128 | |
+| `linear_num_value_heads`, `linear_value_head_dim` | text | $H_v, d_v$ | 48, 128 | |
+| `mamba_ssm_dtype` | text | — | `"float32"` | refused unless this |
+| `rms_norm_eps` | text | $\varepsilon$ | 1e-6 | |
+| `vocab_size` | text | $V$ | **248320** | not 151936; that is Qwen3's |
+| `max_position_embeddings` | text | — | 262144 | advisory (005-D2) |
+| `rope_parameters.rope_theta` | text, **nested** | — | 1e7 | §2.3 |
+| `rope_parameters.partial_rotary_factor` | text, **nested** | $\rho$ | 0.25 | $\rho d_h = 64$ |
+| `rope_parameters.rope_type` | text, nested | — | `"default"` | no scaling |
+| `rope_parameters.mrope_interleaved`, `mrope_section` | text, nested | — | `true`, `[11, 11, 10]` | §2.4 |
+| `mlp_only_layers` | text | — | `[]` | empty; a non-empty one is refused |
+| `mtp_num_hidden_layers`, `mtp_use_dedicated_embeddings` | text | — | 1, `false` | a head this graph does not build: §4.5 |
+| `attention_bias`, `attention_dropout`, `hidden_act`, `dtype`, `eos_token_id`, `initializer_range`, `use_cache`, `model_type` | text | — | — | read and checked against what the graph assumes, or ignored by name |
+
+### 2.3 `rope_theta` and `partial_rotary_factor` are nested
+
+Both live in `rope_parameters`, which `ParseConfig` does not know. So
+`qwen35Config` reads the rotary base from a different place than the dense
+parser does, and [§5.1](#51-partial_rotary_factor-needs-a-field-attentionconfig-does-not-have)'s
+field is read from `rope_parameters.partial_rotary_factor` and not from a
+top-level key.
+
+### 2.4 mRoPE is a no-op for text, and that is an argument rather than a hope
+
+`rope_parameters` carries `"mrope_interleaved": true` and
+`"mrope_section": [11, 11, 10]`. Multimodal RoPE gives a token **three**
+position components — temporal, height, width — and partitions the rotary pairs
+into three sections, each rotated by its own component.
+
+$11 + 11 + 10 = 32$, and $\rho d_h / 2 = 64/2 = 32$: the sections partition the
+rotary **pairs** exactly.
+
+**For text-only input the three components are equal**, because a text token has
+one position and mRoPE sets all three to it. Each rotary dimension keeps its own
+inverse frequency under either layout — chunked or interleaved changes *which
+component* multiplies a dimension's frequency, not which frequency the dimension
+has — so with all three components equal, every section computes
+$\text{pos} \cdot \omega_d$ and mRoPE reduces to standard RoPE over $\rho d_h$
+dimensions, exactly.
+
+**[024-D12]**: text-only `qwen3_5` uses ordinary RoPE at width $\rho d_h$, and
+the reduction is stated as the argument above rather than assumed. A caller who
+supplies position components that are not all equal is [026](026-image-tokens.md)'s
+and is refused here, because the reduction is the whole of why this graph may
+ignore `mrope_section`.
+
+### 2.5 The MoE sibling is a different architecture key
+
+`Qwen/Qwen3.5-397B-A17B` is `Qwen3_5MoeForConditionalGeneration`, `model_type`
+`qwen3_5_moe`, with `num_experts: 512` and `moe_intermediate_size: 1024`. It is
+therefore refused by the registry with the list of what tgo knows
+([004-D2](004-model-graph.md)), and **not** mis-built by this entry — which is
+worth stating because the two share every linear-attention field and differ in
+the MLP. Had the family reused one key, one builder would have answered for a
+dense MLP and a 512-expert one.
 
 ## 3. The layer schedule
 
@@ -101,25 +170,31 @@ equally plausible from the field name alone and produces a model with the same
 shapes, the same parameter count, and different output. **The convention is not
 derivable and is not guessed** ([024-D1](#decision-record)).
 
-### 3.1 `layer_types` may be a list or a pattern, and that decides the check
+### 3.1 `layer_types` is a per-layer list, and it agrees with the interval
 
-[018 §1](018-hybrid-models.md) quotes
+This section asked whether `layer_types` was a 64-entry list the quote in
+[018 §1](018-hybrid-models.md) had abbreviated, or a repeating pattern — noting
+that the second reading makes the quoted config self-contradictory, because a
+period-2 pattern is one full layer in two and not one in four.
 
-```json
-"layer_types": ["linear_attention", "full_attention"],
+**It is the list.** `Qwen3.5-27B` ships 64 entries, and they are
+
+```
+linear, linear, linear, full,   linear, linear, linear, full,   …,   linear, linear, linear, full
 ```
 
-which has **two** entries for a 64-layer model. Two readings:
+so the full layers are $3, 7, \dots, 63$ and the last layer is full. That is
+exactly $(\ell + 1) \bmod I = 0$ at $I = 4$, so **`full_attention_interval: 4`
+and `layer_types` agree**, and [024-D1](#decision-record)'s derived convention is
+the file's rather than a guess between two equally plausible ones. The opposite
+convention — layer 0 full, layer 63 linear — produces a model with the same
+shapes, the same parameter count and different output, which is why it was not
+guessed.
 
-- a **per-layer list** that the quote abbreviated, 64 entries long;
-- a **repeating pattern**, in which case it says nothing `full_attention_interval`
-  does not, and the two-entry form contradicts $I = 4$ outright — a period-2
-  pattern is one full layer in two, not one in four.
-
-The second reading makes the quoted config self-contradictory, which is itself
-evidence the quote is an abbreviation. Either way the parser cannot tell without
-a checkpoint, so it refuses a length it does not recognise rather than choosing
-a reading.
+Both fields being present makes §3.2's cross-check a **live** comparison rather
+than a guard against a shape nobody has seen: this checkpoint exercises the
+agree branch on every load, so a regression that broke the derivation would be
+caught by the first hybrid a deployment opens.
 
 ### 3.2 The rule
 
@@ -317,80 +392,126 @@ So β and α are one per value head per token, the width is 96 for this config,
 and **[C27](010-conformance.md) blocks the block**. Stage **C** below is gated
 on accel taking a `[tokens, heads]` gate, not on a download.
 
-The evidence is a second implementation and not a checkpoint, which is weaker
-in one specific way: it settles what the *architecture* does, and a checkpoint
-whose header disagrees would still win. [§2](#2-the-config-and-which-field-names-are-guesses)'s
-names stay unconfirmed. The distinction that mattered here is not which name a
-tensor has but whether the gate has a head axis, and two independent readings of
-the architecture now say it does.
+**Confirmed on 2026-08-29 from the checkpoint itself**, which is the header read
+this section priced as one nobody had. `Qwen/Qwen3.5-27B` splits the projection
+and both halves are $H_v$ wide:
 
-### 4.5 The weight map
+| tensor | shape |
+| --- | --- |
+| `model.language_model.layers.0.linear_attn.in_proj_b.weight` | `[48, 5120]` |
+| `model.language_model.layers.0.linear_attn.in_proj_a.weight` | `[48, 5120]` |
+| `model.language_model.layers.0.linear_attn.A_log` | `[48]` f32 |
+| `model.language_model.layers.0.linear_attn.dt_bias` | `[48]` |
 
-The names below follow Qwen3-Next, the architecture `qwen3_5` succeeds.
-**None is confirmed against a `qwen3_5` checkpoint.** The alternative naming a
-reader should expect if these are wrong is a split projection — `q_proj`,
-`k_proj`, `v_proj`, `z_proj`, `b_proj`, `a_proj` — which changes the table's
-rows and none of its shapes, because a fused projection is the concatenation of
-the split ones.
+$H_v = 48$, and every per-head tensor in the file is 48 wide. **β and α are one
+scalar per value head**, read off the model in question rather than inferred
+from a sibling's loader, so [C27](010-conformance.md) blocks the block and stage
+**C** below waits on accel taking a `[tokens, heads]` gate.
 
-| checkpoint tensor | shape in file | port | transpose | permute | kind |
-| --- | --- | --- | --- | --- | --- |
-| `model.layers.ℓ.input_layernorm.weight` | `[d]` | `ℓ.attn_norm` | no | no | gain |
-| `model.layers.ℓ.linear_attn.in_proj_qkvz.weight` | `[2W_k + 2W_v, d]` | `ℓ.lin_qkvz` | **yes** | no | projection |
-| `model.layers.ℓ.linear_attn.in_proj_ba.weight` | `[2H_v, d]` | `ℓ.lin_ba` | **yes** | no | projection |
-| `model.layers.ℓ.linear_attn.conv1d.weight` | `[2W_k + W_v, 1, K]` | `ℓ.lin_taps` | **reshaped** → `[K, 2W_k+W_v]` | no | gain |
-| `model.layers.ℓ.linear_attn.dt_bias` | `[H_v]` | `ℓ.lin_dt` | no | no | gain |
-| `model.layers.ℓ.linear_attn.A_log` | `[H_v]` | `ℓ.lin_alog` | no | no | gain |
-| `model.layers.ℓ.linear_attn.norm.weight` | `[d_v]` | `ℓ.lin_norm` | no | no | gain |
-| `model.layers.ℓ.linear_attn.out_proj.weight` | `[d, W_v]` | `ℓ.lin_out` | **yes** | no | projection |
+**The ollama evidence described the wrong artifact.** There is no `in_proj_ba`
+tensor in `qwen3_5`; the fused pair is Qwen3-Next's, and ollama's permutation of
+length $2 H_v$ is what it applies after concatenating the split ones. The
+conclusion was right and the citation was a sibling's. That is the difference
+[010-D7](010-conformance.md) is about: an inference from an adjacent
+implementation and a measurement of the thing itself are not the same evidence,
+and only the second one closes a row.
 
-Three rows are not ordinary:
+### 4.5 The weight map, read from the checkpoint
 
-- **`conv1d.weight` is not a transpose.** It is `[C, 1, K]` in the file and
-  `DepthwiseCausalConv` wants `[K, C]` (`nn/linear.go:197`), which is a squeeze
-  of the middle axis and then a transpose of a genuinely 2-D plane.
-  `WeightSpec.Transpose` at `model/weights.go:97` reverses a **rank-2** shape and
-  `weights.targetShape` refuses a transpose of any other rank
-  (`weights/weights.go:762`). So the map cannot express this row today, and
-  either `WeightSpec` gains a reshape or the loader gets a rank-3 case. A spec
-  that stated the port shape and left this out would be a spec that does not
-  build.
-- **`A_log` and `dt_bias` are f32 and are not gains.** They are per-head
-  constants inside an exponential, and `KindGain` is what routes a tensor through
-  `loadGains` (`gains.go:40`) to an f32 device buffer, which is the width they
-  need. Calling them gains is the right *mechanism* and the wrong *name*; the
-  alternative is a `KindConstant` that does the same thing, and this spec takes
-  the mechanism and records the mismatch rather than adding a kind for two
-  tensors.
-- **Nothing in a linear layer permutes.** `WeightSpec.Permute` exists for the
-  rotary convention (`model/weights.go:108`, [004-D9](004-model-graph.md)) and a
-  linear layer has no rotation, so the whole column is `no`. The full-attention
-  layers keep 004's map exactly, including the two permuted QK-norm gains.
+**Confirmed 2026-08-29** against `Qwen/Qwen3.5-27B`'s index and safetensors
+headers. The draft followed Qwen3-Next's names and marked them unconfirmed; four
+of its readings were wrong and it named two of them as the alternatives to
+expect. Both alternatives are what shipped.
 
-The full-attention layers' rows are [004 §4](004-model-graph.md)'s, unchanged,
-plus one:
+**The prefix is `model.language_model.layers.ℓ.`** and not `model.layers.ℓ.`: a
+multimodal checkpoint nests the text tower under `language_model` beside
+`visual`. Every row below carries it.
 
-| checkpoint tensor | shape in file | port | transpose | permute |
+Everything is `BF16` except `linear_attn.norm.weight` and `linear_attn.A_log`,
+which are `F32`. `weights/convert.go:51` already reads BF16, so there is no
+loader gap.
+
+#### A gated-delta layer
+
+$W_k = H_k d_k = 2048$, $W_v = H_v d_v = 6144$, $C_\text{conv} = 2W_k + W_v = 10240$.
+
+| tensor | shape in file | port | transform | kind |
 | --- | --- | --- | --- | --- |
-| `model.layers.ℓ.self_attn.gate_proj.weight` | `[H·d_h, d]` | `ℓ.wgate_attn` | **yes** | **no** — see below |
+| `input_layernorm.weight` | `[5120]` | `ℓ.attn_norm` | — | gain |
+| `linear_attn.in_proj_qkv.weight` | `[10240, 5120]` | `ℓ.lin_qkv` | transpose | projection |
+| `linear_attn.in_proj_z.weight` | `[6144, 5120]` | `ℓ.lin_z` | transpose | projection |
+| `linear_attn.in_proj_b.weight` | `[48, 5120]` | `ℓ.lin_b` | transpose | projection |
+| `linear_attn.in_proj_a.weight` | `[48, 5120]` | `ℓ.lin_a` | transpose | projection |
+| `linear_attn.conv1d.weight` | `[10240, 1, 4]` | `ℓ.lin_taps` | squeeze then transpose | gain |
+| `linear_attn.dt_bias` | `[48]` | `ℓ.lin_dt` | — | gain |
+| `linear_attn.A_log` | `[48]` f32 | `ℓ.lin_alog` | — | gain |
+| `linear_attn.norm.weight` | `[128]` f32 | `ℓ.lin_norm` | — | gain |
+| `linear_attn.out_proj.weight` | `[5120, 6144]` | `ℓ.lin_out` | transpose | projection |
+| `post_attention_layernorm.weight` | `[5120]` | `ℓ.mlp_norm` | — | gain |
+| `mlp.{gate,up,down}_proj.weight` | 004 §4's | 004 §4's | transpose | projection |
 
-**This name is unconfirmed too**, and it has a second reading the others do not:
-an exporter may fuse the gate into `q_proj` and ship it at `[2H·d_h, d]`, in
-which case the row is a wider `wq` and a split, not a tensor of its own. The
-header settles it — the width of `q_proj` says which — and until it is read the
-weight map states both and builds neither.
+**The projection is split into four, not fused into two.** The draft's
+`in_proj_qkvz` and `in_proj_ba` are Qwen3-Next's; `qwen3_5` ships `in_proj_qkv`,
+`in_proj_z`, `in_proj_b` and `in_proj_a`. The draft named this as "the
+alternative a reader should expect if these are wrong", and it changes the
+table's rows and none of its shapes — $10240 + 6144 = 2W_k + 2W_v$, which is the
+fused width.
 
-The gate is **not** permuted. `Permute` reorders a projection's output channels
-into accel's interleaved rotary pairing, and the gate's output multiplies the
-attention result, which is a mixture of unrotated V rows — the same argument
-`model/qwen3.go:69` makes for `v_proj` and `o_proj`.
+**`norm.weight` is `[128]` and not `[d_v]` as the draft said** — or rather,
+$d_v = 128$ and the draft's `[d_v]` meant the 384-wide folded band
+[023 §2.2](023-cache-kinds.md) records. It is **one gain per value head's
+128 channels**, applied across 48 heads, not one per 16 folded bands of 384. A
+graph that broadcast it over the folded geometry would scale three value heads
+by one head's gain. §4.3's folding is sound for the *state* — the bytes and the
+row separability are identical either way — and wrong for this norm, which is
+why $H_v$ is carried explicitly rather than derived as $H_k \times 3$.
 
-Both layer kinds share the MLP rows and the embedding, final norm and head rows.
-The weight map is therefore `[]WeightSpec` built by walking the schedule and
-emitting one of two row sets per layer, which is `qwen3Weights`
-(`model/qwen3.go:154`) with a branch. **`model/weights.go` does not change**:
-`Check` already refuses a tensor the map does not name and a tensor the map names
-and the file lacks, and a hybrid map is still a map.
+**`conv1d.weight` is `[10240, 1, 4]`**, exactly $[C_\text{conv}, 1, K]$, so
+$C_\text{conv} = 10240$ — which is the number [023 §6](023-cache-kinds.md)'s
+table assumed. That arithmetic is no longer provisional. It is a squeeze of the
+middle axis and then a transpose of a rank-2 plane, and `WeightSpec.Transpose`
+reverses a rank-2 shape while `weights.targetShape` refuses any other rank, so
+this row still needs a reshape the map cannot express today.
+
+**`A_log` and `dt_bias` are per-head constants inside an exponential** and are
+routed through `KindGain` for the f32 buffer it gives them, which is the right
+mechanism under a name that does not fit. Unchanged from the draft.
+
+#### A full-attention layer
+
+004 §4's rows, with one correction and no addition.
+
+| tensor | shape in file | port | note |
+| --- | --- | --- | --- |
+| `self_attn.q_proj.weight` | **`[12288, 5120]`** | `ℓ.wq` | $2 H d_h$: **the gate is fused into it** |
+| `self_attn.k_proj.weight` | `[1024, 5120]` | `ℓ.wk` | $H_{kv} d_h$ |
+| `self_attn.v_proj.weight` | `[1024, 5120]` | `ℓ.wv` | $H_{kv} d_h$ |
+| `self_attn.o_proj.weight` | `[5120, 6144]` | `ℓ.wo` | $[d, H d_h]$ |
+| `self_attn.{q,k}_norm.weight` | `[256]` | 004 §4's | $d_h$ |
+
+**There is no `self_attn.gate_proj` tensor**, and `attn_output_gate` is `true`.
+The draft stated both readings and built neither, saying "the header settles it —
+the width of `q_proj` says which". It does: $12288 = 2 \cdot 24 \cdot 256$, so
+the gate is the second half of `q_proj`'s output and the row is a **wider `wq`
+and a split**, not a tensor of its own. [024-D7](#decision-record)'s
+gate-before-$O$ is confirmed by `o_proj`'s `[5120, 6144]`, which maps $H d_h$
+and not $d$.
+
+#### 348 tensors this map does not name
+
+The file holds 1199 tensors: 850 under `model.language_model.`, **333 under
+`model.visual.`** and 16 outside both — `lm_head.weight` and **15 `mtp.*`**, a
+multi-token-prediction head with its own layer, norms and `fc`.
+
+`model.Check` refuses a tensor the map does not name, so this checkpoint is
+refused wholesale unless the two towers are handled. **[024-D13]**: they are an
+**explicit, named ignore set** rather than a silent drop, and the refusal a
+reader gets if the set stops matching says which tower it belongs to. Dropping
+them silently is the failure [§7](#7-refusals)'s own general row warns about one
+level up, and refusing them is refusing a checkpoint over weights this graph
+does not need. `model.visual.*` is [026](026-image-tokens.md)'s and `mtp.*` is
+unbuilt — speculative decoding is [README](README.md)'s "not specced" list, and
+this is the head it would need.
 
 ## 5. What `nn` gains
 
@@ -576,6 +697,10 @@ field, and refuse anything the graph cannot honour rather than approximating it.
 | `attn_output_gate` true and no gate tensor in the checkpoint | `model.Check` already refuses it as a missing tensor, by name |
 | **any `qwen3_5` field this graph does not implement** | see below |
 | the per-head gate, until [§4.4](#44-the-gate-is-per-head-and-accels-is-per-token) resolves | a mean over 48 gates runs and is a different model |
+| `rope_parameters.rope_type` is not `"default"` | [004 §7](004-model-graph.md) refuses a scaling it does not implement, and this is where `qwen3_5` states one |
+| a non-empty `mlp_only_layers` | a third layer kind, and the schedule has two |
+| position components that are not all equal | [§2.4](#24-mrope-is-a-no-op-for-text-and-that-is-an-argument-rather-than-a-hope)'s reduction is the whole of why `mrope_section` may be ignored |
+| a tensor outside the map **and** outside [§4.5](#45-the-weight-map-read-from-the-checkpoint)'s named ignore set | the vision tower and the multi-token head are 348 tensors this graph does not need; dropping an unnamed one silently is the failure the row below is about |
 
 The last general row is the one [004 §7](004-model-graph.md) does not have and
 this architecture needs. `rawConfig` ignores unknown JSON keys, which is right
@@ -583,7 +708,13 @@ for a dense model whose extra fields are metadata. It is wrong here: a `qwen3_5`
 config carries fields that change the arithmetic, this spec has read none of them
 from a real file, and a field tgo silently ignores is a model tgo silently gets
 wrong. So `qwen35Config` parses into a map as well as a struct and refuses any
-key not on an explicit allow list, naming it.
+key not on an explicit allow list, naming it — **at both levels**, with
+different sets: the top level allows the architecture, the model type, the four
+multimodal token ids, the tie flag, the transformers version and the two nested
+objects; `text_config` allows [§2.2](#22-the-fields-with-the-values-the-27b-ships)'s
+table. A field at the wrong level is then a named refusal rather than a zero,
+which is what [§2.1](#21-everything-the-graph-needs-is-under-text_config) shows
+the cost of.
 
 That is stricter than `ParseConfig` and deliberately so. The dense parser earned
 its tolerance by being run against real checkpoints; this one has not been run
@@ -684,3 +815,6 @@ which is [000 D1](000-decisions.md)'s output.
 | 024-D9 | the KV state is allocated at the **full-attention layer count** with an absolute-to-dense index | allocate `[L, …]` and leave 48 layers unwritten | 768 MiB per sequence per state of capacity nothing writes, at $C=8192$ f16 ([§6.3](#63-the-kv-state-is-allocated-at-sixteen-layers-not-sixty-four)) |
 | 024-D10 | a `qwen3_5` config key this graph does not implement is **refused by name** | ignore unknown keys, as `rawConfig` does | the dense parser earned its tolerance against real checkpoints; this one has read none. A field tgo ignores here changes the arithmetic ([§7](#7-refusals)) |
 | 024-D11 | ship sub-scope B before A and C, and say the spec is not one pass | one branch that lands the architecture whole | C is gated on an accel answer that does not exist. B is testable today and converts an unknown architecture into a stated, named gap, which is [000 D1](000-decisions.md)'s output ([§11](#11-scope-this-is-not-one-pass)) |
+| 024-D12 | text-only `qwen3_5` uses ordinary RoPE at width $\rho d_h$, and `mrope_section` is ignored because the reduction is proved rather than assumed | implement mRoPE's three sections; refuse the field | a text token has one position and mRoPE sets all three components to it, so every section computes $\text{pos}\cdot\omega_d$ and the interleaved and chunked layouts agree — $11+11+10 = \rho d_h/2$. A caller supplying unequal components is refused, which is what keeps the reduction the reason rather than a coincidence ([§2.4](#24-mrope-is-a-no-op-for-text-and-that-is-an-argument-rather-than-a-hope)) |
+| 024-D13 | the vision tower and the multi-token-prediction head are an **explicit named ignore set**, and a tensor outside both the map and the set is refused | drop every unnamed tensor; refuse the checkpoint | 333 `model.visual.*` and 15 `mtp.*` tensors are weights this graph does not need, and `model.Check` refuses an unnamed tensor. Dropping silently is the failure [§7](#7-refusals)'s general row is about; refusing is refusing a checkpoint over weights it does not read ([§4.5](#45-the-weight-map-read-from-the-checkpoint)) |
+| 024-D14 | the config is confirmed from `Qwen/Qwen3.5-27B` before the parser is written, over HTTP and without a weight | write the parser from [018 §1](018-hybrid-models.md)'s quote and confirm later | the quote omits the `text_config` nesting, so a parser built from it reads zero for every field — and a config of zeros is a model with no width rather than a refusal. Four of [§4.5](#45-the-weight-map-read-from-the-checkpoint)'s rows and the gate's location were also wrong, and both alternatives the draft named as "what to expect if these are wrong" are what shipped |

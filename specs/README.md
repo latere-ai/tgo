@@ -257,12 +257,17 @@ leaves the layer inexpressible. Filed as [C27](010-conformance.md) /
 probe.
 
 024 §4.4 left one half open — whether the gates are per head at all — and
-priced it as a safetensors header read on a checkpoint nobody has. **It is
-settled without one.** ollama's public `qwen3_5` implementation permutes
-`in_proj_ba` through a permutation of length $2 H_v$, names the layout
-`[beta | alpha]` per key head, and hands the whole width to its gated delta
-kernel. The gates are per head, the width is 96, and C27 blocks item 3 rather
-than being moot. Nothing below reorders: the block waits on accel.
+priced it as a safetensors header read on a checkpoint nobody has. **The
+checkpoint is public and the header was read on 2026-08-29**, over HTTP and
+without a weight: `Qwen/Qwen3.5-27B` ships `in_proj_b` and `in_proj_a` at
+`[48, 5120]` each, and $H_v = 48$. The gates are per head, and C27 blocks item 3
+rather than being moot. Nothing below reorders: the block waits on accel.
+
+An earlier note here cited ollama's `in_proj_ba` permutation as the evidence.
+The conclusion was right and the artifact was a sibling's — `qwen3_5` has no
+fused `in_proj_ba` — and [010-D7](010-conformance.md) is the difference: an
+inference from an adjacent implementation and a measurement of the thing itself
+do not close the same row.
 
 1. **A rotary width below `head_dim`, and the output gate.** `nn.Attention`
    passes `cfg.HeadDim` as the rotary width, so `partial_rotary_factor` is
