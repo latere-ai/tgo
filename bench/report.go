@@ -4,7 +4,7 @@
 package bench
 
 import (
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -118,7 +118,7 @@ func (r *Recorder) Report() Report {
 	}
 
 	sorted := append([]time.Duration(nil), ttfts...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	slices.Sort(sorted)
 
 	return Report{
 		Prefill: phaseStats(prefill),
@@ -151,7 +151,7 @@ func phaseStats(steps []Step) PhaseStats {
 	total := hostSum + submitSum + deviceSum + readbackSum
 
 	for _, v := range [][]time.Duration{host, submit, device, readback} {
-		sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
+		slices.Sort(v)
 	}
 
 	stats := PhaseStats{
