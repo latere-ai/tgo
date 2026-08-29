@@ -128,8 +128,19 @@ func (s LayerSchedule) check(layers int) error {
 // row bands of one state, and stacking them is an identity rather than an
 // approximation.
 type Recurrent struct {
-	// Heads is H_lin, the key heads.
+	// Heads is H_lin, the key heads, and is the head count of the **state**.
 	Heads int
+
+	// ValueHeads is H_v, the value heads, which is a whole multiple of Heads.
+	//
+	// It is carried and not derived as ValueDim/KeyDim, because the two are
+	// the same number only under §2.2's folding and the checkpoint states it.
+	// Deriving it would be getting it right by luck — and the output norm is
+	// one gain per *value* head (`linear_attn.norm.weight` is `[128]`, not
+	// `[384]`), so a graph that had only the folded geometry would broadcast
+	// that gain over three value heads at once
+	// (specs/024-qwen3-5-architecture.md §4.5).
+	ValueHeads int
 
 	// KeyDim is d_k and ValueDim is d_v, and d_v is a whole multiple of d_k
 	// when several value heads share a key head.
@@ -158,6 +169,10 @@ func (r Recurrent) check() error {
 			"widths of %d; value heads sharing a key head are disjoint row bands of "+
 			"one state, and a partial band is not one (specs/023-cache-kinds.md §2.2)",
 			r.ValueDim, r.KeyDim)
+	case r.ValueHeads != 0 && r.ValueHeads%r.Heads != 0:
+		return fmt.Errorf("model: %d value heads over %d key heads do not group; "+
+			"value heads sharing a key head are disjoint row bands of one state",
+			r.ValueHeads, r.Heads)
 	case r.Taps < 2:
 		return fmt.Errorf("model: the convolution is %d taps; a causal convolution "+
 			"has at least two, and one tap is an elementwise scale", r.Taps)
