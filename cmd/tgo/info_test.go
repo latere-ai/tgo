@@ -603,3 +603,41 @@ func lineWith(t *testing.T, out, label string) string {
 	}
 	return found[0]
 }
+
+// TestCacheWidthKnowsAHybridsLayerCount is specs/023-cache-kinds.md §8's third
+// change, and it is verifiable without a hybrid checkpoint: hand cacheWidth a
+// byte count computed over the layers that cache and a stack that is four times
+// longer, and see whether it recovers the width.
+//
+// Without the cached-layer count it reports `unknown` for every hybrid — it
+// divides by 2·L·C·H_kv·d_h and a count over one layer in four leaves a
+// remainder. `unknown` is the branch cacheWidth's own comment calls worse than
+// printing nothing, because it prints a total and loses the label.
+func TestCacheWidthKnowsAHybridsLayerCount(t *testing.T) {
+	const context, kvHeads, headDim = 1024, 4, 256
+	// Sixty-four layers, sixteen of which cache: `full_attention_interval: 4`.
+	hybrid := modelFacts{Layers: 64, CachedLayers: 16, KVHeads: kvHeads,
+		HeadDim: headDim}
+	bytes := int64(2*16*context*kvHeads*headDim) * 2 // f16
+
+	per, width, dtype := cacheWidth(hybrid, bytes, context, "f16")
+	if width != 2 {
+		t.Errorf("width = %d, want 2: the bytes were computed over the layers that "+
+			"cache, and so is the division", width)
+	}
+	if strings.HasPrefix(dtype, "unknown") {
+		t.Errorf("dtype = %q; a hybrid's cache has a width and this reports none", dtype)
+	}
+	if want := bytes / context; per != want {
+		t.Errorf("per position = %d, want %d", per, want)
+	}
+
+	// The same bytes divided by the whole stack is the failure this fixes, and
+	// asserting it is what stops the row above passing for another reason.
+	dense := modelFacts{Layers: 64, KVHeads: kvHeads, HeadDim: headDim}
+	if _, w, d := cacheWidth(dense, bytes, context, "f16"); w != 0 ||
+		!strings.HasPrefix(d, "unknown") {
+		t.Errorf("dividing a hybrid's bytes by 64 layers gave width %d and %q; the "+
+			"fixture must leave a remainder for the row above to mean anything", w, d)
+	}
+}

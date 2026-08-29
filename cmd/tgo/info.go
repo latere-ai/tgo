@@ -27,19 +27,26 @@ const defaultContext = 4096
 // modelFacts is the model as a report carries it: what config.json says, plus
 // the parameter count implied by the weight map.
 type modelFacts struct {
-	Dir              string `json:"dir"`
-	Architecture     string `json:"architecture"`
-	HiddenSize       int    `json:"hidden_size"`
-	Layers           int    `json:"layers"`
-	Heads            int    `json:"heads"`
-	KVHeads          int    `json:"kv_heads"`
-	HeadDim          int    `json:"head_dim"`
-	IntermediateSize int    `json:"intermediate_size"`
-	VocabSize        int    `json:"vocab_size"`
-	Parameters       int64  `json:"parameters"`
-	Planes           int64  `json:"device_elements"`
-	TiedEmbeddings   bool   `json:"tied_embeddings"`
-	TrainedContext   int    `json:"trained_context"`
+	Dir          string `json:"dir"`
+	Architecture string `json:"architecture"`
+	HiddenSize   int    `json:"hidden_size"`
+	Layers       int    `json:"layers"`
+
+	// CachedLayers is how many of them hold a key/value cache, which for a
+	// hybrid is one in four. It is what the per-position arithmetic divides
+	// by (specs/023-cache-kinds.md section 8); zero means it was not read and
+	// Layers is used.
+	CachedLayers int `json:"cached_layers,omitempty"`
+
+	Heads            int   `json:"heads"`
+	KVHeads          int   `json:"kv_heads"`
+	HeadDim          int   `json:"head_dim"`
+	IntermediateSize int   `json:"intermediate_size"`
+	VocabSize        int   `json:"vocab_size"`
+	Parameters       int64 `json:"parameters"`
+	Planes           int64 `json:"device_elements"`
+	TiedEmbeddings   bool  `json:"tied_embeddings"`
+	TrainedContext   int   `json:"trained_context"`
 }
 
 // precisionFacts is specs/001-weights.md §5's choice with the evidence that
@@ -141,7 +148,8 @@ func describe(dir string, b model.Builder, o describeOptions, hw hardware, env e
 	return modelReport{
 		Model: modelFacts{
 			Dir: dir, Architecture: c.Architecture, HiddenSize: c.HiddenSize,
-			Layers: c.NumLayers, Heads: c.NumHeads, KVHeads: c.NumKVHeads,
+			Layers: c.NumLayers, CachedLayers: cachedLayerCount(c),
+			Heads: c.NumHeads, KVHeads: c.NumKVHeads,
 			HeadDim: c.HeadDim, IntermediateSize: c.IntermediateSize,
 			VocabSize: c.VocabSize, Parameters: params, Planes: planes,
 			TiedEmbeddings: c.TieWordEmbeddings, TrainedContext: c.MaxPositionEmbeddings,
@@ -283,8 +291,23 @@ func choosePrecision(policy weights.Precision, f16Bytes, int8Bytes, int4Bytes, b
 // divided by C, so that a caller can multiply by whatever capacity it is
 // pricing and a reader can see the per-position cost that makes a long context
 // expensive. The leading 2 is the key state and the value state.
+//
+// L is the layers that **have** a key/value cache, which for a hybrid is one in
+// four (specs/023-cache-kinds.md §8). Without that, cacheWidth reports
+// `unknown` for every hybrid: it divides the engine's reported bytes by
+// 2·L·C·H_kv·d_h and a byte count computed over 16 layers against an L of 64
+// leaves a remainder.
 func kvBytesPerPosition(c *model.Config, dt accel.DType) int64 {
-	return 2 * int64(c.NumLayers) * int64(c.NumKVHeads) * int64(c.HeadDim) * int64(dt.Size())
+	return 2 * int64(cachedLayerCount(c)) * int64(c.NumKVHeads) * int64(c.HeadDim) *
+		int64(dt.Size())
+}
+
+// cachedLayerCount is how many layers of a stack hold a key/value cache.
+func cachedLayerCount(c *model.Config) int {
+	if c.LayerTypes.Hybrid() {
+		return c.LayerTypes.Count(model.LayerFullAttention)
+	}
+	return c.NumLayers
 }
 
 // resolvedInto folds what the engine loaded into the description this process
@@ -333,11 +356,19 @@ func resolvedInto(rep modelReport, in engineInfo) modelReport {
 // remainder means the engine's cache is not the shape this formula describes,
 // and a dtype printed beside a number it does not explain is worse than none.
 func cacheWidth(m modelFacts, cacheBytes int64, context int, predicted string) (perPosition, width int64, dtype string) {
-	elements := 2 * int64(m.Layers) * int64(m.KVHeads) * int64(m.HeadDim) * int64(context)
+	// The layers that hold a cache, not the layers of the stack: a hybrid's
+	// three gated-delta layers in four write no key or value, so dividing by
+	// the stack leaves a remainder and loses the label
+	// (specs/023-cache-kinds.md §8).
+	cached := m.CachedLayers
+	if cached == 0 {
+		cached = m.Layers
+	}
+	elements := 2 * int64(cached) * int64(m.KVHeads) * int64(m.HeadDim) * int64(context)
 	if elements <= 0 || cacheBytes%elements != 0 {
 		return cacheBytes / max(int64(context), 1), 0,
 			fmt.Sprintf("unknown: %s over %d positions is not 2 · %d · C · %d · %d elements of a whole number of bytes",
-				humanBytes(cacheBytes), context, m.Layers, m.KVHeads, m.HeadDim)
+				humanBytes(cacheBytes), context, cached, m.KVHeads, m.HeadDim)
 	}
 	width = cacheBytes / elements
 	dtype = predicted

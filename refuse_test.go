@@ -116,6 +116,10 @@ func TestInfoReportsWhatWasResolved(t *testing.T) {
 		Device: CPU, Precision: F16,
 		WeightBytes:          got.WeightBytes,
 		CacheBytesPerSession: cacheBytes(m.cfg, DefaultContext, accel.F32),
+		// A dense stack caches every layer, and saying so is what lets a
+		// reader divide the bytes back into a width. A hybrid's is one in four
+		// (specs/023-cache-kinds.md section 8).
+		CachedLayers: synthLayers,
 	}
 	if got != want {
 		t.Errorf("Info() =\n  %+v\nwant\n  %+v", got, want)
@@ -835,5 +839,40 @@ func TestCacheBytesCarriesTheWidth(t *testing.T) {
 	if shared*2 != own {
 		t.Errorf("process scope reports %d and no scope reports %d; the pool is "+
 			"half the width, so the first must be half the second", shared, own)
+	}
+}
+
+// TestTheCacheIsPricedOverTheLayersThatCache is [023-D3] in the one place a
+// wrong answer costs admissions: three layers in four of a hybrid write no key
+// or value, and a block priced over all sixty-four is wrong by 4x in the
+// direction that refuses requests a device has room for.
+func TestTheCacheIsPricedOverTheLayersThatCache(t *testing.T) {
+	t.Parallel()
+	const context = 1024
+	dense := &model.Config{NumLayers: 64, NumKVHeads: 4, HeadDim: 256}
+	hybrid := &model.Config{
+		NumLayers: 64, NumKVHeads: 4, HeadDim: 256,
+		LayerTypes: func() model.LayerSchedule {
+			s := make(model.LayerSchedule, 64)
+			for i := range s {
+				if i%4 == 3 {
+					s[i] = model.LayerFullAttention
+					continue
+				}
+				s[i] = model.LayerGatedDelta
+			}
+			return s
+		}(),
+	}
+	d := cacheBytes(dense, context, accel.F16)
+	h := cacheBytes(hybrid, context, accel.F16)
+	if want := d / 4; h != want {
+		t.Errorf("a hybrid's cache is %d bytes and a dense stack's is %d; one layer "+
+			"in four caches, so it is a quarter (%d)", h, d, want)
+	}
+	// And the dense answer is unchanged, so the arithmetic did not move for
+	// every model in the registry.
+	if want := int64(2*64*context*4*256) * 2; d != want {
+		t.Errorf("a dense stack's cache is %d bytes, want %d", d, want)
 	}
 }

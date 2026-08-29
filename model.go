@@ -66,8 +66,49 @@ type Info struct {
 	WeightBytes int64
 
 	// CacheBytesPerSession is what one session's key and value states cost at
-	// Context positions: specs/005-kv-cache.md §3's M_kv.
+	// Context positions: specs/005-kv-cache.md §3's M_kv, **over the layers
+	// that have a key/value cache**. For a hybrid that is one layer in four
+	// (specs/023-cache-kinds.md §8).
+	//
+	// It keeps that meaning rather than becoming a total, and [023-D6] is why:
+	// `tgo info` recovers the stored width by dividing it by
+	// 2·L·C·H_kv·d_h and prints `unknown` when there is a remainder, so a
+	// summed number would land in that branch every time and lose the label.
+	// It also conflates a per-position cost with a per-slot one, and a reader
+	// sizing a context needs the first.
 	CacheBytesPerSession int64
+
+	// CachedLayers is how many layers CacheBytesPerSession was computed over,
+	// which is what makes the division above possible for a hybrid. It equals
+	// Layers for a dense model.
+	CachedLayers int
+
+	// RecurrentBytesPerSlot is what the gated-delta layers' recurrent state
+	// costs per slot, over every one of them, and is zero for a dense model.
+	//
+	// Per slot and not per position: a recurrent state has no positions
+	// (specs/018-hybrid-models.md §2.1), so it does not move with Context and
+	// it is charged whether the slot is busy or idle.
+	RecurrentBytesPerSlot int64
+
+	// LinearLayers is how many gated-delta layers the stack has, and Recurrent
+	// is their geometry. Both are zero for a dense model.
+	LinearLayers int
+	Recurrent    model.Recurrent
+}
+
+// ConvWindowBytes is what the depthwise convolution's window costs over every
+// gated-delta layer, for a step of that many slots and token rows.
+//
+// A method rather than a field because only slots·(K-1) of the window's rows
+// persist and the rest is scratch proportional to the step, so there is no one
+// number: the prefill chunk is a memory parameter for a hybrid where it is a
+// latency parameter for a dense model (specs/023-cache-kinds.md §6).
+func (i Info) ConvWindowBytes(slots, rows int) int64 {
+	if i.LinearLayers == 0 {
+		return 0
+	}
+	return i.Recurrent.WindowBytes(i.LinearLayers, slots, rows)
 }
 
 // Model is a loaded model: a device, the weights on it, and the compiled plans
@@ -211,10 +252,24 @@ func Open(dir string, opts ...Option) (*Model, error) {
 	cacheWidth := cacheDType(o.cacheScope)
 	perSession := cacheBytes(cfg, o.context, cacheWidth)
 	if o.context > DefaultContext {
+		// One line per kind, each naming the layer count of its own kind and
+		// its own width. Every term of a single line is wrong for a hybrid, and
+		// [023-D6] is the rule the three share: a breakdown that does not
+		// multiply out to the number beside it is worse than no breakdown.
 		fmt.Fprintf(os.Stderr, "tgo: a %d-position context costs %s of key/value cache "+
 			"per session (%d layers x %d positions x %d kv heads x %d head dim x 2 states "+
-			"x %d bytes)\n", o.context, bytesText(perSession), cfg.NumLayers, o.context,
+			"x %d bytes)\n", o.context, bytesText(perSession), cachedLayers(cfg), o.context,
 			cfg.NumKVHeads, cfg.HeadDim, cacheWidth.Size())
+		if r := cfg.Recurrent; r != nil {
+			lin := cfg.LayerTypes.Count(model.LayerGatedDelta)
+			// Per slot and not per position: the recurrent state has no
+			// positions at all (018 §2.1), so it does not move with the
+			// context and a reader sizing one must not read it as if it did.
+			fmt.Fprintf(os.Stderr, "tgo: and %s of recurrent state per slot "+
+				"(%d layers x %d key heads x %d value dim x %d key dim x 4 bytes)\n",
+				bytesText(int64(lin)*r.StateBytes()), lin, r.Heads, r.ValueDim,
+				r.KeyDim)
+		}
 	}
 
 	dev, resolved, err := openDevice(o.device)
@@ -261,6 +316,12 @@ func Open(dir string, opts ...Option) (*Model, error) {
 		Precision:            fromLoader(rep.Chosen),
 		WeightBytes:          rep.Bytes + gainBytes(specs, cfg),
 		CacheBytesPerSession: perSession,
+		CachedLayers:         cachedLayers(cfg),
+	}
+	if r := cfg.Recurrent; r != nil {
+		lin := cfg.LayerTypes.Count(model.LayerGatedDelta)
+		m.info.LinearLayers, m.info.Recurrent = lin, *r
+		m.info.RecurrentBytesPerSlot = int64(lin) * r.StateBytes()
 	}
 	return m, nil
 }
@@ -501,13 +562,26 @@ func bindBuffer(into map[string]accel.BufferView, name string, buf *accel.Buffer
 	return nil
 }
 
-// cacheBytes is specs/005-kv-cache.md §3's M_kv for one session, at f32.
+// cacheBytes is specs/005-kv-cache.md §3's M_kv for one session.
+//
+// Over the layers that **have** a key/value cache, which for a hybrid is one in
+// four: three layers in four write no KV, and pricing a block over all of them
+// is wrong by 4x in the direction that refuses admissions a device has room for
+// ([023-D3](specs/023-cache-kinds.md)).
 //
 // A function rather than a comment, because a memory model nobody executes is a
 // comment (005 §7).
 func cacheBytes(c *model.Config, capacity int, dt accel.DType) int64 {
-	return 2 * int64(c.NumLayers) * int64(capacity) * int64(c.NumKVHeads) *
+	return 2 * int64(cachedLayers(c)) * int64(capacity) * int64(c.NumKVHeads) *
 		int64(c.HeadDim) * int64(dt.Size())
+}
+
+// cachedLayers is how many layers of the stack hold a key/value cache.
+func cachedLayers(c *model.Config) int {
+	if c.LayerTypes.Hybrid() {
+		return c.LayerTypes.Count(model.LayerFullAttention)
+	}
+	return c.NumLayers
 }
 
 // cacheDType is the width a session's key and value states are held at, decided
