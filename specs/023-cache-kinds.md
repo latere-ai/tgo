@@ -1,6 +1,6 @@
 ---
 title: "A cache that is per layer type: three state shapes in one forward pass"
-status: drafted
+status: implemented
 layer: graph
 depends_on:
   - 000-decisions.md
@@ -451,6 +451,79 @@ the addressing half is blocked upstream and the split is:
   and an issue under [000-D1](000-decisions.md).
 
 Run the probe first. It is one graph and one comparison.
+
+## Outcome
+
+Shipped 2026-08-29, and **§12's condition is met**: §3.1's probe passes, so this
+is one pass rather than a buildable half and one blocked upstream.
+`internal/conformance/layergather_test.go` gathers rows out of layer 3 of a
+`[L, R, C]` state and gets layer 3's, gathers row 1 out of three different
+layers and gets three different answers, and gathers past a layer view's rows
+and gets zeros rather than the next layer's first rows.
+
+**What shipped.** §2's three states, declared from a schedule rather than from
+`c.NumLayers`: `model.LayerSchedule`, `model.Recurrent`, and `Declare` sizing
+the key/value state at the full-attention count and the two recurrent states at
+the gated-delta one, each addressed by `LayerSchedule.Ordinal`. §2.1's two
+consequences: `PortExtents` at $B = 1$ for a hybrid, and the recurrent state's
+leading axis at the plan's $B$ exactly. §3's flat window and its index ports:
+`nn.ConvIndex` is the host arithmetic and `nn.DepthwiseCausalConv` gathers where
+it used to slice. §5's widths, which are structural rather than chosen —
+`tensor.LinearAttention` refuses any dtype but f32. §6's formulas as
+`Recurrent.StateBytes` and `Recurrent.WindowBytes`. §8's reporting: `Info` gains
+`RecurrentBytesPerSlot`, `LinearLayers` and `Recurrent`, `cacheWidth` divides by
+the cached layer count, and the startup print gains a line per kind.
+
+**And the 4× is spent as well as reported.** §4 prices a block over
+$L_\text{full}$, and the shared pool's two buffers were allocated over
+`c.NumLayers` — so a hybrid's largest allocation after the weights would have
+been four times what it needs, three quarters of it rows nothing ever writes.
+`blocks.go` and `cacheBytes` now agree, and both have a test that fails at 4×.
+
+**What diverged**, and why the code is right.
+
+- **`nn.ConvIndex` takes a capacity, which §3's formula has no term for.** The
+  out-of-range sentinel has to be the window's **declared** row count and not
+  the minimum the step needs: a plan is compiled per bucket over one shared
+  buffer, so a smaller bucket's window is a prefix of a larger one's, and a
+  sentinel of the minimum would address a real row of the larger. §3 derives $R$
+  for one step and the buffer outlives the step.
+- **Only one of §3's "two properties this layout inherits for free" is
+  observable**, and the test says so rather than asserting both and checking
+  one. The *read* is real: a pad row gathers zeros, so its output is zero and
+  the real rows beside it are what an exact step produces, and a mutation that
+  points a pad row at a token row fails it. The *write* is not: a pad row's
+  write index, were the sentinel dropped, lands past every row any tap or carry
+  reads, so no value catches it. What the sentinel buys there is a window with
+  no row nothing wrote, which matters to a reader of a dump and to nothing the
+  graph computes.
+- **§2.2's stacking is a refusal rather than a derivation.** `Recurrent.check`
+  requires $d_v$ to be a whole number of $d_k$, because value heads sharing a
+  key head are disjoint row bands of one state and a partial band is not one.
+  The spec argues the identity; the code refuses the shape that would break it.
+- **`Info` gained `CachedLayers`, which §8 did not name.** §8's third bullet
+  asks `modelFacts` for the count, and `modelFacts` is built from the engine's
+  report — so the engine has to say how many layers the bytes it reported were
+  computed over, or `cacheWidth` has a number it cannot divide.
+- **`Info.ConvWindowBytes` is a method and not a field.** A `func` field makes
+  `Info` incomparable, and the test that pins what `Info` reports compares with
+  `==`. The method is also the honest shape: there is no one window number,
+  because the chunk decides it.
+
+**Not built.** Everything left needs a stack that actually runs all three kinds,
+which is `model/qwen3_5_graph.go` and [024](024-qwen3-5-architecture.md)'s:
+§10's `TestThreeKindsInOneStep`, the three disjointness rows §9 calls three
+claims, `TestRecurrentSlotCountMustEqualExtents`,
+`TestConvDispatchCountIsGatherNotSlice` and `TestHybridCacheBytesMultiplyOut`.
+The declaration and the arithmetic they would check are here and have their own
+tests; what is missing is the forward pass to check them *through*, and
+[C25](010-conformance.md)'s class — correct shapes, no refusal, wrong values —
+is exactly what only that can catch.
+
+§4's admission change needs no code: a block is priced from
+`Info.CacheBytesPerSession`, which is now over $L_\text{full}$, and §4's second
+check is [008](008-scheduler.md)'s slot count unchanged. §7 needs none either —
+[023-D5] is that [008-D5](008-scheduler.md)'s victim choice does not change.
 
 ## Decision record
 

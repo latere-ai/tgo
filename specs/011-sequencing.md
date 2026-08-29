@@ -305,6 +305,55 @@ it — measured at 8 prompt tokens and 2 decodes in one step (Wave 9). What
 remains open is narrower — GGUF's super-blocks ([C17](010-conformance.md)) —
 and it blocks no milestone.
 
+### 2026-08-29 — Wave 16: three cache kinds, and the probe that kept them one pass
+
+[023](023-cache-kinds.md) is built, and it is the first of
+[018](018-hybrid-models.md)'s four children. A dense transformer caches one
+thing per layer; a Qwen3.8 hybrid holds **three** at once and one forward pass
+touches all three.
+
+**The probe first, as [023 §12](023-cache-kinds.md) says.** The spec put its own
+shape on one question: does `GatherRows` work over a `LayerState` view?
+[C12](010-conformance.md) closed on `Attention` and `ScatterRows` binding a
+layer view, and the gather in `nn.DepthwiseCausalConv` runs over a whole state
+rather than a slice of one. It passes, so 023 stayed one pass. It is a **value**
+probe: every cell of the fixture names its own layer, so a gather that read
+layer 0 for every view cannot produce a right answer — and that failure would
+give a hybrid 48 convolution layers all convolving the first one's window, which
+is fluent and wrong.
+
+**The window is flat and the slot is a number.** `ConvState`'s comment said
+`[slots, K-1+T, C]` and the code was one slot, and the slot axis does not go in
+as a tensor axis: `ScatterRows` computes a row's width as `elements/shape[0]`,
+so on that shape a *row* is a whole slot and writing one token's $C$ values is
+inexpressible. So the window is $[R, C]$ with $R = B(K-1) + T$ and the slot is
+arithmetic in the u32 index ports, exactly as paging already is. The per-tap
+read is a `GatherRows` where a `Slice` and a `Contiguous` were: the same bytes
+through an index.
+
+**One test that the old one could not fail on.** A carry indexed without the
+slot term passes `TestADepthwiseCausalConvCarriesAcrossSteps` and fails
+`TestADepthwiseCausalConvCarriesPerSlot`, which steps two slots together and
+compares each against its **own** history rather than against the flat step.
+
+**The 4× is spent as well as reported.** [023-D3](023-cache-kinds.md) prices a
+block over the full-attention layers only, and the shared pool's two buffers
+were allocated over `c.NumLayers` — so a hybrid's largest allocation after the
+weights would have been four times what it needs, three quarters of it rows
+nothing ever writes. Both have a test that fails at 4× now.
+
+**What a spec's formula can leave out.** §3 derives $R$ for one step, and the
+buffer outlives the step: a plan is compiled per bucket over one shared
+allocation, so a smaller bucket's window is a *prefix* of a larger one's and the
+out-of-range sentinel has to be the declared row count rather than the minimum
+the step needs. `nn.ConvIndex` takes a capacity for that reason.
+
+**And one of §3's two free properties is not observable**, which the test says
+rather than asserting both and checking one. A pad row's *read* is real and a
+mutation catches it. Its *write*, were the sentinel dropped, lands past every
+row any tap or carry reads — so no value catches it, and what the sentinel buys
+there is a window with no row nothing wrote.
+
 ### 2026-08-29 — Wave 15: an unsalted request shares with nothing
 
 [022](022-batched-serving.md)'s second pass. The headline is a correctness fix

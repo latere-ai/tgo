@@ -148,17 +148,18 @@ where the code is, what diverged, and what is open.
 | [019](019-session-affinity.md) | complete | cross-request prefix reuse with no page table: pool the sessions | — |
 | [021](021-admission-queue.md) | complete | one queue in front of admission, so a full batch defers rather than refuses | — |
 | [022](022-batched-serving.md) | implemented | the server drives a scheduler; batched serving becomes the default | §14's pass 3: the default flip, which waits on 020's checkpoint |
+| [023](023-cache-kinds.md) | implemented | three state shapes in one forward pass, and what a block reserves | §10's six rows that need a stack running all three kinds, which is 024's graph |
 | [030](030-logprobs.md) | implemented | reporting the distribution a token was drawn from | the three `llmdialect` routes, whose IR has no field for a logprob |
 
-**What is next.** Eight specs, each scoped to be finished in one pass. Four are
+**What is next.** Seven specs, each scoped to be finished in one pass. Three are
 the residue of a spec above that was scoped too large: 008 shed three, of which
-[021](021-admission-queue.md) is built and [022](022-batched-serving.md) is one
-pass of three in; 018 shed four, 017 shed two, 015 shed one.
+[021](021-admission-queue.md) is built and [022](022-batched-serving.md) is two
+passes of three in; 018 shed four, of which [023](023-cache-kinds.md) is built;
+017 shed two, 015 shed one.
 
 | spec | status | what it owns | from |
 | --- | --- | --- | --- |
 | [020](020-device-sampling.md) | drafted | the sampling policy on `tensor.Sample`, single and batched | 006, 008 |
-| [023](023-cache-kinds.md) | drafted | three state shapes in one forward pass, and what a block reserves | 018 |
 | [024](024-qwen3-5-architecture.md) | drafted | the `qwen3_5` config, weight map and hybrid graph | 018 |
 | [025](025-recurrent-snapshot.md) | drafted | prefix reuse for a state that has no positions | 018 |
 | [026](026-image-tokens.md) | drafted | a multimodal vocabulary a text-only path must not mis-embed | 018 |
@@ -268,9 +269,11 @@ than being moot. Nothing below reorders: the block waits on accel.
    inexpressible for the sixteen full-attention layers, and there is no
    `attn_output_gate`. Both are `nn` changes
    [024](024-qwen3-5-architecture.md) owns and does first. *Small.*
-2. **Cache kinds per layer type** ([023](023-cache-kinds.md)). *Large*, blocks
-   3, 4 and 5. It carries the slots axis the convolution state does not have:
-   single-sequence 27B does not need it and **serving** 27B does.
+2. **Cache kinds per layer type** ([023](023-cache-kinds.md)). **Built.** §3.1's
+   probe passed, so it stayed one pass: `GatherRows` over a `LayerState` view
+   reads that layer, so the convolution window is flat and its slot axis is
+   arithmetic in the index ports. What is left of it is the rows that need a
+   stack running all three kinds, which is 3's graph.
 3. **The `qwen3_5` architecture** ([024](024-qwen3-5-architecture.md)). *Large*,
    blocked on 1 and 2. Nothing in `model/` reads `layer_types` today.
 4. **Snapshot and restore** ([025](025-recurrent-snapshot.md)). *Medium*,
