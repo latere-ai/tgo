@@ -87,7 +87,11 @@ func newBlockPool(dev *accel.Device, c *model.Config, scope prefix.Scope,
 	}
 	bp := &blockPool{pool: p, positions: blocks * CacheBlock, dtype: accel.F16}
 
-	n := c.NumLayers * bp.positions * c.NumKVHeads * c.HeadDim
+	// The layers that have a key/value cache, and a gated-delta layer has
+	// none. Allocating over the whole stack would reserve four times the pool
+	// for a hybrid, three quarters of which nothing ever writes
+	// ([023-D3](specs/023-cache-kinds.md)).
+	n := cachedLayers(c) * bp.positions * c.NumKVHeads * c.HeadDim
 	for _, a := range []struct {
 		dst   **accel.Buffer
 		label string

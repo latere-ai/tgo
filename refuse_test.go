@@ -876,3 +876,27 @@ func TestTheCacheIsPricedOverTheLayersThatCache(t *testing.T) {
 		t.Errorf("a dense stack's cache is %d bytes, want %d", d, want)
 	}
 }
+
+// TestTheSharedPoolIsAllocatedOverTheLayersThatCache is the same 4x as
+// [TestTheCacheIsPricedOverTheLayersThatCache] in the place it is spent rather
+// than reported: the pool's two buffers are the largest allocation a serving
+// process has after the weights, and three quarters of a hybrid's would hold
+// rows nothing ever writes.
+func TestTheSharedPoolIsAllocatedOverTheLayersThatCache(t *testing.T) {
+	t.Parallel()
+	elements := func(c *model.Config, positions int) int {
+		return cachedLayers(c) * positions * c.NumKVHeads * c.HeadDim
+	}
+	dense := &model.Config{NumLayers: 64, NumKVHeads: 4, HeadDim: 256}
+	hybrid := &model.Config{NumLayers: 64, NumKVHeads: 4, HeadDim: 256,
+		LayerTypes: make(model.LayerSchedule, 64)}
+	for i := range hybrid.LayerTypes {
+		if i%4 != 3 {
+			hybrid.LayerTypes[i] = model.LayerGatedDelta
+		}
+	}
+	if got, want := elements(hybrid, 4096), elements(dense, 4096)/4; got != want {
+		t.Errorf("a hybrid's pool is %d elements and a dense stack's quarter is %d",
+			got, want)
+	}
+}
