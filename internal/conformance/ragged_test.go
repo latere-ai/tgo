@@ -99,10 +99,10 @@ type raggedInputs struct {
 }
 
 func newRaggedInputs(sh raggedShape, c raggedCase) raggedInputs {
-	in := raggedInputs{shape: sh, c: c}
-	in.q = spread(c.tokens()*sh.qHeads*sh.headDim, 7)
-	in.k = spread(c.cacheRows(sh)*sh.kvHeads*sh.headDim, 13)
-	in.v = spread(c.cacheRows(sh)*sh.kvHeads*sh.headDim, 29)
+	in := raggedInputs{shape: sh, c: c,
+		q: spread(c.tokens()*sh.qHeads*sh.headDim, 7),
+		k: spread(c.cacheRows(sh)*sh.kvHeads*sh.headDim, 13),
+		v: spread(c.cacheRows(sh)*sh.kvHeads*sh.headDim, 29)}
 	for _, s := range c.seqs {
 		in.extents = append(in.extents, uint32(s.extent))
 		in.lengths = append(in.lengths, uint32(s.length))

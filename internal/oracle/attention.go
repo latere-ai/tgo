@@ -61,21 +61,21 @@ func Attention(q, k, v []float64, qSeq, qHeads, kvHeads, headDim, kvLen int, sca
 
 	group := qHeads / kvHeads
 	out := make([]float64, qSeq*qHeads*headDim)
-	for t := 0; t < qSeq; t++ {
+	for t := range qSeq {
 		// Visible cache rows for this query: everything up to its own
 		// position. The mask is applied by shortening the score vector rather
 		// than by adding -Inf, so the softmax never sees a term it has to
 		// cancel.
 		visible := causalBase + t + 1
-		for h := 0; h < qHeads; h++ {
+		for h := range qHeads {
 			kvh := h / group
 			qrow := q[(t*qHeads+h)*headDim : (t*qHeads+h)*headDim+headDim]
 
 			scores := make([]float64, visible)
-			for j := 0; j < visible; j++ {
+			for j := range visible {
 				krow := k[(j*kvHeads+kvh)*headDim : (j*kvHeads+kvh)*headDim+headDim]
 				dot := 0.0
-				for c := 0; c < headDim; c++ {
+				for c := range headDim {
 					dot += qrow[c] * krow[c]
 				}
 				scores[j] = dot * scale
@@ -83,9 +83,9 @@ func Attention(q, k, v []float64, qSeq, qHeads, kvHeads, headDim, kvLen int, sca
 			w := Softmax(scores)
 
 			orow := out[(t*qHeads+h)*headDim : (t*qHeads+h)*headDim+headDim]
-			for j := 0; j < visible; j++ {
+			for j := range visible {
 				vrow := v[(j*kvHeads+kvh)*headDim : (j*kvHeads+kvh)*headDim+headDim]
-				for c := 0; c < headDim; c++ {
+				for c := range headDim {
 					orow[c] += w[j] * vrow[c]
 				}
 			}

@@ -505,7 +505,7 @@ func TestQueueFullIsRefusedWithRetryAfter(t *testing.T) {
 	q := newQueue(t, f, QueueOptions{Depth: 2, Wait: 90 * time.Second})
 	f.occupy(t, 4)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		admit(q, context.Background(), q.NewTicket(), 4)
 		waitFor(t, fmt.Sprintf("waiter %d to be queued", i), func() bool {
 			return q.Depth() == i+1
@@ -547,8 +547,7 @@ func TestQueueTimeoutIsNotClientGone(t *testing.T) {
 	q := newQueue(t, f, QueueOptions{Wait: 20 * time.Millisecond})
 	f.occupy(t, 4)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	err := admit(q, ctx, q.NewTicket(), 4).refused(t, "the waiter")
 	if !errors.Is(err, ErrQueueTimeout) {
 		t.Fatalf("past the budget the waiter got %v, want ErrQueueTimeout", err)
@@ -749,7 +748,7 @@ func TestQueueUnderRace(t *testing.T) {
 	q := newQueue(t, f, QueueOptions{Wait: handoff})
 
 	var wg sync.WaitGroup
-	for i := 0; i < callers; i++ {
+	for i := range callers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -878,7 +877,7 @@ func TestSchedulerCapacityFiresOnFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if _, err := s.Step(); err != nil {
 			t.Fatalf("Step %d: %v", i, err)
 		}

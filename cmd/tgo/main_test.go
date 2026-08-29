@@ -327,7 +327,7 @@ func usageFlags(t *testing.T, command string) map[string]bool {
 	}
 	section, _, _ := strings.Cut(rest, "\n\n")
 	found := map[string]bool{}
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		name, _, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "--"), " ")
 		if !ok || !strings.HasPrefix(strings.TrimSpace(line), "--") {
 			continue

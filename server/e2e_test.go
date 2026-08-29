@@ -427,7 +427,7 @@ func banWhitespace(t *testing.T, dir string) string {
 		t.Fatalf("loading the fixture's tokenizer: %v", err)
 	}
 	bias := map[string]float64{}
-	for id := 0; id < synthVocab; id++ {
+	for id := range synthVocab {
 		if strings.ContainsAny(string(tk.TextBytes(id)), " \t\n\r") {
 			bias[strconv.Itoa(id)] = -1e30
 		}

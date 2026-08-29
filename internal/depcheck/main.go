@@ -218,7 +218,7 @@ func check(pkg string, allow []entry, goos, goarch string) (unexpected, matched 
 
 	hit := map[string]bool{}
 	seen := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		p := strings.TrimSpace(line)
 		if p == "" || !external(p) {
 			continue

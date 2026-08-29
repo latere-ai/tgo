@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -170,12 +171,7 @@ func TestTheGrammarStopsOnTheIDsTheStreamStopsOn(t *testing.T) {
 
 // allowed reports whether a state admits an id.
 func allowed(st *grammar.State, id int) bool {
-	for _, a := range st.Allowed() {
-		if a == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(st.Allowed(), id)
 }
 
 // A token the tokenizer does not hold resolves to -1, and an id outside the
@@ -434,9 +430,7 @@ func TestTwoConstrainedStreamsShareOneGrammar(t *testing.T) {
 	ready.Add(n)
 	for i := range n {
 		s := sessions[i]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ready.Done()
 			<-release
 			st, err := s.Complete(context.Background(), "describe a place",
@@ -450,7 +444,7 @@ func TestTwoConstrainedStreamsShareOneGrammar(t *testing.T) {
 				text += st.Text()
 			}
 			out[i] = result{text: text, err: st.Err()}
-		}()
+		})
 	}
 	ready.Wait()
 	close(release)

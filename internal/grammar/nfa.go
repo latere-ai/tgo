@@ -164,7 +164,7 @@ func (n *nfa) star(gen func() frag) frag {
 // no amount of nesting spells arithmetic.
 func (n *nfa) rep(gen func() frag, min, max int) frag {
 	var parts []frag
-	for i := 0; i < min; i++ {
+	for range min {
 		parts = append(parts, gen())
 	}
 	switch {

@@ -142,7 +142,7 @@ func TestRealCheckpointEndToEnd(t *testing.T) {
 	t.Logf("prompt token %d = %q", ids[0], text)
 
 	var runs []string
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		s := session(t, m, WithSessionContext(capacity))
 		step := time.Now()
 		st, err := s.Complete(t.Context(), text, greedy(1))

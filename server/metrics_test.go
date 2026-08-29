@@ -43,7 +43,7 @@ func TestMetricsExposeEverySeriesTheSpecNames(t *testing.T) {
 		}
 	}
 	// Every series is typed and documented, or a scrape reads it as untyped.
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "# HELP tgo_") {
 			name := strings.Fields(line)[2]
 			if !strings.Contains(body, "# TYPE "+name+" ") {

@@ -126,15 +126,13 @@ func TestTwoRequestsShareOneForwardPass(t *testing.T) {
 	// the other is admitted.
 	const body = `{"model":"` + synthName + `","max_tokens":16,"prompt":"hi"}`
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			w := do(t, s, http.MethodPost, "/v1/completions", body)
 			if w.Code != http.StatusOK {
 				t.Errorf("status = %d: %s", w.Code, w.Body.String())
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -209,7 +207,7 @@ func TestABatchedRequestReportsWhatItReused(t *testing.T) {
 		`"prompt":"a prompt long enough to fill a block or two, twice over",` +
 		`"cache_salt":"tenant-a"}`
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		w := do(t, s, http.MethodPost, "/v1/completions", body)
 		if w.Code != http.StatusOK {
 			t.Fatalf("request %d: status = %d: %s", i, w.Code, w.Body.String())

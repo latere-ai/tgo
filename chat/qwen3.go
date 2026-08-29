@@ -3,6 +3,7 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -237,8 +238,8 @@ func plainText(m Message) string {
 // is structural (003-D8). With no user message at all the template treats the
 // whole conversation as prior context, and so does this.
 func lastQueryIndex(msgs []Message) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == User {
+	for i, msg := range slices.Backward(msgs) {
+		if msg.Role == User {
 			return i
 		}
 	}

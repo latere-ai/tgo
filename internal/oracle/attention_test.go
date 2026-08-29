@@ -47,9 +47,9 @@ func TestAttentionGroupsQueryHeadsByFloorDivision(t *testing.T) {
 	// Every value row of kv head 0 is 10 and of kv head 1 is 20, so the output
 	// names the kv head that was read regardless of the attention weights.
 	v := make([]float64, kvLen*kvHeads*headDim)
-	for j := 0; j < kvLen; j++ {
-		for h := 0; h < kvHeads; h++ {
-			for c := 0; c < headDim; c++ {
+	for j := range kvLen {
+		for h := range kvHeads {
+			for c := range headDim {
 				v[(j*kvHeads+h)*headDim+c] = float64(10 * (h + 1))
 			}
 		}
@@ -74,13 +74,13 @@ func TestAttentionGroupedHeadsAttendToTheSameKeys(t *testing.T) {
 	// comes from which cache entry was read.
 	one := randf(headDim, 93)
 	q := make([]float64, qSeq*qHeads*headDim)
-	for h := 0; h < qHeads; h++ {
+	for h := range qHeads {
 		copy(q[h*headDim:], one)
 	}
 
 	got := Attention(q, k, v, qSeq, qHeads, kvHeads, headDim, kvLen, 0.6, kvLen-1)
 	head := func(h int) []float64 { return got[h*headDim : (h+1)*headDim] }
-	for c := 0; c < headDim; c++ {
+	for c := range headDim {
 		// Same query, same keys, same values, same order: exactly equal.
 		if head(0)[c] != head(1)[c] {
 			t.Errorf("heads 0 and 1 share kv head 0 but differ at %d: %.17g vs %.17g", c, head(0)[c], head(1)[c])
@@ -90,7 +90,7 @@ func TestAttentionGroupedHeadsAttendToTheSameKeys(t *testing.T) {
 		}
 	}
 	same := true
-	for c := 0; c < headDim; c++ {
+	for c := range headDim {
 		if head(0)[c] != head(2)[c] {
 			same = false
 		}
@@ -112,13 +112,13 @@ func TestAttentionMasksTheFuture(t *testing.T) {
 
 	k2 := append([]float64(nil), k...)
 	v2 := append([]float64(nil), v...)
-	for c := 0; c < headDim; c++ {
+	for c := range headDim {
 		k2[2*headDim+c] += 5
 		v2[2*headDim+c] += 5
 	}
 	after := Attention(q, k2, v2, qSeq, 1, 1, headDim, kvLen, 0.5, 0)
 
-	for i := 0; i < 2*headDim; i++ {
+	for i := range 2 * headDim {
 		if before[i] != after[i] {
 			t.Errorf("query %d saw the future: %.17g became %.17g", i/headDim, before[i], after[i])
 		}
@@ -143,7 +143,7 @@ func TestAttentionFirstQueryReadsOnlyItsOwnKey(t *testing.T) {
 	k := randf(kvLen*headDim, 42)
 	v := randf(kvLen*headDim, 43)
 	got := Attention(q, k, v, kvLen, 1, 1, headDim, kvLen, 0.3, 0)
-	for c := 0; c < headDim; c++ {
+	for c := range headDim {
 		if got[c] != v[c] {
 			t.Errorf("out[%d] = %.17g, want exactly %.17g", c, got[c], v[c])
 		}

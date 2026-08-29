@@ -180,7 +180,7 @@ func matchWord(s string, i int) int {
 // matchDigits implements \p{N} or \p{N}{1,3}.
 func matchDigits(s string, i, max int) int {
 	j := i
-	for k := 0; k < max; k++ {
+	for range max {
 		r, n := decodeRune(s, j)
 		if n == 0 || !unicode.IsNumber(r) {
 			break

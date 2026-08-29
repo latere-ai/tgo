@@ -120,7 +120,7 @@ func TestMatMulHandComputed(t *testing.T) {
 func TestMatMulIdentity(t *testing.T) {
 	const n = 5
 	id := make([]float64, n*n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id[i*n+i] = 1
 	}
 	x := []float64{1, -2, 3.5, 0, 7}

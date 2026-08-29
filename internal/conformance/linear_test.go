@@ -50,17 +50,17 @@ func newLinearInputs(sh linearShape, extents []int) linearInputs {
 	for _, n := range extents {
 		tokens += n
 	}
-	in := linearInputs{sh: sh}
-	in.q = spread(tokens*sh.heads*sh.keyDim, 11)
-	in.k = spread(tokens*sh.heads*sh.keyDim, 23)
-	in.v = spread(tokens*sh.heads*sh.valueDim, 37)
-	in.state = spread(len(extents)*sh.heads*sh.valueDim*sh.keyDim, 41)
-	// The gates are what make this a *gated* delta rule, so they are neither
-	// constant nor equal to each other: alpha near one decays slowly and beta
-	// away from zero writes hard, and a kernel that swapped them would still
-	// run.
-	in.alpha = make([]float32, tokens)
-	in.beta = make([]float32, tokens)
+	in := linearInputs{sh: sh,
+		q:     spread(tokens*sh.heads*sh.keyDim, 11),
+		k:     spread(tokens*sh.heads*sh.keyDim, 23),
+		v:     spread(tokens*sh.heads*sh.valueDim, 37),
+		state: spread(len(extents)*sh.heads*sh.valueDim*sh.keyDim, 41),
+		// The gates are what make this a *gated* delta rule, so they are neither
+		// constant nor equal to each other: alpha near one decays slowly and beta
+		// away from zero writes hard, and a kernel that swapped them would still
+		// run.
+		alpha: make([]float32, tokens),
+		beta:  make([]float32, tokens)}
 	for i := range in.alpha {
 		in.alpha[i] = float32(0.85 + 0.1*math.Sin(float64(i)))
 		in.beta[i] = float32(0.3 + 0.2*math.Cos(float64(2*i)))
@@ -91,7 +91,7 @@ func (in linearInputs) oracle() ([]float64, budget) {
 					S[i][j] = float64(in.state[((seq*sh.heads+h)*sh.valueDim+i)*sh.keyDim+j])
 				}
 			}
-			for t := 0; t < n; t++ {
+			for t := range n {
 				at := tok + t
 				alpha := float64(in.alpha[at])
 				beta := float64(in.beta[at])

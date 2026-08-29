@@ -281,7 +281,7 @@ func TestEmptyObject(t *testing.T) {
 // fills it.
 func chain(depth int) (schema, doc string) {
 	schema, doc = `{"type":"integer"}`, `41`
-	for i := 0; i < depth; i++ {
+	for range depth {
 		schema = `{"type":"object","properties":{"n":` + schema + `},"required":["n"],"additionalProperties":false}`
 		doc = `{"n":` + doc + `}`
 	}
@@ -294,7 +294,7 @@ func chain(depth int) (schema, doc string) {
 // the brackets and again after a comma.
 func arrayChain(depth int) (schema, doc string) {
 	schema, doc = `{"type":"integer"}`, `41`
-	for i := 0; i < depth; i++ {
+	for range depth {
 		schema = `{"type":"array","items":` + schema + `}`
 		doc = `[` + doc + `]`
 	}
@@ -426,7 +426,7 @@ func TestStopTokenOnlyWhereTheDocumentIsComplete(t *testing.T) {
 	const doc = `{"name":"Ada","age":36,"tags":["x","y"]}`
 
 	st := g.Start()
-	for at := 0; at < len(doc); at++ {
+	for at := range len(doc) {
 		if admits(st, stopID) {
 			t.Fatalf("the stop token is admissible after the prefix %q", doc[:at])
 		}
@@ -663,7 +663,7 @@ func TestTheCacheIsTheDesign(t *testing.T) {
 	if builds >= len(doc) {
 		t.Errorf("%d token sets for a %d byte document: no state repeated", builds, len(doc))
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		st := g.Start()
 		typeText(t, v, st, doc)
 	}
@@ -698,9 +698,7 @@ func TestOneGrammarDrivesManyRequests(t *testing.T) {
 	var done sync.WaitGroup
 	fail := make([]string, workers)
 	for i := range workers {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait()
 			doc := docs[i%len(docs)]
 			st := g.Start()
@@ -725,7 +723,7 @@ func TestOneGrammarDrivesManyRequests(t *testing.T) {
 			if !st.Accepting() {
 				fail[i] = "not accepting after " + doc
 			}
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()
@@ -932,7 +930,7 @@ func TestTheRefusalNamesTheSameKeywordEveryRun(t *testing.T) {
 		{`{"type":"object","properties":{},"minLength":1,"items":{"type":"integer"}}`, `"items"`},
 		{`{"type":"string","zebra":1,"aardvark":2}`, `"aardvark"`},
 	} {
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			_, err := Compile([]byte(tc.schema), v, Options{})
 			var ue *UnsupportedError
 			if !errors.As(err, &ue) {

@@ -144,8 +144,8 @@ func TestAnHonouredFieldIsAppliedAndNotReportedAsLost(t *testing.T) {
 func TestEveryPolicyFieldIsHonoured(t *testing.T) {
 	t.Parallel()
 	typ := reflect.TypeFor[tgo.Policy]()
-	for i := range typ.NumField() {
-		name := typ.Field(i).Name
+	for field := range typ.Fields() {
+		name := field.Name
 		if _, ok := honoured[name]; !ok {
 			t.Errorf("tgo.Policy.%s is not in the honoured table, so a request that sets it "+
 				"would be told the field was dropped", name)
@@ -369,11 +369,11 @@ func TestAnAdvisoryFieldDoesNotChangeTheTokens(t *testing.T) {
 // completionOf pulls the assistant's words out of an OpenAI Chat body.
 func completionOf(t *testing.T, body string) string {
 	t.Helper()
-	i := strings.Index(body, `"content":"`)
-	if i < 0 {
+	_, after, ok := strings.Cut(body, `"content":"`)
+	if !ok {
 		t.Fatalf("no content in %s", body)
 	}
-	rest := body[i+len(`"content":"`):]
+	rest := after
 	j := strings.Index(rest, `"`)
 	return rest[:j]
 }

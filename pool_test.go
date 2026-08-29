@@ -788,9 +788,7 @@ func TestPoolConcurrentRoutingKeepsOneOwnerPerSession(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for g := range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for turn := range 2 {
 				l, err := p.Acquire(context.Background(), PoolRequest{})
 				if err != nil {
@@ -833,7 +831,7 @@ func TestPoolConcurrentRoutingKeepsOneOwnerPerSession(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

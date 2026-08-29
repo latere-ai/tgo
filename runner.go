@@ -438,10 +438,7 @@ func (r *Runner) drive() {
 		// gap between them. Sampling, masking and detokenizing every slot are
 		// in it, which is what a batched loop puts on the host that a session
 		// per request also does -- once per slot either way.
-		host := time.Since(start) - t.submit - t.device - t.readback
-		if host < 0 {
-			host = 0
-		}
+		host := max(time.Since(start)-t.submit-t.device-t.readback, 0)
 		r.record(res, t, host)
 	}
 }

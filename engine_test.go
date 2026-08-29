@@ -66,7 +66,7 @@ func bucketed(t *testing.T, s *Session, prompt []int, n int) []int {
 func continueFrom(t *testing.T, s *Session, logits []float32, pos, n int) []int {
 	t.Helper()
 	out := make([]int, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		tok := argmax(logits)
 		out = append(out, tok)
 		if i == n-1 {
@@ -173,7 +173,7 @@ func TestPaddedPrefillLeavesCacheRowsBeyondTUntouched(t *testing.T) {
 		// some layer still at the sentinel, and only a per-layer count sees it.
 		for l := 0; l < c.NumLayers; l++ {
 			written := 0
-			for p := 0; p < len(prompt); p++ {
+			for p := range prompt {
 				lo := l*stride + p*row
 				if !equalF32(got[lo:lo+row], sentinel[lo:lo+row]) {
 					written++
@@ -343,7 +343,7 @@ func interleave(t *testing.T, sa, sb *Session, a, b []int, n int) ([]int, []int)
 	la, lb := prefill(sa, a), prefill(sb, b)
 	pa, pb := len(a), len(b)
 	outA, outB := []int{}, []int{}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ta, tb := argmax(la), argmax(lb)
 		outA, outB = append(outA, ta), append(outB, tb)
 		if i == n-1 {
@@ -390,13 +390,11 @@ func TestTwoConcurrentSessionsBothComplete(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := range prompts {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			ids, err := generate(sessions[i], prompts[i], 6)
 			got[i], errs[i] = ids, err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -425,7 +423,7 @@ func generate(s *Session, prompt []int, n int) ([]int, error) {
 	}
 	pos := len(prompt)
 	out := make([]int, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		tok := argmax(logits)
 		out = append(out, tok)
 		if i == n-1 {
@@ -507,7 +505,7 @@ func TestAbandonedStreamReleasesItsResources(t *testing.T) {
 	runtime.GC()
 	before := runtime.NumGoroutine()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		st, err := s.Complete(t.Context(), "abandon me after one event", greedy(30))
 		if err != nil {
 			t.Fatalf("Complete: %v", err)
@@ -629,7 +627,7 @@ func TestStreamIsDeterministicAcrossRuns(t *testing.T) {
 		{Temperature: 1.2, RepetitionPenalty: 1.1, PenaltyWindow: 16, Seed: 99, MaxTokens: 8},
 	} {
 		var runs []string
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			s := session(t, m, WithSessionContext(64))
 			st, err := s.Complete(t.Context(), "the same prompt every time", p)
 			if err != nil {
@@ -653,7 +651,7 @@ func TestSeedsDiffer(t *testing.T) {
 	t.Parallel()
 	m := openSynthetic(t)
 	seen := map[string]bool{}
-	for seed := uint64(0); seed < 4; seed++ {
+	for seed := range uint64(4) {
 		s := session(t, m, WithSessionContext(64))
 		st, err := s.Complete(t.Context(), "sample me",
 			Policy{Temperature: 1.5, Seed: seed, MaxTokens: 6})

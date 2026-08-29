@@ -106,10 +106,10 @@ func RoPE(x []float64, rows, width, rotaryDim int, base float64, pos []int, styl
 	out := make([]float64, len(x))
 	copy(out, x)
 	half := rotaryDim / 2
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		off := r * width
 		m := float64(pos[r])
-		for i := 0; i < half; i++ {
+		for i := range half {
 			// theta is computed once, here, for both styles. The two
 			// conventions differ only in which channels the i-th pair lives
 			// in, so deriving theta from a channel index in one branch and

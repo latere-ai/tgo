@@ -238,7 +238,7 @@ func WrapPool(m *tgo.Model, name string, n int) (*PoolEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PoolEngine{modelEngine: modelEngine{m: m, name: name}, pool: p}, nil
+	return &PoolEngine{m: m, name: name, pool: p}, nil
 }
 
 // PoolEngine is [WrapPool]'s implementation: [Wrap]'s engine with a session

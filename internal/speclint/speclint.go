@@ -114,7 +114,7 @@ func Parse(name, src string) (Spec, error) {
 
 	s := Spec{File: name, Body: body}
 	var list *[]string
-	for _, line := range strings.Split(head, "\n") {
+	for line := range strings.SplitSeq(head, "\n") {
 		if strings.HasPrefix(line, "  - ") {
 			if list == nil {
 				return Spec{}, fmt.Errorf("%s: list item %q under no key", name, line)
@@ -380,8 +380,8 @@ func outcome(body string) string {
 		return ""
 	}
 	rest := body[loc[1]:]
-	if end := strings.Index(rest, "\n## "); end >= 0 {
-		return rest[:end]
+	if before, _, ok := strings.Cut(rest, "\n## "); ok {
+		return before
 	}
 	return rest
 }

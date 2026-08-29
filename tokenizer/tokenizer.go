@@ -248,7 +248,7 @@ func (t *Tokenizer) applyModel(m *modelJSON) error {
 	// would have no id and Encode would have no total definition. Section 3's
 	// bijection is a property of the alphabet; this is the property of the
 	// vocabulary that makes it usable.
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		sym := string(byteToRune[b])
 		if _, ok := t.tokenID[sym]; !ok {
 			return fmt.Errorf("tokenizer: vocab is missing the byte-level symbol for byte 0x%02x", b)

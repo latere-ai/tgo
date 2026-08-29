@@ -6,6 +6,7 @@ package tgo
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -474,9 +475,7 @@ func (b *Batch) bindings(rows int) (tensor.Bindings, error) {
 	}
 	c, n := b.m.cfg, len(b.slots)
 	bufs := make(map[string]accel.BufferView, len(b.m.weightBind)+10)
-	for k, v := range b.m.weightBind {
-		bufs[k] = v
-	}
+	maps.Copy(bufs, b.m.weightBind)
 	for _, e := range []struct {
 		name  string
 		buf   *accel.Buffer

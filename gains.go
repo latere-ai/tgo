@@ -134,9 +134,9 @@ func permuteHeads(plane []float32, heads int) error {
 	}
 	half := dh / 2
 	tmp := make([]float32, dh)
-	for h := 0; h < heads; h++ {
+	for h := range heads {
 		head := plane[h*dh : (h+1)*dh]
-		for i := 0; i < half; i++ {
+		for i := range half {
 			tmp[2*i] = head[i]
 			tmp[2*i+1] = head[i+half]
 		}

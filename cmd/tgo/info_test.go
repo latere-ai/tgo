@@ -593,7 +593,7 @@ func TestRenderInfoNamesEachExtentOnItsOwnLine(t *testing.T) {
 func lineWith(t *testing.T, out, label string) string {
 	t.Helper()
 	var found []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), label+" ") {
 			found = append(found, strings.TrimSpace(line))
 		}

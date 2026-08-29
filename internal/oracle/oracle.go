@@ -52,7 +52,7 @@ func RMSNorm(x, gain []float64, eps float64) []float64 {
 	}
 	rows := len(x) / width
 	out := make([]float64, len(x))
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		row := x[r*width : (r+1)*width]
 		sum := 0.0
 		for _, v := range row {
@@ -86,10 +86,10 @@ func MatMul(x, w []float64, m, k, n int) []float64 {
 		panic("oracle: MatMul w length does not match k*n")
 	}
 	out := make([]float64, m*n)
-	for i := 0; i < m; i++ {
-		for j := 0; j < n; j++ {
+	for i := range m {
+		for j := range n {
 			sum := 0.0
-			for p := 0; p < k; p++ {
+			for p := range k {
 				sum += x[i*k+p] * w[p*n+j]
 			}
 			out[i*n+j] = sum

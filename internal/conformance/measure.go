@@ -72,11 +72,8 @@ type Divergence struct {
 // one's end: one of them stopped and the other did not, which is a divergence
 // in the decode and not a shorter answer.
 func FirstDifference(a, b []int32) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(b), len(a))
+	for i := range n {
 		if a[i] != b[i] {
 			return i
 		}

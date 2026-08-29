@@ -232,7 +232,7 @@ func TestRequestRefusals(t *testing.T) {
 	ctx := t.Context()
 
 	long := make([]int, 0, 80)
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		long = append(long, i%synthVocab)
 	}
 

@@ -294,11 +294,11 @@ func Int8MatMulBound(x []float32, scales []accel.Float16, m, k, n int) float64 {
 	}
 	worst := 0.0
 	terms := make([]accel.Float16, k)
-	for j := 0; j < n; j++ {
-		for p := 0; p < k; p++ {
+	for j := range n {
+		for p := range k {
 			terms[p] = scales[(p*n+j)/quant.Int8Block]
 		}
-		for i := 0; i < m; i++ {
+		for i := range m {
 			if b := quant.Int8ErrorBound(x[i*k:(i+1)*k], terms); b > worst {
 				worst = b
 			}

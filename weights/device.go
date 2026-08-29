@@ -105,10 +105,7 @@ func (a *arena) alloc(dt accel.DType, count int, label string) (*accel.Buffer, e
 // grow opens a pool that can hold at least need bytes.
 func (a *arena) grow(need int, label string) error {
 	want := need + need/poolHeadroom + poolGranularity
-	size := max(want, poolChunk)
-	if size > a.max {
-		size = a.max
-	}
+	size := min(max(want, poolChunk), a.max)
 	if size < want {
 		// The pool has to be larger than the buffer it holds: accel's
 		// suballocator rounds a request up to a size class before searching, so

@@ -75,7 +75,7 @@ func TestEverythingTheMachineAcceptsIsValid(t *testing.T) {
 		o := newOracle(parsed)
 
 		seen := map[string]bool{}
-		for w := 0; w < walks; w++ {
+		for range walks {
 			doc := randomWalk(t, g, v, rng, 60)
 			seen[doc] = true
 

@@ -65,7 +65,7 @@ func TestTwoRequestsShareOneForwardPass(t *testing.T) {
 	// the fixture rather than of the machine.
 	const tokens = 16
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -468,7 +468,7 @@ func TestRunnerQueuesPastItsSlots(t *testing.T) {
 	const n = 4
 	var wg sync.WaitGroup
 	texts := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

@@ -228,7 +228,7 @@ func TestDescribePolicy(t *testing.T) {
 }
 
 func TestWrapNoteAndAxisPoints(t *testing.T) {
-	for _, line := range strings.Split(wrapNote(singleBatchNote), "\n") {
+	for line := range strings.SplitSeq(wrapNote(singleBatchNote), "\n") {
 		if len(line) > 92 {
 			t.Errorf("a wrapped line is %d columns: %q", len(line), line)
 		}

@@ -131,7 +131,7 @@ func TestProbsDoesNotMoveTheStream(t *testing.T) {
 func TestGreedyIsDeterministic(t *testing.T) {
 	logits := rows(7, 1, 512)[0]
 	want := New(0).Next(copyRow(logits), nil, Policy{})
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		got := New(uint64(i)).Next(copyRow(logits), nil, Policy{})
 		if got != want {
 			t.Fatalf("run %d gave token %d, want %d", i, got, want)
@@ -230,7 +230,7 @@ func TestSampledFrequenciesFollowTheDistribution(t *testing.T) {
 
 	s := New(71)
 	ones := 0
-	for i := 0; i < trials; i++ {
+	for range trials {
 		if s.Next(copyRow(logits), nil, Policy{Temperature: 1}) == 1 {
 			ones++
 		}
@@ -347,7 +347,7 @@ func TestRefusalCostsNoDraw(t *testing.T) {
 // the walk would fall through to its last candidate.
 func TestDrawStaysBelowOne(t *testing.T) {
 	s := New(91)
-	for i := 0; i < 10000; i++ {
+	for range 10000 {
 		u := s.draw()
 		if u < 0 || u >= 1 {
 			t.Fatalf("draw %v is outside [0, 1)", u)

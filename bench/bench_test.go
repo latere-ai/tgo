@@ -202,7 +202,7 @@ func TestPercentilesKnownDistribution(t *testing.T) {
 // which would report a value no step ever took.
 func TestPercentilesReturnRealSamples(t *testing.T) {
 	r := bench.NewRecorder(10)
-	for i := 0; i < 9; i++ {
+	for range 9 {
 		r.Step(bench.Step{Phase: bench.Decode, Host: time.Millisecond})
 	}
 	r.Step(bench.Step{Phase: bench.Decode, Host: time.Second}) // the stall
@@ -300,7 +300,7 @@ func TestShareOfStepExactBreakdown(t *testing.T) {
 func TestTokensPerSecond(t *testing.T) {
 	r := bench.NewRecorder(4)
 	// Four steps of 250ms each, eight tokens: one second, eight tokens.
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		r.Step(bench.Step{Phase: bench.Decode, Tokens: 2, Batch: 2, Device: 250 * time.Millisecond})
 	}
 	if got := r.Report().Decode.TokensPerSecond; got != 8 {
@@ -381,7 +381,7 @@ func TestRealisticSequence(t *testing.T) {
 	r.TTFT(prefill.Total())
 
 	var decodeTotal time.Duration
-	for i := 0; i < decodes; i++ {
+	for i := range decodes {
 		s := bench.Step{
 			Phase: bench.Decode, Tokens: 1, Batch: 1,
 			Host:     100 * time.Microsecond,
@@ -446,7 +446,7 @@ func TestReportJSONStable(t *testing.T) {
 	build := func() bench.Report {
 		r := bench.NewRecorder(64)
 		r.Step(bench.Step{Phase: bench.Prefill, Tokens: 8, Batch: 1, Host: 1, Submit: 2, Device: 30, Readback: 3})
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			r.Step(bench.Step{Phase: bench.Decode, Tokens: 1, Batch: 1,
 				Host: time.Duration(i + 1), Submit: 2, Device: time.Duration(20 + i), Readback: 1})
 		}
@@ -525,12 +525,12 @@ func TestARecorderIsWrittenByOneGoroutineAndReadByAnother(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			r.Step(bench.Step{Phase: bench.Decode, Tokens: 1, Batch: 2, Device: time.Microsecond})
 			r.TTFT(time.Millisecond)
 		}
 	}()
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		_ = r.Report()
 		_ = r.Steps()
 	}

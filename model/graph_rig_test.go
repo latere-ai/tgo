@@ -5,6 +5,7 @@ package model
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"testing"
@@ -157,12 +158,8 @@ func (r *rig) reuse(m *qwen3, s GraphSpec) *rig {
 		scalars: map[string]tensor.ScalarValue{},
 	}
 	// Carry the weights and the cache; the per-step ports are rebound by step.
-	for k, v := range r.bufs {
-		next.bufs[k] = v
-	}
-	for k, v := range r.buffers {
-		next.buffers[k] = v
-	}
+	maps.Copy(next.bufs, r.bufs)
+	maps.Copy(next.buffers, r.buffers)
 	// The logits buffer is per plan: a decode writes one row and reusing the
 	// prefill's would leave the previous step's values under a short write.
 	delete(next.bufs, PortLogits)

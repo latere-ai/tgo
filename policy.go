@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/latere-ai/tgo/sample"
 )
@@ -188,11 +189,9 @@ func (p Policy) check(vocab int) error {
 		return errors.New("tgo: TopLogProbs is set and LogProbs is not; the alternatives " +
 			"to a token are reported beside its own probability, not instead of it")
 	}
-	for _, s := range p.Stop {
-		if s == "" {
-			return fmt.Errorf("tgo: Stop holds an empty string, which every completion " +
-				"contains before its first token")
-		}
+	if slices.Contains(p.Stop, "") {
+		return fmt.Errorf("tgo: Stop holds an empty string, which every completion " +
+			"contains before its first token")
 	}
 	// A stop string cuts the text at the point it matched and ends the stream
 	// with no error, so a stop that fires inside a document leaves a caller

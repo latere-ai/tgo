@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"time"
 
@@ -714,9 +715,7 @@ func (s *Session) bindings(rows int) (tensor.Bindings, error) {
 	}
 	c := s.m.cfg
 	bufs := make(map[string]accel.BufferView, len(s.m.weightBind)+8)
-	for k, v := range s.m.weightBind {
-		bufs[k] = v
-	}
+	maps.Copy(bufs, s.m.weightBind)
 	for _, e := range []struct {
 		name  string
 		buf   *accel.Buffer

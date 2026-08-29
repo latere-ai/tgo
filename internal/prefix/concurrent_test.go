@@ -35,9 +35,7 @@ func TestConcurrentMissesOnOnePrefixKeepOneBlock(t *testing.T) {
 	leases := make([]*Lease, workers)
 	errs := make([]error, workers)
 	for i := range workers {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait()
 			l, err := p.Acquire(Request{IDs: prompt})
 			if err != nil {
@@ -54,7 +52,7 @@ func TestConcurrentMissesOnOnePrefixKeepOneBlock(t *testing.T) {
 			leases[i] = l
 			_ = p.Stats() // a reader racing the writers
 			l.Release()
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()
@@ -106,9 +104,7 @@ func TestConcurrentTrafficLeavesEveryBlockAccountedFor(t *testing.T) {
 	start.Add(1)
 	var done sync.WaitGroup
 	for w := range workers {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait()
 			for r := range rounds {
 				ids := shared
@@ -131,7 +127,7 @@ func TestConcurrentTrafficLeavesEveryBlockAccountedFor(t *testing.T) {
 				l.Release()
 				l.Release() // idempotent, and racing nothing
 			}
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()

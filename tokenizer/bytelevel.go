@@ -20,7 +20,7 @@ var (
 
 func init() {
 	next := 0
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		if printableByte(byte(b)) {
 			byteToRune[b] = rune(b)
 			continue

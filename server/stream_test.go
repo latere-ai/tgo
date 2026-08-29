@@ -455,7 +455,7 @@ func TestAClientDisconnectCancelsGeneration(t *testing.T) {
 	// A script long enough that the client can hang up in the middle of it.
 	var script []tgo.Event
 	script = append(script, tgo.Event{Kind: tgo.BlockStart, Block: chat.BlockText})
-	for i := 0; i < 512; i++ {
+	for range 512 {
 		script = append(script, tgo.Event{Kind: tgo.TextDelta, Block: chat.BlockText, Text: "x"})
 	}
 	script = append(script, tgo.Event{Kind: tgo.BlockStop, Block: chat.BlockText})

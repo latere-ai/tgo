@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -121,7 +122,7 @@ func (e *fakeEngine) CheckSchema(schema []byte) error {
 	e.schemas = append(e.schemas, schema)
 	e.mu.Unlock()
 	pieces := make(grammar.Pieces, fakeVocab)
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		pieces[b] = []byte{byte(b)}
 	}
 	_, err := grammar.Compile(schema, pieces, grammar.Options{Stop: []int{fakeStop}})
@@ -477,9 +478,7 @@ func inject(t *testing.T, base, extra string) string {
 	if err := json.Unmarshal([]byte("{"+strings.TrimPrefix(extra, ",")+"}"), &from); err != nil {
 		t.Fatalf("the member is not one: %v: %s", err, extra)
 	}
-	for k, v := range from {
-		into[k] = v
-	}
+	maps.Copy(into, from)
 	raw, err := json.Marshal(into)
 	if err != nil {
 		t.Fatal(err)

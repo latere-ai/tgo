@@ -39,7 +39,7 @@ func build(ts ...tensor) (map[string]any, []byte) {
 		}
 		size := n * dtypeSize[t.dtype]
 		begin := int64(len(data))
-		for i := int64(0); i < size; i++ {
+		for range size {
 			data = append(data, t.fill)
 		}
 		hdr[t.name] = map[string]any{
@@ -505,7 +505,7 @@ func TestConcurrentBytes(t *testing.T) {
 
 	want := map[string]byte{"a": 0x11, "b": 0x22}
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		for name, fill := range want {
 			wg.Add(1)
 			go func(name string, fill byte) {

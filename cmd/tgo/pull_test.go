@@ -443,14 +443,12 @@ func TestProgressIsSafeForConcurrentUse(t *testing.T) {
 	p.start(4, 4000)
 	var wg sync.WaitGroup
 	for i := range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for done := int64(100); done <= 1000; done += 100 {
 				p.Event(hub.Event{Path: string(rune('a' + i)), Done: done, Total: 1000})
 			}
 			p.Event(hub.Event{Path: string(rune('a' + i)), Done: 1000, Total: 1000, Complete: true})
-		}()
+		})
 	}
 	wg.Wait()
 	p.stop()

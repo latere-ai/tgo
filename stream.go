@@ -309,10 +309,7 @@ func (st *Stream) advance() {
 		if phase == bench.Prefill {
 			s.rec.TTFT(time.Since(st.first))
 		}
-		host := time.Since(step) - t.submit - t.device - t.readback
-		if host < 0 {
-			host = 0
-		}
+		host := max(time.Since(step)-t.submit-t.device-t.readback, 0)
 		s.rec.Step(bench.Step{
 			Phase: phase, Tokens: count, Batch: 1,
 			Host: host, Submit: t.submit, Device: t.device, Readback: t.readback,

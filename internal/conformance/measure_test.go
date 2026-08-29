@@ -94,7 +94,7 @@ func TestDivergenceReportsBothOutcomes(t *testing.T) {
 func decodeReport(t *testing.T, steps int) bench.Report {
 	t.Helper()
 	rec := bench.NewRecorder(steps)
-	for i := 0; i < steps; i++ {
+	for range steps {
 		rec.Step(bench.Step{
 			Phase: bench.Decode, Tokens: 1, Batch: 1,
 			Host:     1 * time.Millisecond,

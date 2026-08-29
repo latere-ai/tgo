@@ -231,7 +231,7 @@ func (d *stepData) fill(c *model.Config, rows int, tokens []int, first int,
 	d.slots = d.slots[:rows]
 	d.lengths = d.lengths[:1]
 
-	for i := 0; i < t; i++ {
+	for i := range t {
 		id := tokens[i]
 		if id < 0 || id >= c.VocabSize {
 			return fmt.Errorf("tgo: token id %d is outside the model's vocabulary of %d",

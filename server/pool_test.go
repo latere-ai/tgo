@@ -283,7 +283,7 @@ func TestCacheSaltIsNotReportedAsLost(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
-	for _, f := range strings.Split(w.Header().Get("X-Tgo-Loss"), ", ") {
+	for f := range strings.SplitSeq(w.Header().Get("X-Tgo-Loss"), ", ") {
 		if f == "cache_salt" {
 			t.Fatalf("X-Tgo-Loss = %q reports cache_salt, which bounded what this request "+
 				"could reuse", w.Header().Get("X-Tgo-Loss"))

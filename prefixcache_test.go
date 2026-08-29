@@ -614,9 +614,7 @@ func TestPrefixCacheConcurrentSessions(t *testing.T) {
 	got := make([]generation, len(prompts))
 	var wg sync.WaitGroup
 	for i := range prompts {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			s, err := m.NewSession(WithSessionContext(cacheCap))
 			if err != nil {
 				t.Errorf("NewSession: %v", err)
@@ -631,7 +629,7 @@ func TestPrefixCacheConcurrentSessions(t *testing.T) {
 			// prefix when the second request goes in.
 			request(t, s, shared, greedy(3))
 			got[i] = request(t, s, prompts[i], greedy(5))
-		}()
+		})
 	}
 	wg.Wait()
 	if t.Failed() {

@@ -22,9 +22,9 @@ func permute(x []float64, rows, width, rotaryDim int) []float64 {
 	half := rotaryDim / 2
 	out := make([]float64, len(x))
 	copy(out, x)
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		off := r * width
-		for i := 0; i < half; i++ {
+		for i := range half {
 			out[off+2*i] = x[off+i]
 			out[off+2*i+1] = x[off+i+half]
 		}
@@ -37,9 +37,9 @@ func unpermute(y []float64, rows, width, rotaryDim int) []float64 {
 	half := rotaryDim / 2
 	out := make([]float64, len(y))
 	copy(out, y)
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		off := r * width
-		for i := 0; i < half; i++ {
+		for i := range half {
 			out[off+i] = y[off+2*i]
 			out[off+i+half] = y[off+2*i+1]
 		}
@@ -153,8 +153,8 @@ func TestRoPEPreservesEachPairNorm(t *testing.T) {
 	pos := []int{0, 1, 17, 512, 4095}
 	for _, style := range []Style{StyleInterleaved, StyleHalfSplit} {
 		got := RoPE(x, rows, width, rotaryDim, 1e6, pos, style)
-		for r := 0; r < rows; r++ {
-			for i := 0; i < rotaryDim/2; i++ {
+		for r := range rows {
+			for i := range rotaryDim / 2 {
 				lo, hi := pair(style, i, rotaryDim/2)
 				before := x[r*width+lo]*x[r*width+lo] + x[r*width+hi]*x[r*width+hi]
 				after := got[r*width+lo]*got[r*width+lo] + got[r*width+hi]*got[r*width+hi]

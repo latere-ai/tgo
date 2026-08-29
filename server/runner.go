@@ -41,7 +41,7 @@ func WrapRunner(m *tgo.Model, name string, o tgo.RunnerOptions) (*RunnerEngine, 
 	if err != nil {
 		return nil, err
 	}
-	return &RunnerEngine{modelEngine: modelEngine{m: m, name: name}, r: r}, nil
+	return &RunnerEngine{m: m, name: name, r: r}, nil
 }
 
 // RunnerEngine is [WrapRunner]'s implementation: [Wrap]'s engine with a batched
