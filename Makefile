@@ -7,7 +7,7 @@ GO ?= go
 # compiles to, not about what its test harness may use to find a race.
 export CGO_ENABLED = 0
 
-.PHONY: build test cover test-hermetic test-race fmt fmt-check lint-modernize lint-config spec-lint validate dist fuzz cgo-free deps
+.PHONY: build test cover test-hermetic test-race fmt fmt-check lint-modernize lint-config lint spec-lint validate dist fuzz cgo-free deps
 
 build:
 	$(GO) build ./...
@@ -54,6 +54,14 @@ lint-modernize:
 # instead of merely detectable.
 lint-config:
 	@$(GO) tool lateregate golangci
+
+# Runs the linter the CI lint job runs, against the config lint-config renders.
+# Without this the only machine that ever lints this repo is a runner, which is
+# the shape these gates exist to avoid.
+GOLANGCI_VERSION ?= v2.13.1
+
+lint: lint-config
+	@$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run ./...
 
 # specs/README.md documents a lifecycle and a frontmatter shape. A spec tree
 # nobody checks drifts from the code within a milestone. The vocabulary, the
