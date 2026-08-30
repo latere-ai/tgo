@@ -769,7 +769,8 @@ func TestCmdServeServesUntilInterrupted(t *testing.T) {
 	}
 	// And the model was released: a served model holds device memory, and a
 	// command that returned without freeing it leaks the whole checkpoint.
-	if _, err := http.Get("http://" + addr + "/health"); err == nil {
+	if resp, err := http.Get("http://" + addr + "/health"); err == nil {
+		_ = resp.Body.Close()
 		t.Error("the listener is still answering after the command returned")
 	}
 }

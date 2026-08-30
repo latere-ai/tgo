@@ -28,11 +28,11 @@ func syntheticReport(t *testing.T) bench.Report {
 		Device: 30 * time.Millisecond, Readback: 7 * time.Millisecond,
 	})
 	for i := 1; i <= 100; i++ {
-		n := time.Duration(i)
+		n := i
 		r.Step(bench.Step{
 			Phase: bench.Decode, Tokens: 1, Batch: 1,
-			Host: n * time.Microsecond, Submit: 2 * n * time.Microsecond,
-			Device: 10 * n * time.Microsecond, Readback: 3 * n * time.Microsecond,
+			Host: time.Duration(n) * time.Microsecond, Submit: time.Duration(2*n) * time.Microsecond,
+			Device: time.Duration(10*n) * time.Microsecond, Readback: time.Duration(3*n) * time.Microsecond,
 		})
 	}
 	return r.Report()

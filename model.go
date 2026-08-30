@@ -464,7 +464,7 @@ func (m *Model) load(repo *safetensors.Repo, specs []model.WeightSpec, p Precisi
 	// specs/001-weights.md §5 requires the precision *choice* to be printed and
 	// never silent, and a caller who wrote WithPrecision(F16) made no choice
 	// for the loader to announce back to them.
-	log := io.Writer(io.Discard)
+	log := io.Discard
 	if p == AutoPrecision {
 		log = os.Stderr
 	}

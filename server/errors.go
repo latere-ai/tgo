@@ -186,10 +186,15 @@ func writeStreamError(w http.ResponseWriter, d ir.Dialect, e *apiError) {
 	case ir.DialectAnthropicMessages:
 		writeFrame(w, "error", e.body(d))
 	case ir.DialectOpenAIResponses:
-		raw, _ := json.Marshal(map[string]any{
+		raw, err := json.Marshal(map[string]any{
 			"type": "error", "code": e.kind.name(d), "message": e.msg,
 			"param": nullableField(e.field),
 		})
+		if err != nil {
+			// As in body: the map holds strings and nils, so this cannot
+			// fail, and a frame the client can parse beats a panic.
+			raw = []byte(`{"type":"error","message":"tgo: the error could not be encoded"}`)
+		}
 		writeFrame(w, "error", raw)
 	default:
 		writeFrame(w, "", e.body(d))

@@ -171,11 +171,11 @@ func (f *fakeEngine) Generate(ctx context.Context, req genRequest) (genResult, e
 		if err := req.Emit(fmt.Sprintf("t%d ", i)); err != nil {
 			return genResult{}, err
 		}
-		n := time.Duration(i + 1)
+		n := i + 1
 		req.Recorder.Step(bench.Step{
 			Phase: bench.Decode, Tokens: 1, Batch: 1,
-			Host: n * time.Microsecond, Submit: 2 * n * time.Microsecond,
-			Device: 10 * n * time.Microsecond, Readback: 3 * n * time.Microsecond,
+			Host: time.Duration(n) * time.Microsecond, Submit: time.Duration(2*n) * time.Microsecond,
+			Device: time.Duration(10*n) * time.Microsecond, Readback: time.Duration(3*n) * time.Microsecond,
 		})
 	}
 	return genResult{

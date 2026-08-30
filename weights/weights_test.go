@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -665,7 +666,7 @@ func TestArenaHasNoStagingPathForAnUnexpectedDType(t *testing.T) {
 	// A conversion that fails is reported rather than leaving a half-written
 	// buffer resident.
 	want := fmt.Errorf("conversion failed")
-	if err := a.fill(b, func(dst []byte) error { return want }); err != want {
+	if err := a.fill(b, func(dst []byte) error { return want }); !errors.Is(err, want) {
 		t.Errorf("fill returned %v, want the conversion's own error", err)
 	}
 }

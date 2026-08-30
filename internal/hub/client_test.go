@@ -397,7 +397,8 @@ func TestParallelAndLockWaitHaveDefaults(t *testing.T) {
 
 func TestGetRefusesAnUnbuildableURL(t *testing.T) {
 	c := &Client{Endpoint: "://not-a-url"}
-	if _, err := c.get(context.Background(), "://not-a-url", nil); err == nil {
+	if resp, err := c.get(context.Background(), "://not-a-url", nil); err == nil {
+		_ = resp.Body.Close()
 		t.Error("a malformed URL was accepted")
 	}
 	if _, err := c.Revision(t.Context(), testRef(t)); err == nil {

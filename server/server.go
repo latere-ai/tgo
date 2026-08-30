@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -275,7 +276,10 @@ func (s *Server) Listen(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("server: %s is not a loopback address and this server has no "+
 			"authentication; pass WithPublicBind to bind it anyway", addr)
 	}
-	ln, err := net.Listen("tcp", addr)
+	// The context bounds the bind, not the listener: Listen is part of this
+	// package's exported surface and takes no context, and the caller's own
+	// context governs the serving that follows.
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err
 	}

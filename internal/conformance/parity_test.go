@@ -187,7 +187,7 @@ func TestCompareFailsOutsideTheBudget(t *testing.T) {
 	rec := &failTB{TB: t}
 	func() {
 		defer func() {
-			if p := recover(); p != nil && p != errAbort {
+			if p := recover(); p != nil && !isAbort(p) {
 				panic(p)
 			}
 		}()
@@ -205,6 +205,14 @@ func TestCompareFailsOutsideTheBudget(t *testing.T) {
 // errAbort unwinds a recording TB the way t.Fatalf unwinds a real one. Go 1.27
 // makes panic(nil) a runtime error, so the sentinel is explicit.
 var errAbort = errors.New("conformance: test aborted by a recording TB")
+
+// isAbort reports whether a recovered value is that sentinel. recover returns
+// any, so the value is matched as an error rather than compared directly:
+// anything else is a real panic and is re-raised.
+func isAbort(p any) bool {
+	err, ok := p.(error)
+	return ok && errors.Is(err, errAbort)
+}
 
 type failTB struct {
 	testing.TB

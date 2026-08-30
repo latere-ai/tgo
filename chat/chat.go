@@ -206,7 +206,12 @@ func jsonString(s string) string {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	// Encoding a string cannot fail, and Encode appends a newline.
-	_ = enc.Encode(s)
+	// Encode appends a newline, which the caller does not want.
+	if err := enc.Encode(s); err != nil {
+		// Unreachable: a bytes.Buffer never fails a write and every Go
+		// string encodes. An empty JSON string keeps the rendered template
+		// parseable, where a partial buffer would leave it malformed.
+		return `""`
+	}
 	return strings.TrimSuffix(buf.String(), "\n")
 }

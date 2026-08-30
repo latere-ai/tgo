@@ -213,7 +213,7 @@ func parseServe(args []string) (serveOptions, error) {
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return serveOptions{}, fmt.Errorf("%w: --addr %q is not a host:port address: %v", errUsage, addr, err)
+		return serveOptions{}, fmt.Errorf("%w: --addr %q is not a host:port address: %w", errUsage, addr, err)
 	}
 	if !*f.public && isPublicAddr(host) {
 		return serveOptions{}, publicBindRefusal(addr)
@@ -700,7 +700,11 @@ func serveUntil(ctx context.Context, stop func(), ln net.Listener, h http.Handle
 	stop()
 
 	_, _ = fmt.Fprintf(stderr, "\ntgo: stopping; in-flight requests have %s to finish\n", humanDuration(grace))
-	sctx, cancel := context.WithTimeout(context.Background(), grace)
+	// ctx is already cancelled -- that is how we got here -- so the grace
+	// period hangs off a copy with the cancellation stripped and the values
+	// kept. context.Background() would drop the values too, and a shutdown
+	// that inherited the cancellation would expire before it began.
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
 	defer cancel()
 	if err := hs.Shutdown(sctx); err != nil {
 		// A stream still open when the grace expires is cut, and the reason is

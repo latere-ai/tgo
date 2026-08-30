@@ -32,7 +32,7 @@ func modelDir(fs *flag.FlagSet, args []string) (string, error) {
 func onePositional(fs *flag.FlagSet, args []string, what string) (string, error) {
 	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
-		return "", fmt.Errorf("%w: %v", errUsage, err)
+		return "", fmt.Errorf("%w: %w", errUsage, err)
 	}
 	switch rest := fs.Args(); len(rest) {
 	case 1:

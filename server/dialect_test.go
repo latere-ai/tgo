@@ -211,7 +211,7 @@ func TestAToolResultKeepsItsPlaceInTheTurn(t *testing.T) {
 	msgs := eng.only(t).sawMessages()
 	var got []string
 	for _, m := range msgs {
-		text := ""
+		var text string
 		switch {
 		case m.Blocks[0].ToolResult != nil:
 			text = m.Blocks[0].ToolResult.Text

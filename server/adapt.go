@@ -4,7 +4,6 @@
 package server
 
 import (
-	"encoding/json"
 	"math"
 	"strings"
 
@@ -263,7 +262,7 @@ func mapTools(tools []ir.Tool) []chat.ToolSpec {
 	out := make([]chat.ToolSpec, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, chat.ToolSpec{
-			Name: t.Name, Description: t.Description, InputSchema: json.RawMessage(t.InputSchema),
+			Name: t.Name, Description: t.Description, InputSchema: t.InputSchema,
 		})
 	}
 	return out

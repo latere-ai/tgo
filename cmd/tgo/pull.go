@@ -59,7 +59,7 @@ func parsePull(args []string) (pullOptions, error) {
 	}
 	ref, err := hub.ParseRef(id)
 	if err != nil {
-		return pullOptions{}, fmt.Errorf("%w: %v", errUsage, err)
+		return pullOptions{}, fmt.Errorf("%w: %w", errUsage, err)
 	}
 	if ref.IsLocal() {
 		return pullOptions{}, fmt.Errorf("%w: %s is a directory on this machine, and there is nothing "+
