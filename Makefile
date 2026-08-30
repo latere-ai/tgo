@@ -67,14 +67,11 @@ validate: deps cgo-free fuzz
 deps:
 	@$(GO) tool lateregate depcheck
 
-# Greps rather than relying on the build: a file can import "C" behind a build
-# tag this platform does not select, and still be a violation.
+# specs/000-decisions.md decision 2. Reads source rather than relying on the
+# build: a file can import "C" behind a build tag this platform does not
+# select, and still be a violation.
 cgo-free:
-	@if grep -rn --include='*.go' '^import "C"\|^\s*"C"$$' . ; then \
-		echo "found cgo usage; specs/000-decisions.md decision 2 makes cgo-free a hard requirement"; \
-		exit 1; \
-	fi; \
-	echo "no cgo found"
+	@$(GO) tool lateregate cgo-free
 
 # The seed corpus only, not a fuzzing campaign: a regression gate over the
 # inputs that have already found a bug, and it must stay fast.

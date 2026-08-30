@@ -18,5 +18,7 @@ latere.ai/x/ci-gate v0.4.0 h1:+7ZX+kAhNZ9T31BlkZrfKO+ykrZf+h5Up0gdTKtA6hM=
 latere.ai/x/ci-gate v0.4.0/go.mod h1:Iw6RuLhPgpP+hRfVTb0UxnygMyZIi1U7E0/iM5fbAhA=
 latere.ai/x/ci-gate v0.6.0 h1:DqL5gKrUEbpBYKK5Y/oCy7JQlebqL680dA1Am3re2Q0=
 latere.ai/x/ci-gate v0.6.0/go.mod h1:Iw6RuLhPgpP+hRfVTb0UxnygMyZIi1U7E0/iM5fbAhA=
+latere.ai/x/ci-gate v0.7.0 h1:j84Cq0VfRLGnMVJsbRm78FTeJ+HObfDRYFlQnwcRzdM=
+latere.ai/x/ci-gate v0.7.0/go.mod h1:Iw6RuLhPgpP+hRfVTb0UxnygMyZIi1U7E0/iM5fbAhA=
 latere.ai/x/pkg v0.41.0 h1:MeXiO6vxBLniOVxbQgWrGckFbZLg249ElYj1ifmcMS4=
 latere.ai/x/pkg v0.41.0/go.mod h1:xP+/sQTNm74Tv4eCSYyqqyXU7x9LhBDrJ9BrlMelo7w=
