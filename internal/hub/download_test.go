@@ -93,7 +93,7 @@ func TestAnInterruptedFetchLeavesNothingThatLooksWhole(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Length", strconv.Itoa(len(f.body)))
-			w.Write(f.body[:prefix])
+			_, _ = w.Write(f.body[:prefix])
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
 		},
@@ -158,7 +158,7 @@ func TestAServerThatIgnoresTheRangeRestartsTheHashToo(t *testing.T) {
 		body: full, digest: "auto",
 		serve: func(w http.ResponseWriter, r *http.Request, f *fakeFile) {
 			w.Header().Set("Content-Length", strconv.Itoa(len(f.body)))
-			w.Write(f.body) // the Range is ignored, as some mirrors do
+			_, _ = w.Write(f.body) // the Range is ignored, as some mirrors do
 		},
 	}
 	x := newFixture(t, files)
@@ -183,7 +183,7 @@ func TestAServerThatIgnoresTheRangeTruncatesALongerPartial(t *testing.T) {
 		body: full, listSize: -1, // the API publishes no length for this one
 		serve: func(w http.ResponseWriter, r *http.Request, f *fakeFile) {
 			w.Header().Set("Content-Length", strconv.Itoa(len(f.body)))
-			w.Write(f.body) // the Range is ignored, as some mirrors do
+			_, _ = w.Write(f.body) // the Range is ignored, as some mirrors do
 		},
 	}
 	x := newFixture(t, files)
@@ -226,7 +226,7 @@ func TestA206FromTheWrongOffsetIsRefused(t *testing.T) {
 				fmt.Sprintf("bytes %d-%d/%d", 3, len(f.body)-1, len(f.body)))
 			w.Header().Set("Content-Length", strconv.Itoa(len(f.body)-3))
 			w.WriteHeader(http.StatusPartialContent)
-			w.Write(f.body[3:])
+			_, _ = w.Write(f.body[3:])
 		},
 	}
 	x := newFixture(t, files)
@@ -297,7 +297,7 @@ func TestATruncatedBodyKeepsThePartialAndALongOneDoesNot(t *testing.T) {
 		body: body(41, 0xa5), listSize: 41,
 		serve: func(w http.ResponseWriter, r *http.Request, f *fakeFile) {
 			w.(http.Flusher).Flush() // no Content-Length: the client cannot know
-			w.Write(f.body[:17])
+			_, _ = w.Write(f.body[:17])
 		},
 	}
 	files := repoFiles()
@@ -318,7 +318,7 @@ func TestATruncatedBodyKeepsThePartialAndALongOneDoesNot(t *testing.T) {
 		body: body(64, 0x11), listSize: 40,
 		serve: func(w http.ResponseWriter, r *http.Request, f *fakeFile) {
 			w.(http.Flusher).Flush()
-			w.Write(f.body)
+			_, _ = w.Write(f.body)
 		},
 	}
 	files2 := repoFiles()

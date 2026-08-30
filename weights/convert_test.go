@@ -14,17 +14,6 @@ import (
 	"github.com/latere-ai/tgo/safetensors"
 )
 
-// bf16Plane encodes f32 values as the bf16 bytes a checkpoint holds. Widening
-// is exact, so this is a lossy step only where the value needs more than eight
-// mantissa bits; every value the tests below feed it is chosen to survive.
-func bf16Plane(vals ...float32) []byte {
-	out := make([]byte, 2*len(vals))
-	for i, v := range vals {
-		binary.LittleEndian.PutUint16(out[2*i:], accel.ToBFloat16(v).Bits())
-	}
-	return out
-}
-
 func TestDecodeBF16IsAShift(t *testing.T) {
 	// specs/001-weights.md §3: f32bits = bf16bits << 16, exactly, with no table.
 	// The patterns are chosen to cover the sign, the exponent extremes and the

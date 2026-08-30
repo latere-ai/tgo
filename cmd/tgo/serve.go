@@ -591,7 +591,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer sv.release()
+	defer func() { _ = sv.release() }()
 
 	ctx, stop := interrupts()
 	defer stop()
@@ -623,7 +623,7 @@ func startServe(args []string, stdout, stderr io.Writer) (*serving, error) {
 	ok := false
 	defer func() {
 		if !ok {
-			sv.Close()
+			_ = sv.Close()
 		}
 	}()
 
@@ -699,15 +699,15 @@ func serveUntil(ctx context.Context, stop func(), ln net.Listener, h http.Handle
 	}
 	stop()
 
-	fmt.Fprintf(stderr, "\ntgo: stopping; in-flight requests have %s to finish\n", humanDuration(grace))
+	_, _ = fmt.Fprintf(stderr, "\ntgo: stopping; in-flight requests have %s to finish\n", humanDuration(grace))
 	sctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	if err := hs.Shutdown(sctx); err != nil {
 		// A stream still open when the grace expires is cut, and the reason is
 		// stated: the alternative is a process that does not exit, and an
 		// operator who cannot tell a hung shutdown from a slow one.
-		fmt.Fprintf(stderr, "tgo: %s passed with requests still in flight; closing them\n", humanDuration(grace))
-		hs.Close()
+		_, _ = fmt.Fprintf(stderr, "tgo: %s passed with requests still in flight; closing them\n", humanDuration(grace))
+		_ = hs.Close()
 	}
 	if err := <-errs; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -720,43 +720,43 @@ func serveUntil(ctx context.Context, stop func(), ln net.Listener, h http.Handle
 func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Server,
 	adm admission, addr net.Addr) {
 
-	fmt.Fprintf(w, "model      %s\n", o.Name)
-	fmt.Fprintf(w, "  directory         %s\n", o.Dir)
-	fmt.Fprintf(w, "  architecture      %s, %s\n", rep.Model.Architecture, rep.Precision.Why)
-	fmt.Fprintf(w, "  device            %s, %s (%s)\n",
+	_, _ = fmt.Fprintf(w, "model      %s\n", o.Name)
+	_, _ = fmt.Fprintf(w, "  directory         %s\n", o.Dir)
+	_, _ = fmt.Fprintf(w, "  architecture      %s, %s\n", rep.Model.Architecture, rep.Precision.Why)
+	_, _ = fmt.Fprintf(w, "  device            %s, %s (%s)\n",
 		rep.Hardware.Backend, rep.Hardware.Device, rep.Hardware.Vendor)
 
-	fmt.Fprintf(w, "\nlistening  http://%s\n", addr)
+	_, _ = fmt.Fprintf(w, "\nlistening  http://%s\n", addr)
 	for _, r := range serveRoutes {
-		fmt.Fprintf(w, "  %-4s %-22s %s\n", r.Method, r.Path, r.What)
+		_, _ = fmt.Fprintf(w, "  %-4s %-22s %s\n", r.Method, r.Path, r.What)
 	}
 
 	if o.Engine.Batched {
-		fmt.Fprintf(w, "\nslots      %d, and every in-flight request is in one forward pass\n",
+		_, _ = fmt.Fprintf(w, "\nslots      %d, and every in-flight request is in one forward pass\n",
 			srv.Concurrency())
-		fmt.Fprintf(w, "  reserved          %s = one shared pool of %d positions at %d "+
+		_, _ = fmt.Fprintf(w, "  reserved          %s = one shared pool of %d positions at %d "+
 			"positions of context\n", humanBytes(adm.Reserved), adm.Positions,
 			rep.Memory.Context)
-		fmt.Fprintf(w, "  chunk and reserve %d prompt tokens a step, and %d positions held "+
+		_, _ = fmt.Fprintf(w, "  chunk and reserve %d prompt tokens a step, and %d positions held "+
 			"beyond a prompt at admission\n", tgo.DefaultChunk,
 			serveReserve(rep.Memory.Context))
 	} else {
-		fmt.Fprintf(w, "\nslots      %d pooled sessions, reserved now and held until this "+
+		_, _ = fmt.Fprintf(w, "\nslots      %d pooled sessions, reserved now and held until this "+
 			"process exits\n", srv.Concurrency())
-		fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
+		_, _ = fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
 			humanBytes(adm.Reserved), adm.Sessions, humanBytes(adm.PerSession),
 			rep.Memory.Context)
 	}
-	fmt.Fprintf(w, "  kv budget         %s = %s device pool - %s weights, which holds %d\n",
+	_, _ = fmt.Fprintf(w, "  kv budget         %s = %s device pool - %s weights, which holds %d\n",
 		humanBytes(adm.Budget), humanBytes(adm.Pool), humanBytes(adm.Weights), adm.Fits)
-	fmt.Fprintf(w, "  admission         %d generating at once, %d waiting, refused with 429 after %s\n",
+	_, _ = fmt.Fprintf(w, "  admission         %d generating at once, %d waiting, refused with 429 after %s\n",
 		srv.Concurrency(), server.DefaultQueue, humanDuration(server.DefaultQueueWait))
-	fmt.Fprintf(w, "  prefix cache      %s\n", prefixCacheLine(o.Engine.PrefixCache))
-	fmt.Fprintf(w, "  note              %s\n", batchingNote(o.Engine.Batched))
+	_, _ = fmt.Fprintf(w, "  prefix cache      %s\n", prefixCacheLine(o.Engine.PrefixCache))
+	_, _ = fmt.Fprintf(w, "  note              %s\n", batchingNote(o.Engine.Batched))
 	for _, n := range o.Notes {
-		fmt.Fprintf(w, "  deprecated        %s\n", n)
+		_, _ = fmt.Fprintf(w, "  deprecated        %s\n", n)
 	}
-	fmt.Fprintf(w, "\nCtrl-C stops it, letting in-flight requests finish.\n")
+	_, _ = fmt.Fprintf(w, "\nCtrl-C stops it, letting in-flight requests finish.\n")
 }
 
 // batchingNote is what the concurrency buys, which is a different thing under

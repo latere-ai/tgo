@@ -96,7 +96,7 @@ func TestRealCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	d, f, v, hq, hkv := cfg.HiddenSize, cfg.IntermediateSize, cfg.VocabSize,
 		cfg.NumAttentionHeads*cfg.HeadDim, cfg.NumKeyValueHeads*cfg.HeadDim

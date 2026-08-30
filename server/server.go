@@ -216,7 +216,7 @@ func (s *Server) notice(format string, args ...any) {
 	if s.opt.notice == nil {
 		return
 	}
-	fmt.Fprintf(s.opt.notice, format+"\n", args...)
+	_, _ = fmt.Fprintf(s.opt.notice, format+"\n", args...)
 }
 
 // models lists the one model this server serves.

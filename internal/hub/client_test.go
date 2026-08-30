@@ -109,8 +109,8 @@ func TestGoDefaultRedirectPolicyForwardsTheCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("the default client got %s; the trap this package guards is gone "+
@@ -135,7 +135,7 @@ func TestLFSPointerFromTheGitEndpointIsNamed(t *testing.T) {
 		listSize: 4194304,
 		serve: func(w http.ResponseWriter, r *http.Request, _ *fakeFile) {
 			w.Header().Set("Content-Length", strconv.Itoa(len(pointer)))
-			io.WriteString(w, pointer)
+			_, _ = io.WriteString(w, pointer)
 		},
 	}
 	c := newFake(t, files).client(t)

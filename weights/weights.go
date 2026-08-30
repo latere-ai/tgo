@@ -407,7 +407,7 @@ func Load(dev *accel.Device, repo *safetensors.Repo, decls []Tensor, opts Option
 	set := &Set{values: make(map[string]Value, len(decls)), arena: newArena(dev)}
 	set.report = plan.report
 	set.report.Mapped = set.arena.mapped()
-	fmt.Fprintf(log, "weights: %s, %d tensors, f16 %s, int8 %s, budget %s, %s\n",
+	_, _ = fmt.Fprintf(log, "weights: %s, %d tensors, f16 %s, int8 %s, budget %s, %s\n",
 		plan.report.Chosen, len(decls),
 		humanBytes(plan.report.F16Bytes), humanBytes(plan.report.Int8Bytes),
 		humanBytes(plan.report.Budget), mappedNote(set.arena.mapped()))
@@ -415,7 +415,7 @@ func Load(dev *accel.Device, repo *safetensors.Repo, decls []Tensor, opts Option
 	for i, d := range decls {
 		v, err := convertOne(set.arena, repo, d, plan.precision[i], maxSat)
 		if err != nil {
-			set.Close()
+			_ = set.Close()
 			return nil, err
 		}
 		set.values[d.key()] = v
@@ -423,12 +423,12 @@ func Load(dev *accel.Device, repo *safetensors.Repo, decls []Tensor, opts Option
 		set.report.Bytes += v.Bytes()
 		set.report.Saturated += v.Saturated
 		if v.Saturated > 0 {
-			fmt.Fprintf(log, "weights: %s saturated %d of %d elements to ±65504\n",
+			_, _ = fmt.Fprintf(log, "weights: %s saturated %d of %d elements to ±65504\n",
 				v.Source, v.Saturated, v.Elements)
 		}
 	}
 	if err := set.arena.flush(); err != nil {
-		set.Close()
+		_ = set.Close()
 		return nil, fmt.Errorf("weights: staging the uploads: %w", err)
 	}
 	return set, nil
@@ -745,7 +745,7 @@ func uploadInt4(a *arena, v *Value, plane []float32) error {
 func (v *Value) close() {
 	for _, b := range []**accel.Buffer{&v.Data, &v.Scales, &v.Zeros} {
 		if *b != nil {
-			(*b).Close()
+			_ = (*b).Close()
 			*b = nil
 		}
 	}

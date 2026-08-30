@@ -162,14 +162,14 @@ func (d *decoder) isStop(tok int) bool {
 // "</think>" would have the explanation cut in half.
 func (d *decoder) emit(tok int) {
 	sp := d.m.special
-	switch {
-	case tok == sp.think[0] || tok == sp.think[1]:
+	switch tok {
+	case sp.think[0], sp.think[1]:
 		d.startBlock(chat.BlockThinking)
 		return
-	case tok == sp.toolCall:
+	case sp.toolCall:
 		d.startBlock(chat.BlockToolUse)
 		return
-	case tok == sp.thinkEnd, tok == sp.toolEnd:
+	case sp.thinkEnd, sp.toolEnd:
 		d.endBlock()
 		return
 	}

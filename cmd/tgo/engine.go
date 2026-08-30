@@ -297,7 +297,7 @@ var openEngine = func(dir string, o engineOptions) (engine, error) {
 	}
 	s, err := m.NewSession(sopts...)
 	if err != nil {
-		m.Close()
+		_ = m.Close()
 		return nil, err
 	}
 	return &liveEngine{m: m, s: s}, nil

@@ -40,7 +40,7 @@ func TestDescribeAgreesWithTheLoadedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tgo.Open: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	got := m.Info()
 
 	if got.Architecture != predicted.Model.Architecture {

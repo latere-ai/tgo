@@ -447,47 +447,47 @@ func openAndDescribe(dir string, o describeOptions) (modelReport, error) {
 	if err != nil {
 		return modelReport{}, err
 	}
-	defer dev.Close()
+	defer func() { _ = dev.Close() }()
 	return describe(dir, b, o, stampHardware(dev), stampEnvironment())
 }
 
 // renderInfo writes a description for a person to read.
 func renderInfo(w io.Writer, r modelReport) {
 	m, p, mem := r.Model, r.Precision, r.Memory
-	fmt.Fprintf(w, "model      %s\n", m.Dir)
-	fmt.Fprintf(w, "  architecture      %s\n", m.Architecture)
-	fmt.Fprintf(w, "  parameters        %s (%d distinct tensors' elements)\n", humanCount(m.Parameters), m.Parameters)
-	fmt.Fprintf(w, "  hidden            %d over %d layers\n", m.HiddenSize, m.Layers)
-	fmt.Fprintf(w, "  heads             %d query, %d key/value, head_dim %d\n", m.Heads, m.KVHeads, m.HeadDim)
-	fmt.Fprintf(w, "  mlp               %d\n", m.IntermediateSize)
-	fmt.Fprintf(w, "  vocabulary        %d\n", m.VocabSize)
-	fmt.Fprintf(w, "  tied embeddings   %t\n", m.TiedEmbeddings)
-	fmt.Fprintf(w, "  trained context   %d positions (advisory; capacity is a session parameter)\n", m.TrainedContext)
+	_, _ = fmt.Fprintf(w, "model      %s\n", m.Dir)
+	_, _ = fmt.Fprintf(w, "  architecture      %s\n", m.Architecture)
+	_, _ = fmt.Fprintf(w, "  parameters        %s (%d distinct tensors' elements)\n", humanCount(m.Parameters), m.Parameters)
+	_, _ = fmt.Fprintf(w, "  hidden            %d over %d layers\n", m.HiddenSize, m.Layers)
+	_, _ = fmt.Fprintf(w, "  heads             %d query, %d key/value, head_dim %d\n", m.Heads, m.KVHeads, m.HeadDim)
+	_, _ = fmt.Fprintf(w, "  mlp               %d\n", m.IntermediateSize)
+	_, _ = fmt.Fprintf(w, "  vocabulary        %d\n", m.VocabSize)
+	_, _ = fmt.Fprintf(w, "  tied embeddings   %t\n", m.TiedEmbeddings)
+	_, _ = fmt.Fprintf(w, "  trained context   %d positions (advisory; capacity is a session parameter)\n", m.TrainedContext)
 
-	fmt.Fprintf(w, "\nprecision  %s\n", p.Chosen)
-	fmt.Fprintf(w, "  why               %s\n", p.Why)
-	fmt.Fprintf(w, "  f16 footprint     %s\n", humanBytes(p.F16Bytes))
-	fmt.Fprintf(w, "  int8 footprint    %s\n", humanBytes(p.Int8Bytes))
-	fmt.Fprintf(w, "  int4 footprint    %s\n", humanBytes(p.Int4Bytes))
-	fmt.Fprintf(w, "  budget            %s\n", humanBytes(p.Budget))
+	_, _ = fmt.Fprintf(w, "\nprecision  %s\n", p.Chosen)
+	_, _ = fmt.Fprintf(w, "  why               %s\n", p.Why)
+	_, _ = fmt.Fprintf(w, "  f16 footprint     %s\n", humanBytes(p.F16Bytes))
+	_, _ = fmt.Fprintf(w, "  int8 footprint    %s\n", humanBytes(p.Int8Bytes))
+	_, _ = fmt.Fprintf(w, "  int4 footprint    %s\n", humanBytes(p.Int4Bytes))
+	_, _ = fmt.Fprintf(w, "  budget            %s\n", humanBytes(p.Budget))
 	if m.TiedEmbeddings {
-		fmt.Fprintf(w, "  note              the footprints cover %s device elements: a tied checkpoint\n"+
+		_, _ = fmt.Fprintf(w, "  note              the footprints cover %s device elements: a tied checkpoint\n"+
 			"                    uploads the embedding table twice, once per layout (004-D7)\n", humanCount(m.Planes))
 	}
 
-	fmt.Fprintf(w, "\nmemory     at %d positions of context\n", mem.Context)
-	fmt.Fprintf(w, "  weights           %s at %s\n", humanBytes(mem.WeightBytes), p.Chosen)
-	fmt.Fprintf(w, "  kv cache          %s = 2 · %d layers · %d positions · %d kv heads · %d head_dim · %d bytes (%s)\n",
+	_, _ = fmt.Fprintf(w, "\nmemory     at %d positions of context\n", mem.Context)
+	_, _ = fmt.Fprintf(w, "  weights           %s at %s\n", humanBytes(mem.WeightBytes), p.Chosen)
+	_, _ = fmt.Fprintf(w, "  kv cache          %s = 2 · %d layers · %d positions · %d kv heads · %d head_dim · %d bytes (%s)\n",
 		humanBytes(mem.KVBytes), m.Layers, mem.Context, m.KVHeads, m.HeadDim, mem.CacheElementBytes, mem.CacheDType)
-	fmt.Fprintf(w, "  per position      %s\n", humanBytes(mem.KVBytesPerPosition))
-	fmt.Fprintf(w, "  resident          %s (weights plus cache; excludes activations and the host heap)\n",
+	_, _ = fmt.Fprintf(w, "  per position      %s\n", humanBytes(mem.KVBytesPerPosition))
+	_, _ = fmt.Fprintf(w, "  resident          %s (weights plus cache; excludes activations and the host heap)\n",
 		humanBytes(mem.ResidentBytes))
 
-	fmt.Fprintf(w, "\ndevice     %s\n", r.Hardware.Backend)
-	fmt.Fprintf(w, "  name              %s (%s)\n", r.Hardware.Device, r.Hardware.Vendor)
-	fmt.Fprintf(w, "  software          %t\n", r.Hardware.Software)
-	fmt.Fprintf(w, "  unified memory    %t\n", r.Hardware.UnifiedMemory)
-	fmt.Fprintf(w, "  max pool          %s\n", humanBytes(r.Hardware.MaxPoolBytes))
-	fmt.Fprintf(w, "  build             %s %s/%s, accel %s\n",
+	_, _ = fmt.Fprintf(w, "\ndevice     %s\n", r.Hardware.Backend)
+	_, _ = fmt.Fprintf(w, "  name              %s (%s)\n", r.Hardware.Device, r.Hardware.Vendor)
+	_, _ = fmt.Fprintf(w, "  software          %t\n", r.Hardware.Software)
+	_, _ = fmt.Fprintf(w, "  unified memory    %t\n", r.Hardware.UnifiedMemory)
+	_, _ = fmt.Fprintf(w, "  max pool          %s\n", humanBytes(r.Hardware.MaxPoolBytes))
+	_, _ = fmt.Fprintf(w, "  build             %s %s/%s, accel %s\n",
 		r.Environment.Go, r.Environment.GOOS, r.Environment.GOARCH, r.Environment.Accel)
 }

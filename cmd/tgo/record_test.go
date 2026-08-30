@@ -128,7 +128,7 @@ func TestMarkdownReportsTheBreakdownAndNotOneNumber(t *testing.T) {
 	// The three percentiles of a decode step differ, so a renderer that
 	// collapsed them into a mean would be visible here.
 	p50, p90, p99 := stepAt(d, quantileP50), stepAt(d, quantileP90), stepAt(d, quantileP99)
-	if !(p50 < p90 && p90 < p99) {
+	if p50 >= p90 || p90 >= p99 {
 		t.Errorf("p50=%v p90=%v p99=%v, want a tail", p50, p90, p99)
 	}
 	if want := d.Host.P90 + d.Submit.P90 + d.Device.P90 + d.Readback.P90; p90 != want {

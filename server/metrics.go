@@ -64,11 +64,11 @@ func (h *histogram) write(w io.Writer, name string) {
 	var cum uint64
 	for i, b := range buckets {
 		cum = h.counts[i]
-		fmt.Fprintf(w, "%s_bucket{le=\"%s\"} %d\n", name, formatFloat(b), cum)
+		_, _ = fmt.Fprintf(w, "%s_bucket{le=\"%s\"} %d\n", name, formatFloat(b), cum)
 	}
-	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, h.total)
-	fmt.Fprintf(w, "%s_sum %s\n", name, formatFloat(h.sum))
-	fmt.Fprintf(w, "%s_count %d\n", name, h.total)
+	_, _ = fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, h.total)
+	_, _ = fmt.Fprintf(w, "%s_sum %s\n", name, formatFloat(h.sum))
+	_, _ = fmt.Fprintf(w, "%s_count %d\n", name, h.total)
 }
 
 // metrics holds every series this server exports.
@@ -156,39 +156,39 @@ func (m *metrics) write(w io.Writer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	fmt.Fprint(w, "# HELP tgo_requests_in_flight Requests generating right now.\n")
-	fmt.Fprint(w, "# TYPE tgo_requests_in_flight gauge\n")
+	_, _ = fmt.Fprint(w, "# HELP tgo_requests_in_flight Requests generating right now.\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_requests_in_flight gauge\n")
 	for _, d := range sortedKeys(m.inFlight) {
-		fmt.Fprintf(w, "tgo_requests_in_flight{dialect=\"%s\"} %d\n", escape(d), m.inFlight[d])
+		_, _ = fmt.Fprintf(w, "tgo_requests_in_flight{dialect=\"%s\"} %d\n", escape(d), m.inFlight[d])
 	}
 
-	fmt.Fprint(w, "# HELP tgo_queue_depth Admitted requests waiting for a session slot.\n")
-	fmt.Fprint(w, "# TYPE tgo_queue_depth gauge\n")
-	fmt.Fprintf(w, "tgo_queue_depth %d\n", m.queued)
+	_, _ = fmt.Fprint(w, "# HELP tgo_queue_depth Admitted requests waiting for a session slot.\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_queue_depth gauge\n")
+	_, _ = fmt.Fprintf(w, "tgo_queue_depth %d\n", m.queued)
 
-	fmt.Fprint(w, "# HELP tgo_queue_wait_seconds Time spent waiting for a session slot.\n")
-	fmt.Fprint(w, "# TYPE tgo_queue_wait_seconds histogram\n")
+	_, _ = fmt.Fprint(w, "# HELP tgo_queue_wait_seconds Time spent waiting for a session slot.\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_queue_wait_seconds histogram\n")
 	m.queueWait.write(w, "tgo_queue_wait_seconds")
 
-	fmt.Fprint(w, "# HELP tgo_decode_step_seconds One request's median decode step.\n")
-	fmt.Fprint(w, "# TYPE tgo_decode_step_seconds histogram\n")
+	_, _ = fmt.Fprint(w, "# HELP tgo_decode_step_seconds One request's median decode step.\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_decode_step_seconds histogram\n")
 	m.decodeStep.write(w, "tgo_decode_step_seconds")
 
-	fmt.Fprint(w, "# HELP tgo_logits_readback_seconds One request's median logits readback, "+
+	_, _ = fmt.Fprint(w, "# HELP tgo_logits_readback_seconds One request's median logits readback, "+
 		"the share of a decode step spent moving a row of logits to the host.\n")
-	fmt.Fprint(w, "# TYPE tgo_logits_readback_seconds histogram\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_logits_readback_seconds histogram\n")
 	m.readback.write(w, "tgo_logits_readback_seconds")
 
-	fmt.Fprint(w, "# HELP tgo_request_loss_total Advisory fields accepted and not acted on.\n")
-	fmt.Fprint(w, "# TYPE tgo_request_loss_total counter\n")
+	_, _ = fmt.Fprint(w, "# HELP tgo_request_loss_total Advisory fields accepted and not acted on.\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_request_loss_total counter\n")
 	for _, f := range sortedKeys(m.loss) {
-		fmt.Fprintf(w, "tgo_request_loss_total{field=\"%s\"} %d\n", escape(f), m.loss[f])
+		_, _ = fmt.Fprintf(w, "tgo_request_loss_total{field=\"%s\"} %d\n", escape(f), m.loss[f])
 	}
 
-	fmt.Fprint(w, "# HELP tgo_sessions_rejected_total Requests refused rather than run.\n")
-	fmt.Fprint(w, "# TYPE tgo_sessions_rejected_total counter\n")
+	_, _ = fmt.Fprint(w, "# HELP tgo_sessions_rejected_total Requests refused rather than run.\n")
+	_, _ = fmt.Fprint(w, "# TYPE tgo_sessions_rejected_total counter\n")
 	for _, r := range sortedKeys(m.rejected) {
-		fmt.Fprintf(w, "tgo_sessions_rejected_total{reason=\"%s\"} %d\n", escape(r), m.rejected[r])
+		_, _ = fmt.Fprintf(w, "tgo_sessions_rejected_total{reason=\"%s\"} %d\n", escape(r), m.rejected[r])
 	}
 }
 

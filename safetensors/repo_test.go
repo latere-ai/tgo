@@ -62,7 +62,7 @@ func TestOpenRepoSingleShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if got := string(r.Config()); got != `{"hidden_size":64}` {
 		t.Errorf("Config() = %s", got)
@@ -95,7 +95,7 @@ func TestOpenRepoSharded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if got := r.Names(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("Names() = %v, want [a b] across both shards", got)
@@ -122,7 +122,7 @@ func TestRepoConfigIsACopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	cfg := r.Config()
 	cfg[0] = 'x'
@@ -145,7 +145,7 @@ func TestOpenRepoWithoutConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo without config.json: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	if r.Config() != nil {
 		t.Errorf("Config() = %s, want nil", r.Config())
 	}
@@ -306,7 +306,7 @@ func TestRefusesShardPathEscape(t *testing.T) {
 			writeIndex(t, dir, wm)
 			r, err := OpenRepo(dir)
 			if err == nil {
-				r.Close()
+				_ = r.Close()
 				t.Fatalf("OpenRepo accepted shard %q", shard)
 			}
 			if !strings.Contains(err.Error(), "is not a file name in the model directory") {
@@ -359,7 +359,7 @@ func TestRepoSharesOneFilePerShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	_, fa, _ := r.Tensor("a")
 	_, fb, _ := r.Tensor("b")
 	if fa != fb {

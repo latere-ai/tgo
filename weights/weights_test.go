@@ -72,7 +72,7 @@ func writeRepo(t *testing.T, specs ...tensorSpec) *safetensors.Repo {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { repo.Close() })
+	t.Cleanup(func() { _ = repo.Close() })
 	return repo
 }
 
@@ -82,7 +82,7 @@ func openCPU(t *testing.T) *accel.Device {
 	if err != nil {
 		t.Skipf("no CPU device: %v", err)
 	}
-	t.Cleanup(func() { dev.Close() })
+	t.Cleanup(func() { _ = dev.Close() })
 	return dev
 }
 
@@ -164,7 +164,7 @@ func TestLoadF16ConvertsTransposesAndPermutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	if got := set.Names(); len(got) != 3 || got[0] != "embed" {
 		t.Errorf("Names = %v", got)
@@ -245,7 +245,7 @@ func TestLoadInt8QuantizesAfterThePermutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	v, _ := set.Get("q_proj")
 	if v.Precision != Int8 || v.Data.DType() != accel.I8 || v.Scales == nil {
@@ -309,7 +309,7 @@ func TestLoadAutoChoosesAndPrints(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			defer set.Close()
+			defer func() { _ = set.Close() }()
 			rep := set.Report()
 			if rep.Chosen != c.want {
 				t.Errorf("chose %v, want %v", rep.Chosen, c.want)
@@ -344,7 +344,7 @@ func TestLoadPerTensorOverrideSurvivesTheAutoChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	if got := set.Report().Chosen; got != Int8 {
 		t.Fatalf("policy chose %v, want int8", got)
 	}
@@ -383,7 +383,7 @@ func TestLoadRefusesTooMuchSaturation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	v, _ := set.Get("w")
 	if v.Saturated != 2 || set.Report().Saturated != 2 {
 		t.Errorf("saturated = %d, report = %d", v.Saturated, set.Report().Saturated)
@@ -409,7 +409,7 @@ func TestRefuseAnySaturationAdmitsNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load refused a tensor that saturated nothing: %v", err)
 	}
-	set.Close()
+	_ = set.Close()
 
 	// One element in four is past f16's range, which the default fraction would
 	// also refuse; what this checks is that the strict setting is expressible
@@ -425,7 +425,7 @@ func TestRefuseAnySaturationAdmitsNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a threshold of 0.25 refused one saturation in four: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	if v, _ := set.Get("w"); v.Saturated != 1 {
 		t.Errorf("saturated = %d, want 1", v.Saturated)
 	}
@@ -506,7 +506,7 @@ func TestLoadStagesWhereAccessIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	if set.Report().Mapped {
 		t.Error("Report says the conversion was mapped, but staging was forced")
 	}
@@ -547,7 +547,7 @@ func TestLoadStagesInt4CodesTheDeviceCannotBeHandedDirectly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	v, _ := set.Get("w")
 	if v.Data.DType() != accel.U32 || v.Scales.DType() != accel.F16 ||
@@ -594,12 +594,12 @@ func TestArenaStagesEveryWidthAWeightIsStoredIn(t *testing.T) {
 	for _, dt := range []accel.DType{accel.F16, accel.I8, accel.U32} {
 		t.Run(dt.String(), func(t *testing.T) {
 			a := &arena{dev: dev, kind: accel.MemoryDevice, max: 1 << 20}
-			defer a.close()
+			defer func() { _ = a.close() }()
 			b, err := a.alloc(dt, 8, "w")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer b.Close()
+			defer func() { _ = b.Close() }()
 			if err := a.fill(b, func(dst []byte) error { return nil }); err != nil {
 				t.Fatalf("fill: %v", err)
 			}
@@ -616,13 +616,13 @@ func TestArenaOpensMorePoolsAndRefusesWhatCannotFit(t *testing.T) {
 	// pool fills. MaxPoolBytes is 2 GB on this device, so the cap is forced here
 	// instead of allocating that much.
 	a := &arena{dev: dev, kind: accel.MemoryShared, max: 4096}
-	defer a.close()
+	defer func() { _ = a.close() }()
 	for i := range 8 {
 		b, err := a.alloc(accel.F16, 512, fmt.Sprintf("t%d", i))
 		if err != nil {
 			t.Fatalf("alloc %d: %v", i, err)
 		}
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 	}
 	if len(a.pools) < 2 {
 		t.Errorf("%d pools for 8 KiB of buffers in 4 KiB pools", len(a.pools))
@@ -648,12 +648,12 @@ func TestArenaOpensMorePoolsAndRefusesWhatCannotFit(t *testing.T) {
 func TestArenaHasNoStagingPathForAnUnexpectedDType(t *testing.T) {
 	dev := openCPU(t)
 	a := &arena{dev: dev, kind: accel.MemoryDevice, max: 1 << 20}
-	defer a.close()
+	defer func() { _ = a.close() }()
 	b, err := a.alloc(accel.F32, 4, "f32")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	// Only the two dtypes a weight is stored in have a staging path. A third
 	// arriving here means a precision was added without one.
 	if err := a.fill(b, func(dst []byte) error { return nil }); err == nil {
@@ -710,13 +710,13 @@ func TestLoadDefaultsPrintToStderr(t *testing.T) {
 	os.Stderr = w
 	set, loadErr := Load(dev, repo, []Tensor{{Name: "w"}}, Options{Policy: F16})
 	os.Stderr = saved
-	w.Close()
+	_ = w.Close()
 	out, _ := io.ReadAll(r)
-	r.Close()
+	_ = r.Close()
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 	if !strings.Contains(string(out), "weights: f16") {
 		t.Errorf("nothing was printed to stderr: %q", out)
 	}
@@ -774,7 +774,7 @@ func openRepoAt(t *testing.T, dir string) *safetensors.Repo {
 	if err != nil {
 		t.Fatalf("OpenRepo(%s): %v", dir, err)
 	}
-	t.Cleanup(func() { repo.Close() })
+	t.Cleanup(func() { _ = repo.Close() })
 	return repo
 }
 
@@ -792,7 +792,7 @@ func TestLoadGivesOnePlaneToTwoPorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	table, ok := set.Get("model.embed_tokens.weight")
 	if !ok {
@@ -868,7 +868,7 @@ func TestAutoWalksDownToInt4AndLoads(t *testing.T) {
 			t.Fatalf("close the %v set: %v", p, err)
 		}
 	}
-	if !(sizes[Int4] < sizes[Int8] && sizes[Int8] < sizes[F16]) {
+	if sizes[Int4] >= sizes[Int8] || sizes[Int8] >= sizes[F16] {
 		t.Fatalf("the widths do not order: int4 %d, int8 %d, f16 %d",
 			sizes[Int4], sizes[Int8], sizes[F16])
 	}
@@ -886,7 +886,7 @@ func TestAutoWalksDownToInt4AndLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load at auto with a budget between int8 and int4: %v", err)
 	}
-	defer set.Close()
+	defer func() { _ = set.Close() }()
 
 	rep := set.Report()
 	if rep.Chosen != Int4 {

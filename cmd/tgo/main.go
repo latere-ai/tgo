@@ -197,7 +197,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "pull":
 		return cmdPull(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
-		fmt.Fprint(stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown command %q; the commands are run, bench, serve, info and pull",

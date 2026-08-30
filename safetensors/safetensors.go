@@ -118,12 +118,12 @@ func Open(path string) (*File, error) {
 	}
 	fi, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	sf, err := parse(f, path, fi.Size())
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return sf, nil

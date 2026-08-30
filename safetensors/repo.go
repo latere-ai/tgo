@@ -61,12 +61,12 @@ func OpenRepo(dir string) (*Repo, error) {
 	switch {
 	case err == nil:
 		if err := r.openSharded(idxPath, idxRaw); err != nil {
-			r.Close()
+			_ = r.Close()
 			return nil, err
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if err := r.openSingle(); err != nil {
-			r.Close()
+			_ = r.Close()
 			return nil, err
 		}
 	default:

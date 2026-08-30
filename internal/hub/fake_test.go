@@ -168,7 +168,7 @@ func (f *fake) serveListing(w http.ResponseWriter, r *http.Request) {
 		out.Siblings = append(out.Siblings, s)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // published is the length the API publishes for this file.
@@ -291,7 +291,7 @@ func serveBytes(w http.ResponseWriter, r *http.Request, body []byte) {
 			fmt.Sprintf("bytes %d-%d/%d", start, len(body)-1, len(body)))
 		w.WriteHeader(http.StatusPartialContent)
 	}
-	w.Write(body[start:])
+	_, _ = w.Write(body[start:])
 }
 
 // defaultDwell is how long the released batch is held. It is generous

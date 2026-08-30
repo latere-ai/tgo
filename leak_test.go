@@ -4,7 +4,6 @@
 package tgo
 
 import (
-	"math"
 	"testing"
 )
 
@@ -16,17 +15,6 @@ import (
 // one root cause -- a lease covering positions no step has computed -- and one
 // fix, which is that a lease grows before a step and records after it, and
 // publishes only what its slot has written.
-
-// divergence is the largest absolute difference between two logit rows.
-func divergence(a, b []float32) float64 {
-	worst := 0.0
-	for i := range a {
-		if d := math.Abs(float64(a[i] - b[i])); d > worst {
-			worst = d
-		}
-	}
-	return worst
-}
 
 // drain steps until the named slot's prompt is scored and returns its logits.
 func drain(t *testing.T, s *Scheduler, slot int) []float32 {

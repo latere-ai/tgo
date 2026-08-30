@@ -116,7 +116,7 @@ func (c *Client) fetchOnce(ctx context.Context, ref Ref, rev string, f File, dir
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -184,7 +184,7 @@ func (c *Client) fetchOnce(ctx context.Context, ref Ref, rev string, f File, dir
 		if total > f.Size {
 			// Longer than published: not a truncated transfer, so there is
 			// nothing to resume and the bytes are wrong.
-			os.Remove(part)
+			_ = os.Remove(part)
 		}
 		return fmt.Errorf("%w: %s: the listing says %d bytes and %d arrived",
 			ErrSize, f.Path, f.Size, total)
@@ -193,7 +193,7 @@ func (c *Client) fetchOnce(ctx context.Context, ref Ref, rev string, f File, dir
 		if got := hex.EncodeToString(digest.Sum(nil)); got != f.SHA256 {
 			// A mismatch deletes and fails (§2). Keeping it would let the next
 			// fetch resume a prefix that can never hash to the right digest.
-			os.Remove(part)
+			_ = os.Remove(part)
 			return fmt.Errorf("%w: %s: published %s, got %s", ErrChecksum, f.Path, f.SHA256, got)
 		}
 	}
@@ -221,7 +221,7 @@ func resumeFrom(part string, size int64, digest hash.Hash) int64 {
 	if err != nil {
 		return 0
 	}
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 	n, err := io.Copy(digest, fh)
 	if err != nil || n != st.Size() {
 		digest.Reset()
@@ -238,11 +238,11 @@ func openPart(part string, offset int64) (*os.File, error) {
 		return nil, err
 	}
 	if err := fh.Truncate(offset); err != nil {
-		fh.Close()
+		_ = fh.Close()
 		return nil, err
 	}
 	if _, err := fh.Seek(offset, io.SeekStart); err != nil {
-		fh.Close()
+		_ = fh.Close()
 		return nil, err
 	}
 	return fh, nil

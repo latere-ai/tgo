@@ -187,13 +187,13 @@ func TestFootprintMatchesTheLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo: %v", err)
 	}
-	defer repo.Close()
+	defer func() { _ = repo.Close() }()
 
 	dev, err := accel.OpenCPU(accel.CPUOptions{})
 	if err != nil {
 		t.Fatalf("open the CPU device: %v", err)
 	}
-	defer dev.Close()
+	defer func() { _ = dev.Close() }()
 
 	decls := make([]weights.Tensor, 0, len(planes))
 	specs := make([]model.WeightSpec, 0, len(planes))
@@ -218,7 +218,7 @@ func TestFootprintMatchesTheLoader(t *testing.T) {
 			t.Fatalf("weights.Load with a %d budget: %v", budget, err)
 		}
 		got := set.Report()
-		set.Close()
+		_ = set.Close()
 
 		if got.F16Bytes != f16 || got.Int8Bytes != int8 || got.Int4Bytes != int4 {
 			t.Errorf("the loader reports f16=%d int8=%d int4=%d and this package "+

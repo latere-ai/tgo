@@ -482,7 +482,7 @@ func TestAClientDisconnectCancelsGeneration(t *testing.T) {
 		t.Fatalf("reading the first byte: %v", err)
 	}
 	cancel()
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// The stream must stop, and stop because the context did. Waiting on the
 	// channel rather than on a sleep is what makes this a test of the
@@ -567,7 +567,7 @@ func TestTheLossHeaderSurvivesARealStreamingConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if got := resp.Header.Get("X-Tgo-Loss"); got != "user" {
 		t.Errorf("X-Tgo-Loss over the wire = %q, want %q: the header was set after the "+
 			"status line and reached nobody", got, "user")

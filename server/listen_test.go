@@ -21,7 +21,7 @@ func TestANonLoopbackBindIsRefusedWithoutTheFlag(t *testing.T) {
 			s := newTestServer(t, &fakeEngine{})
 			ln, err := s.Listen(addr)
 			if err == nil {
-				ln.Close()
+				_ = ln.Close()
 				t.Fatalf("Listen(%q) bound an address reachable from the network", addr)
 			}
 			if !strings.Contains(err.Error(), "WithPublicBind") ||
@@ -47,7 +47,7 @@ func TestALoopbackBindNeedsNoFlag(t *testing.T) {
 				}
 				t.Skipf("this machine cannot bind %s: %v", addr, err)
 			}
-			ln.Close()
+			_ = ln.Close()
 		})
 	}
 }
@@ -63,7 +63,7 @@ func TestAPublicBindSaysWhatItJustDid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen with WithPublicBind: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	for _, want := range []string{"no authentication", "reachable from the network"} {
 		if !strings.Contains(notice.String(), want) {
 			t.Errorf("the notice does not say %q: %q", want, notice.String())
@@ -98,7 +98,7 @@ func TestTheDefaultAddressIsLoopback(t *testing.T) {
 	s := newTestServer(t, &fakeEngine{})
 	ln, err := s.Listen("")
 	if err == nil {
-		ln.Close()
+		_ = ln.Close()
 		return
 	}
 	if strings.Contains(err.Error(), "WithPublicBind") {

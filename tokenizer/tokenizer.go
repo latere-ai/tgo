@@ -68,7 +68,7 @@ func Load(path string) (*Tokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	t, err := Parse(f)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)

@@ -229,6 +229,32 @@ func TestAWaiterGivesUpWhenTheContextIsDone(t *testing.T) {
 	}
 }
 
+// A lock file the pid could not be written to is worse than no lock file: the
+// refusal above names a holder nobody can identify, and an os.File is
+// unbuffered, so the failed write never reappears at Close.
+func TestALockThatCannotBeWrittenIsNotLeftBehind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rev"+lockSuffix)
+	saved := openLockFile
+	t.Cleanup(func() { openLockFile = saved })
+	openLockFile = func(p string) (*os.File, error) {
+		fh, err := saved(p)
+		if err != nil {
+			return nil, err
+		}
+		// Closed before it is handed back, so every write to it fails.
+		if err := fh.Close(); err != nil {
+			return nil, err
+		}
+		return fh, nil
+	}
+	if _, err := acquireLock(t.Context(), path, 0); err == nil {
+		t.Fatal("acquireLock reported a lock whose pid was never written")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the lock file outlived the write that could not fill it: %v", err)
+	}
+}
+
 func TestALockPathThatCannotBeCreatedIsReported(t *testing.T) {
 	_, err := acquireLock(t.Context(), filepath.Join(t.TempDir(), "no-such-dir", "x.lock"), 0)
 	if err == nil || errors.Is(err, ErrLocked) {

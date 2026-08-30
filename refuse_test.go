@@ -4,6 +4,7 @@
 package tgo
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -242,8 +243,11 @@ func TestRequestRefusals(t *testing.T) {
 		}
 	})
 	t.Run("a nil context", func(t *testing.T) {
-		//lint:ignore SA1012 the nil is the case under test.
-		if _, err := s.start(nil, []int{1}, greedy(2)); err == nil {
+		// The nil is the case under test: Session.start refuses it rather
+		// than dereferencing it, so the nil arrives through a variable and
+		// not as the literal a vet check would rewrite.
+		var missing context.Context
+		if _, err := s.start(missing, []int{1}, greedy(2)); err == nil {
 			t.Error("a nil context was accepted")
 		}
 	})

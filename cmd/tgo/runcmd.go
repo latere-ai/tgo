@@ -131,7 +131,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer e.Close()
+	defer func() { _ = e.Close() }()
 
 	// After the engine, not before: the precision specs/001-weights.md §5
 	// requires to be printed is the one the loader resolved, and until the
@@ -144,10 +144,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) error {
 	// different policies are compared at nothing. `tgo bench` carries the four
 	// in its conditions table; this is the same rule on the one number
 	// `tgo run` prints.
-	fmt.Fprintf(stderr, "model %s, %s, %s at %d positions of context (%s)\n",
+	_, _ = fmt.Fprintf(stderr, "model %s, %s, %s at %d positions of context (%s)\n",
 		rep.Model.Architecture, rep.Precision.Why, humanBytes(rep.Memory.ResidentBytes),
 		rep.Memory.Context, rep.Hardware.Backend)
-	fmt.Fprintf(stderr, "sampling %s\n", describePolicy(samplingOf(o.Policy, o.Seed, o.MaxTokens)))
+	_, _ = fmt.Fprintf(stderr, "sampling %s\n", describePolicy(samplingOf(o.Policy, o.Seed, o.MaxTokens)))
 
 	// Ctrl-C stops the stream and prints what was produced, rather than
 	// killing the process mid-token: a user who interrupts a long generation
@@ -168,7 +168,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(stdout, "\n")
+	_, _ = fmt.Fprint(stdout, "\n")
 	renderUsage(stderr, res, elapsed)
 	return nil
 }
@@ -176,11 +176,11 @@ func cmdRun(args []string, stdout, stderr io.Writer) error {
 // renderUsage reports what one generation cost, with the conditions left to the
 // header line cmdRun already printed.
 func renderUsage(w io.Writer, res genResult, elapsed time.Duration) {
-	fmt.Fprintf(w, "\n%d prompt tokens, %d generated, stopped on %s\n",
+	_, _ = fmt.Fprintf(w, "\n%d prompt tokens, %d generated, stopped on %s\n",
 		res.PromptTokens, res.CompletionTokens, res.Stop)
-	fmt.Fprintf(w, "time to first token %s, %s total", humanDuration(res.TTFT), humanDuration(elapsed))
+	_, _ = fmt.Fprintf(w, "time to first token %s, %s total", humanDuration(res.TTFT), humanDuration(elapsed))
 	if res.CompletionTokens > 0 && elapsed > 0 {
-		fmt.Fprintf(w, ", %.2f tokens/second", float64(res.CompletionTokens)/elapsed.Seconds())
+		_, _ = fmt.Fprintf(w, ", %.2f tokens/second", float64(res.CompletionTokens)/elapsed.Seconds())
 	}
-	fmt.Fprint(w, "\n")
+	_, _ = fmt.Fprint(w, "\n")
 }

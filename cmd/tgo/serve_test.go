@@ -286,8 +286,8 @@ func TestServeReportsWhatAnOperatorGot(t *testing.T) {
 		t.Fatalf("startServe: %v", err)
 	}
 	defer func() {
-		sv.ln.Close()
-		sv.release()
+		_ = sv.ln.Close()
+		_ = sv.release()
 	}()
 
 	out := stdout.String()
@@ -363,7 +363,7 @@ func TestPublicAddressAgreesWithTheServer(t *testing.T) {
 			mine := isPublicAddr(host)
 			ln, err := srv.Listen(addr)
 			if ln != nil {
-				ln.Close()
+				_ = ln.Close()
 			}
 			theirs := err != nil && strings.Contains(err.Error(), "WithPublicBind")
 			if mine != theirs {
@@ -387,8 +387,8 @@ func TestServeRefusesANonLoopbackBindWithoutTheFlag(t *testing.T) {
 			var stdout, stderr strings.Builder
 			sv, err := startServe([]string{"--addr", addr, "--device", "cpu", dir}, &stdout, &stderr)
 			if err == nil {
-				sv.ln.Close()
-				sv.release()
+				_ = sv.ln.Close()
+				_ = sv.release()
 				t.Fatalf("--addr %s bound without --public", addr)
 			}
 			// And nothing was loaded: the refusal is a flag the user can fix,
@@ -425,8 +425,8 @@ func TestServePublicBindSaysItHasNoAuthentication(t *testing.T) {
 		t.Fatalf("startServe --public: %v", err)
 	}
 	defer func() {
-		sv.ln.Close()
-		sv.release()
+		_ = sv.ln.Close()
+		_ = sv.release()
 	}()
 	notice := stderr.String()
 	for _, want := range []string{"no authentication", "reachable from the network"} {
@@ -601,7 +601,7 @@ func TestServeUntilLetsAnInFlightRequestFinish(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(entered)
 		<-release
-		io.WriteString(w, "finished")
+		_, _ = io.WriteString(w, "finished")
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -617,7 +617,7 @@ func TestServeUntilLetsAnInFlightRequestFinish(t *testing.T) {
 			body <- "error: " + err.Error()
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
 			body <- "error: " + err.Error()
@@ -657,7 +657,7 @@ func awaitClosed(t *testing.T, addr string) {
 		if err != nil {
 			return
 		}
-		c.Close()
+		_ = c.Close()
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("%s still accepts connections after the shutdown began", addr)
@@ -702,7 +702,7 @@ func TestServeUntilReportsAListenerThatFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	ln.Close()
+	_ = ln.Close()
 	var stderr strings.Builder
 	err = serveUntil(context.Background(), func() {}, ln,
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), time.Second, &stderr)
@@ -755,7 +755,7 @@ func TestCmdServeServesUntilInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/health answered %d, want 200", resp.StatusCode)
 	}
@@ -847,7 +847,7 @@ func TestServeARealCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	got, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read the answer: %v", err)
@@ -917,8 +917,8 @@ func TestServeReportsThePoolAndWhatItReuses(t *testing.T) {
 				t.Fatalf("startServe: %v", err)
 			}
 			defer func() {
-				sv.ln.Close()
-				sv.release()
+				_ = sv.ln.Close()
+				_ = sv.release()
 			}()
 			out := stdout.String()
 			for _, want := range tc.want {
@@ -1056,8 +1056,8 @@ func TestServePoolSizeIsTheAdmissionLimit(t *testing.T) {
 				t.Fatalf("startServe(%v): %v", tc.args, err)
 			}
 			defer func() {
-				sv.ln.Close()
-				sv.release()
+				_ = sv.ln.Close()
+				_ = sv.release()
 			}()
 			if built == nil {
 				t.Fatalf("startServe(%v) built no pool", tc.args)

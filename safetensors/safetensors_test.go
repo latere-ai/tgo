@@ -105,7 +105,7 @@ func TestOpenReadsHeaderAndPlanes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if got := f.Names(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("Names() = %v, want [a b]; __metadata__ must not be a tensor", got)
@@ -153,7 +153,7 @@ func TestNamesAndShapeAreCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	names := f.Names()
 	names[0] = "clobbered"
@@ -179,7 +179,7 @@ func TestEmptyTensorIsNotAnOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, err := f.Bytes("empty")
 	if err != nil {
 		t.Fatalf("Bytes(empty): %v", err)
@@ -196,7 +196,7 @@ func TestScalarTensor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if e, _ := f.Entry("s"); e.End-e.Begin != 8 {
 		t.Errorf("scalar I64 spans %d bytes, want 8", e.End-e.Begin)
 	}
@@ -207,7 +207,7 @@ func TestBytesUnknownName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, ok := f.Entry("nope"); ok {
 		t.Error(`Entry("nope") reported a tensor that is not there`)
 	}
@@ -253,7 +253,7 @@ func TestBytesAfterTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := os.Truncate(path, 8); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestRefusals(t *testing.T) {
 			path := write(t, t.TempDir(), singleName, hdr, data, lenOverride)
 			f, err := Open(path)
 			if err == nil {
-				f.Close()
+				_ = f.Close()
 				t.Fatalf("Open accepted %s", tc.name)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
@@ -480,7 +480,7 @@ func TestHeaderPaddingIsAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open of a padded header: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	e, ok := f.Entry("a")
 	if !ok || e.Begin != 0 {
 		t.Fatalf("Entry(a) = %+v, %v; offsets stay relative to the end of the padded header", e, ok)
@@ -501,7 +501,7 @@ func TestConcurrentBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	want := map[string]byte{"a": 0x11, "b": 0x22}
 	var wg sync.WaitGroup

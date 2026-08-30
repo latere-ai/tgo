@@ -24,6 +24,13 @@ const lockPoll = 20 * time.Millisecond
 // lock is a held revision lock.
 type lock struct{ path string }
 
+// openLockFile is the exclusive create the lock is built on. It is a variable
+// because the write that follows it fails only on a filesystem this suite
+// cannot produce, and that write not being checked was a defect.
+var openLockFile = func(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+}
+
 // acquireLock takes the lock for a revision directory, waiting up to wait for
 // whoever holds it.
 //
@@ -35,11 +42,21 @@ type lock struct{ path string }
 func acquireLock(ctx context.Context, path string, wait time.Duration) (*lock, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		fh, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		fh, err := openLockFile(path)
 		if err == nil {
-			fmt.Fprintf(fh, "%d\n", os.Getpid())
-			if err := fh.Close(); err != nil {
-				return nil, fmt.Errorf("hub: %s: %w", path, err)
+			// The pid is the whole content of the lock and an os.File is
+			// unbuffered, so a failed write never reappears at Close. Left
+			// unchecked it leaves an empty lock file behind: the refusal above
+			// names a holder that cannot be identified, and the file outlives
+			// the process that could not write it.
+			_, werr := fmt.Fprintf(fh, "%d\n", os.Getpid())
+			cerr := fh.Close()
+			if werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				_ = os.Remove(path)
+				return nil, fmt.Errorf("hub: %s: %w", path, werr)
 			}
 			return &lock{path: path}, nil
 		}
@@ -65,6 +82,6 @@ func (l *lock) release() {
 	if l == nil || l.path == "" {
 		return
 	}
-	os.Remove(l.path)
+	_ = os.Remove(l.path)
 	l.path = ""
 }

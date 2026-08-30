@@ -281,12 +281,12 @@ func encodeRecord(r benchRecord) ([]byte, error) {
 // the drift nobody notices until the two disagree.
 func renderMarkdown(w io.Writer, r benchRecord) {
 	c := r.Conditions
-	fmt.Fprintf(w, "# tgo bench: %s\n\n", c.Model.Architecture)
+	_, _ = fmt.Fprintf(w, "# tgo bench: %s\n\n", c.Model.Architecture)
 
-	fmt.Fprint(w, "## Conditions\n\n")
-	fmt.Fprint(w, "| what | value |\n| --- | --- |\n")
+	_, _ = fmt.Fprint(w, "## Conditions\n\n")
+	_, _ = fmt.Fprint(w, "| what | value |\n| --- | --- |\n")
 	row := func(k, format string, args ...any) {
-		fmt.Fprintf(w, "| %s | %s |\n", k, fmt.Sprintf(format, args...))
+		_, _ = fmt.Fprintf(w, "| %s | %s |\n", k, fmt.Sprintf(format, args...))
 	}
 	row("model", "`%s`", c.Model.Dir)
 	row("architecture", "%s, %s parameters, %d layers, %d heads over %d kv heads, head_dim %d",
@@ -307,47 +307,47 @@ func renderMarkdown(w io.Writer, r benchRecord) {
 		c.Prompt.RequestedTokens, c.Prompt.MeasuredTokens, c.Prompt.Recipe)
 	row("warm-up", "%d steps run and discarded before measuring (§4 rule 3)", c.WarmupSteps)
 
-	fmt.Fprint(w, "\n## Throughput\n\n")
-	fmt.Fprint(w, "| batch | generated tokens | wall | tokens/s |\n| ---: | ---: | ---: | ---: |\n")
+	_, _ = fmt.Fprint(w, "\n## Throughput\n\n")
+	_, _ = fmt.Fprint(w, "| batch | generated tokens | wall | tokens/s |\n| ---: | ---: | ---: | ---: |\n")
 	for _, p := range r.Batches {
-		fmt.Fprintf(w, "| %d | %d | %s | %.2f |\n", p.Batch, p.Tokens,
+		_, _ = fmt.Fprintf(w, "| %d | %d | %s | %.2f |\n", p.Batch, p.Tokens,
 			humanDuration(p.Wall), p.TokensPerSecond)
 	}
 
 	if !r.Breakdown.Available {
-		fmt.Fprintf(w, "\n## Where the time went\n\n%s\n", wrapNote(r.Breakdown.Note))
+		_, _ = fmt.Fprintf(w, "\n## Where the time went\n\n%s\n", wrapNote(r.Breakdown.Note))
 	} else {
-		fmt.Fprint(w, "\n## Decode\n\n")
-		fmt.Fprint(w, "Every measurement is the host/submit/device/readback breakdown (017-D1), "+
+		_, _ = fmt.Fprint(w, "\n## Decode\n\n")
+		_, _ = fmt.Fprint(w, "Every measurement is the host/submit/device/readback breakdown (017-D1), "+
 			"reported at percentiles rather than means (017-D2).\n\n")
 		phaseTable(w, r.Batches, func(p batchPoint) bench.PhaseStats { return p.Report.Decode })
 
-		fmt.Fprint(w, "\n## Prefill\n\n")
+		_, _ = fmt.Fprint(w, "\n## Prefill\n\n")
 		phaseTable(w, r.Batches, func(p batchPoint) bench.PhaseStats { return p.Report.Prefill })
 	}
 
-	fmt.Fprint(w, "\n## Time to first token\n\n")
-	fmt.Fprint(w, "| batch | cold: open | cold: first token | warm p50 | warm p90 | warm p99 | n |\n")
-	fmt.Fprint(w, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	_, _ = fmt.Fprint(w, "\n## Time to first token\n\n")
+	_, _ = fmt.Fprint(w, "| batch | cold: open | cold: first token | warm p50 | warm p90 | warm p99 | n |\n")
+	_, _ = fmt.Fprint(w, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, p := range r.Batches {
 		t := p.Report.TTFT
-		fmt.Fprintf(w, "| %d | %s | %s | %s | %s | %s | %d |\n", p.Batch,
+		_, _ = fmt.Fprintf(w, "| %d | %s | %s | %s | %s | %s | %d |\n", p.Batch,
 			humanDuration(p.Cold.Open), humanDuration(p.Cold.FirstToken),
 			humanDuration(t.P50), humanDuration(t.P90), humanDuration(t.P99), t.N)
 	}
-	fmt.Fprint(w, "\nCold includes the model load and the plan compile; warm is prefill only. "+
+	_, _ = fmt.Fprint(w, "\nCold includes the model load and the plan compile; warm is prefill only. "+
 		"They are different products (017 §3).\n")
 
-	fmt.Fprintf(w, "\n## Batch axis\n\n%s\n", wrapNote(r.BatchAxis.Note))
-	fmt.Fprintf(w, "\nPoints measured: %s.\n", axisPoints(r.BatchAxis.Points))
+	_, _ = fmt.Fprintf(w, "\n## Batch axis\n\n%s\n", wrapNote(r.BatchAxis.Note))
+	_, _ = fmt.Fprintf(w, "\nPoints measured: %s.\n", axisPoints(r.BatchAxis.Points))
 
-	fmt.Fprintf(w, "\n## Plan compilation\n\n%s\n", wrapNote(r.PlanStats.Note))
+	_, _ = fmt.Fprintf(w, "\n## Plan compilation\n\n%s\n", wrapNote(r.PlanStats.Note))
 
-	fmt.Fprintf(w, "\n## Comparisons\n\n%s\n", wrapNote(r.Comparison.Note))
+	_, _ = fmt.Fprintf(w, "\n## Comparisons\n\n%s\n", wrapNote(r.Comparison.Note))
 
 	for _, p := range r.Batches {
 		if p.Report.Dropped > 0 {
-			fmt.Fprintf(w, "\n> Batch %d dropped %d observations: the recorder filled and the "+
+			_, _ = fmt.Fprintf(w, "\n> Batch %d dropped %d observations: the recorder filled and the "+
 				"percentiles above describe the start of the run rather than the run.\n",
 				p.Batch, p.Report.Dropped)
 		}
@@ -356,11 +356,11 @@ func renderMarkdown(w io.Writer, r benchRecord) {
 
 // phaseTable writes one phase's row per batch point.
 func phaseTable(w io.Writer, points []batchPoint, pick func(batchPoint) bench.PhaseStats) {
-	fmt.Fprint(w, "| batch | tokens/s | steps | p50 | p90 | p99 | host | submit | device | readback |\n")
-	fmt.Fprint(w, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	_, _ = fmt.Fprint(w, "| batch | tokens/s | steps | p50 | p90 | p99 | host | submit | device | readback |\n")
+	_, _ = fmt.Fprint(w, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, p := range points {
 		s := pick(p)
-		fmt.Fprintf(w, "| %d | %.2f | %d | %s | %s | %s | %s | %s | %s | %s |\n",
+		_, _ = fmt.Fprintf(w, "| %d | %.2f | %d | %s | %s | %s | %s | %s | %s | %s |\n",
 			p.Batch, s.TokensPerSecond, s.Steps,
 			humanDuration(stepAt(s, quantileP50)), humanDuration(stepAt(s, quantileP90)),
 			humanDuration(stepAt(s, quantileP99)),

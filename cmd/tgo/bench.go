@@ -149,7 +149,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) error {
 	}
 	renderMarkdown(stdout, record)
 	if o.JSON == "" {
-		fmt.Fprint(stderr, "\nno JSON record was written; --json out.json writes the record a "+
+		_, _ = fmt.Fprint(stderr, "\nno JSON record was written; --json out.json writes the record a "+
 			"regression check reads (017-D6)\n")
 		return nil
 	}
@@ -160,7 +160,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) error {
 	if err := os.WriteFile(o.JSON, b, 0o644); err != nil {
 		return fmt.Errorf("writing the benchmark record: %w", err)
 	}
-	fmt.Fprintf(stderr, "\nwrote %s (%s, schema %s)\n", o.JSON, humanBytes(int64(len(b))), recordSchema)
+	_, _ = fmt.Fprintf(stderr, "\nwrote %s (%s, schema %s)\n", o.JSON, humanBytes(int64(len(b))), recordSchema)
 	return nil
 }
 
@@ -192,7 +192,7 @@ func measure(ctx context.Context, o benchOptions, rep modelReport, log io.Writer
 	if err != nil {
 		return benchRecord{}, err
 	}
-	defer e.Close()
+	defer func() { _ = e.Close() }()
 	cold := coldFacts{Open: time.Since(openStart)}
 
 	// 017-D4 qualifies every number by the precision it was produced at, so the
@@ -203,7 +203,7 @@ func measure(ctx context.Context, o benchOptions, rep modelReport, log io.Writer
 	discard := func(string) error { return nil }
 
 	if o.Warmup > 0 {
-		fmt.Fprintf(log, "warming up: %d tokens\n", o.Warmup)
+		_, _ = fmt.Fprintf(log, "warming up: %d tokens\n", o.Warmup)
 		res, err := e.Generate(ctx, genRequest{
 			Prompt: prompt, Raw: true, Policy: o.Policy, Seed: o.Seed,
 			MaxTokens: o.Warmup, Recorder: r, Emit: discard,
@@ -215,7 +215,7 @@ func measure(ctx context.Context, o benchOptions, rep modelReport, log io.Writer
 		r.Reset()
 	}
 
-	fmt.Fprintf(log, "measuring: %d prompt tokens, %d decode steps, batch %d\n",
+	_, _ = fmt.Fprintf(log, "measuring: %d prompt tokens, %d decode steps, batch %d\n",
 		o.PromptTokens, o.Tokens, o.Batch)
 	start := time.Now()
 	res, err := e.Generate(ctx, genRequest{

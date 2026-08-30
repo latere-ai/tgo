@@ -70,7 +70,7 @@ func TestQwen3RealCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRepo(%s): %v", dir, err)
 	}
-	defer repo.Close()
+	defer func() { _ = repo.Close() }()
 
 	held := make(map[string][]int)
 	for _, name := range repo.Names() {

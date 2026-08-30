@@ -717,7 +717,7 @@ func TestQueueStatsCountBothDeferralReasons(t *testing.T) {
 		return q.Stats().Deferred["no_slot"] > 0
 	})
 	cancel()
-	first.refused(t, "the first waiter")
+	_ = first.refused(t, "the first waiter")
 
 	// A slot is free now and the blocks are not: one of four is held and the
 	// waiter needs all four.
@@ -735,7 +735,7 @@ func TestQueueStatsCountBothDeferralReasons(t *testing.T) {
 			"not the slot table", got)
 	}
 	cancel2()
-	second.refused(t, "the second waiter")
+	_ = second.refused(t, "the second waiter")
 }
 
 // TestQueueUnderRace is the invariant the rest of the suite cannot state: under

@@ -130,7 +130,7 @@ func cmdPull(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("%w: %s at %s lists %d files and none of them is a safetensors checkpoint "+
 			"tgo can load", hub.ErrNoFiles, o.Ref.ID(), shortSHA(rev.SHA), len(rev.Files))
 	}
-	fmt.Fprintf(stderr, "%s at %s: %d files, %s\n", o.Ref.ID(), shortSHA(rev.SHA), len(files), humanBytes(total))
+	_, _ = fmt.Fprintf(stderr, "%s at %s: %d files, %s\n", o.Ref.ID(), shortSHA(rev.SHA), len(files), humanBytes(total))
 	pr.start(len(files), total)
 
 	dir, err := c.Fetch(ctx, o.Ref)
@@ -138,7 +138,7 @@ func cmdPull(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, dir)
+	_, _ = fmt.Fprintln(stdout, dir)
 	return nil
 }
 
@@ -271,7 +271,7 @@ func (p *progress) stop() {
 	}
 	p.paint()
 	if p.tty {
-		fmt.Fprint(p.w, "\n")
+		_, _ = fmt.Fprint(p.w, "\n")
 	}
 	p.dirty = false
 }
@@ -310,4 +310,4 @@ func (p *progress) paint() {
 }
 
 // line writes one string. The caller holds the mutex.
-func (p *progress) line(s string) { fmt.Fprint(p.w, s) }
+func (p *progress) line(s string) { _, _ = fmt.Fprint(p.w, s) }
