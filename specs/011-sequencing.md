@@ -568,9 +568,9 @@ them. What they asserted now comes from `latere.ai/x/ci-gate`, pinned in
 `go.mod`, and every gate is a `make` target that runs the same here as on a
 runner.
 
-**The entries above are what was true when they were written.** `internal/
-depcheck` did gate 009-D14's footprint, and `speclint` did check the tables
-and the register. The checks did not go away; their home did. What used to be
+**The other entries in this log are what was true when they were written**,
+and are left that way: `internal/depcheck` did gate 009-D14's footprint when
+Wave 12 said so, and `speclint` did check the tables and the register. The checks did not go away; their home did. What used to be
 compiled into Go maps is `.lateregate.yaml`: the coverage floor and its two
 exemptions, the status and layer vocabularies, the `blocked_on` rule and the
 pattern a durable reference has to match, the required sections, the id
