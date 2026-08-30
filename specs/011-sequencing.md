@@ -570,7 +570,8 @@ runner.
 
 **The other entries in this log are what was true when they were written**,
 and are left that way: `internal/depcheck` did gate 009-D14's footprint when
-Wave 12 said so, and `speclint` did check the tables and the register. The checks did not go away; their home did. What used to be
+Wave 12 said so, and `speclint` did check the tables and the register. The
+checks did not go away; their home did. What used to be
 compiled into Go maps is `.lateregate.yaml`: the coverage floor and its two
 exemptions, the status and layer vocabularies, the `blocked_on` rule and the
 pattern a durable reference has to match, the required sections, the id
