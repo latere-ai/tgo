@@ -7,7 +7,7 @@ GO ?= go
 # compiles to, not about what its test harness may use to find a race.
 export CGO_ENABLED = 0
 
-.PHONY: build test cover test-hermetic test-race fmt fmt-check lint-modernize spec-lint validate dist fuzz cgo-free deps
+.PHONY: build test cover test-hermetic test-race fmt fmt-check lint-modernize lint-config spec-lint validate dist fuzz cgo-free deps
 
 build:
 	$(GO) build ./...
@@ -47,6 +47,12 @@ fmt-check:
 
 lint-modernize:
 	@$(GO) tool lateregate modernize
+
+# .golangci.yml is generated: golangci-lint cannot inherit a shared config, so
+# it is rendered from latere.ai/x/ci-gate and checked here. Regenerate with
+# `go tool lateregate golangci -write`.
+lint-config:
+	@$(GO) tool lateregate golangci
 
 # specs/README.md documents a lifecycle and a frontmatter shape. A spec tree
 # nobody checks drifts from the code within a milestone. The vocabulary, the
