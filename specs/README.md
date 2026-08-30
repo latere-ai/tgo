@@ -40,11 +40,11 @@ flowchart LR
 `record` was two statuses until 2026-08-27 — `normative` for 000 and `living`
 for 011 — which is two categories with one member each, both saying the same
 thing: this file states no design, so the lifecycle does not apply to it. 000
-records the decisions and 011 records what happened. `internal/speclint` already
+records the decisions and 011 records what happened. The linter already
 exempted both by name from the decision-record and Outcome rules; the status now
-says why instead of leaving the reason in the linter.
+says why instead of leaving the reason in the configuration.
 
-**A status past `dispatched` is checked, not asserted.** `internal/speclint`
+**A status past `dispatched` is checked, not asserted.** `make spec-lint`
 requires an `## Outcome` section on every `implemented` or `complete` spec, and
 requires 011 to link a `complete` one.
 
@@ -69,7 +69,7 @@ still marked `drafted`.
 ### What separates `implemented` from `complete`
 
 The `**Not built.**` paragraph. Under `complete` it opens with "Nothing"; under
-`implemented` it does not, and `internal/speclint` fails either way round.
+`implemented` it does not, and `make spec-lint` fails either way round.
 
 The first version of this rule checked the same two things of both statuses,
 which made them indistinguishable — a spec passed at either. Four independent

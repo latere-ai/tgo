@@ -560,6 +560,44 @@ Either omission leaks a slot **and its blocks** for the life of the process.
 **Nothing in `server/` imports it yet.** That is
 [022](022-batched-serving.md)'s first pass, and 021 §10 says so.
 
+### 2026-08-30 — the gates left the repository
+
+`internal/covercheck`, `internal/speclint` and `internal/depcheck` are
+deleted, 1634 lines of them, together with the 219-line workflow that ran
+them. What they asserted now comes from `latere.ai/x/ci-gate`, pinned in
+`go.mod`, and every gate is a `make` target that runs the same here as on a
+runner.
+
+**The entries above are what was true when they were written.** `internal/
+depcheck` did gate 009-D14's footprint, and `speclint` did check the tables
+and the register. The checks did not go away; their home did. What used to be
+compiled into Go maps is `.lateregate.yaml`: the coverage floor and its two
+exemptions, the status and layer vocabularies, the `blocked_on` rule and the
+pattern a durable reference has to match, the required sections, the id
+scoping, the register's numbering and citations, and the allowlist `deps`
+checks across ten platforms.
+
+**Nothing was dropped in the move, but three checks nearly were.** The first
+pass kept the frontmatter, dependency, index and table rules and quietly lost
+the register's numbering and citation checks, the rule that 011 must link
+every `complete` spec, and the `**Not built.**` paragraph that tells
+`implemented` from `complete`. They were found by reading a comment in
+`internal/conformance/register.go` that named a linter which no longer
+existed, and they went back in as configurable rules rather than as tgo code.
+The lesson is the one this file keeps recording: a check whose rationale
+survives is a check someone can notice is missing.
+
+**Two things did not fit the shared contract**, and say so rather than bending
+it. Windows moved to its own workflow, because the runner image ships GNU make
+on ubuntu and not on windows and the contract is make targets. And `deps`,
+`cgo-free` and `fuzz` keep their own targets under one `validate` job, because
+each defends a promise tgo makes and most repositories do not, and a failure
+should still name which one broke. `ci-metal.yml` is untouched: a job that
+promises a Metal device and finds none is a failure rather than a skip.
+
+tgo also gained `make test-hermetic`, which it never had — the suite with
+nothing on `PATH` but the toolchain — and it passes at the strictest setting.
+
 ### 2026-08-28 — Wave 12: the specs say what the code does
 
 No new capability. This wave closed the gap between what shipped and what is

@@ -458,7 +458,7 @@ GET routes are live.
 | 1 | the four POST routes and the three GET routes, each POST round-tripping one golden request | `server/server.go:87-93`, `server/dialect_test.go:20` |
 | 2 | `ir` meets `chat.Message` and `Policy` in one file, and the root module imports no `llmdialect` package | `server/adapt.go:16-19` |
 | 2.1 | the measurement still holds at `latere.ai/x/pkg v0.41.0`: one require, `go.sum` at two lines, a stdlib-only build list | `go.mod`, `go.sum` |
-| 2.1 | [009-D14](#decision-record)'s footprint gate: `go list -deps` on the server against an allowlist that carries a reason per prefix, taken on all ten GOOS/GOARCH pairs `cross` builds and unioned, run in CI and pinned both ways -- a module no decision allows fails, and an allowance no platform reaches fails too | `internal/depcheck/main.go:56,68`, `internal/depcheck/main_test.go:17,52`, `.github/workflows/ci.yml:108` |
+| 2.1 | [009-D14](#decision-record)'s footprint gate: `go list -deps` on the server against an allowlist that carries a reason per prefix, taken on all ten GOOS/GOARCH pairs `cross` builds and unioned, run in CI and pinned both ways -- a module no decision allows fails, and an allowance no platform reaches fails too | `.lateregate.yaml`'s `depcheck` block, `Makefile`'s `deps` target |
 | 3 | blocks as a strict subset: `ir.BlockImage` is refused rather than dropped, redacted thinking is dropped with the reason stated | `chat/chat.go:49-67`, `server/adapt.go:162-228` |
 | 3.1 | thinking is dropped by block type, so the forgeable textual boundary does not exist | `chat/qwen3.go:261-266`, `server/dialect_test.go:121` |
 | 3.2 | typed stream events, one to one with `ir.Event` | `stream.go:20-70,163-192`, `server/generate.go:247-268` |

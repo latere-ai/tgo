@@ -447,7 +447,7 @@ dependency beyond the standard library while [002-D10](#decision-record) takes
 `Decoder` output is always well-formed UTF-8 while
 `TestDecoderDoesNotHoldAnImpossibleByte` shows a byte that cannot begin a code
 point is emitted raw. `TestDecoderOutputIsNotAlwaysValidUTF8` now pins the real
-guarantee, and `internal/depcheck` gates the x/text sentence: a second module
+guarantee, and `make deps` gates the x/text sentence: a second module
 here fails, and x/text going away fails too.
 ## Decision record
 

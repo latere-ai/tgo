@@ -54,6 +54,30 @@ spec:
     complete: ["Outcome"]
   section_exempt: [000-decisions.md, 011-sequencing.md]
   scoped_ids: '\| (\d{3})-D(\d+) \|'
+  # `complete` means the outcome is recorded in 011, which is a claim about
+  # another file that the section rule cannot see.
+  status_linked_from:
+    complete: 011-sequencing.md
+  # The Outcome section's "Not built." paragraph is what makes `implemented`
+  # and `complete` distinguishable. Checking one direction only would let a
+  # finished spec sit at `implemented`, which hides that it is finished.
+  status_marker:
+    pattern: '\*\*Not built\.?\*\*:?\s+(\S+)'
+    required: [implemented, complete]
+    expect:
+      complete: '^Nothing'
+    reject:
+      implemented: '^Nothing'
+  register:
+    # specs/010-conformance.md section 2 numbers the conformance rows, and the
+    # rest of the tree cites them. A gap means a row was deleted and every
+    # number after it now means something else; a dangling citation is the same
+    # drift one level up. Neither is visible in review.
+    file: 010-conformance.md
+    define: '(?m)^\| \*{0,2}(C\d+)\*{0,2} \|'
+    cite: '010 (C\d+)|\b(C\d+)\]\(010-conformance\.md\)'
+    sequential: true
+    prefix: C
 
 depcheck:
   platforms:

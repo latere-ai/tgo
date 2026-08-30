@@ -308,7 +308,7 @@ Owned elsewhere, four items, each with the spec that owns it.
   closed gap satisfies.
 - **017-D6's regression gate**: [028](028-performance-gate.md). The record is
   written and shaped for a checker that does not exist (`cmd/tgo/record.go:205`),
-  `internal/` has no benchmark counterpart to `covercheck`, and neither
+  there is no benchmark counterpart to the coverage gate, and neither
   `.github/workflows/ci.yml` nor `ci-metal.yml` runs `tgo bench`.
 - **Plan compile time per bucket, and plan-cache hit rate**: §3's last row waits
   on [007 §1](007-engine.md) exporting plan-cache statistics. The cache is

@@ -25,7 +25,7 @@
 // computed by a package under it -- model parses the config, bench aggregates
 // the percentiles, weights decides the precision -- and what lives here is the
 // decision of which of them to call and how to render the answer. That is why
-// internal/covercheck exempts it from the coverage floor, so anything with a
+// .lateregate.yaml exempts it from the coverage floor, so anything with a
 // rule in it is a function in this package with a test, not a branch inside a
 // flag handler.
 //

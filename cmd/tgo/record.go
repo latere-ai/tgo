@@ -210,8 +210,8 @@ type benchRecord struct {
 // Both renderers read this one struct, so a field the caller left unset is a
 // wrong number in the table and in the record at once -- and in whatever reads
 // the record after that. 017-D6 asks for a gate over it that this tree does not
-// have: internal/covercheck is the model named, and nothing is its benchmark
-// counterpart. See this package's reported discrepancies.
+// have: the per-package coverage gate is the model named, and nothing is its
+// benchmark counterpart. See this package's reported discrepancies.
 func newRecord(c conditions, axis batchAxis, points []batchPoint) benchRecord {
 	measured := make([]batchPoint, len(points))
 	copy(measured, points)

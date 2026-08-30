@@ -59,8 +59,9 @@ const issueURL = "https://github.com/golang-design/accel/issues/"
 // are the fields anything programmatic reads.
 type Row struct {
 	// ID is "C" and the row's number. Rows are numbered without gaps and a
-	// number is never reused; internal/speclint enforces both over the spec
-	// tree, and [Document] plus the drift test carry the enforcement here.
+	// number is never reused; `make spec-lint` enforces both over the spec
+	// tree through .lateregate.yaml's register rule, and [Document] plus the
+	// drift test carry the enforcement here.
 	ID string
 
 	// Cannot is what tgo cannot do, in the register's voice: a capability,
@@ -476,9 +477,9 @@ func Document(rows []Row) string {
 // kernel-corpus row that replaced it, which is a better record than an issue
 // with no plan and is not visible from here.
 //
-// Numbering and cross-spec citations are internal/speclint's, over the spec
-// text. Since the spec text is generated from these rows, checking them twice
-// would be checking the same thing twice.
+// Numbering and cross-spec citations are the spec linter's, over the spec
+// text: .lateregate.yaml's register rule. Since the spec text is generated
+// from these rows, checking them twice would be checking the same thing twice.
 func Validate(rows []Row) []string {
 	var bad []string
 	for _, r := range rows {

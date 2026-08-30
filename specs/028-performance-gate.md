@@ -51,39 +51,46 @@ baseline against this build's schema.
 
 ## 2. The checker
 
-`internal/benchcheck`, modelled on `internal/covercheck` and departing from it
-in one place.
+A `benchcheck` subcommand of `latere.ai/x/ci-gate`, not a program in this
+repository.
 
-What is copied, because it is what makes covercheck readable:
+**This section was rewritten on 2026-08-30.** It used to say
+`internal/benchcheck`, modelled on `internal/covercheck` and citing it by line
+number (both since deleted). Those files are gone: the gates left this repository, and a spec whose
+plan is to copy something deleted is a plan nobody can follow. What the
+original argued for survives, because it was never about where the code sat.
 
-- **thresholds are constants in the source with the term that produced them in
-  a comment beside them** (`internal/covercheck/main.go:28-33`);
-- **exemptions are declared in code, with a reason, and printed on every run**
-  (`internal/covercheck/main.go:35-56`, `internal/covercheck/main.go:143`);
-- **one line per measured thing, a leading `FAIL` marker on the ones that
-  failed, and a summary on stderr naming the number that was missed**
-  (`internal/covercheck/main.go:152-157`);
-- **a gate that measured nothing fails rather than passing green**
-  (`internal/covercheck/main.go:160-170`).
+What is copied from the coverage gate, because it is what makes that one
+readable:
 
-What is not copied is the exemption. covercheck is `package main` and exempts
-itself from the coverage floor, on the ground that it gates coverage and is not
-gated by it (`internal/covercheck/main.go:40`). Its `main` also does the work,
-which is what makes it hard to test: it reads a flag, opens a file and calls
-`os.Exit`. `internal/speclint` went the other way for a stated reason. The
-checks live in functions the coverage gate measures, because a linter is code
-and [`CONTRIBUTING.md`](../CONTRIBUTING.md) requires a checker to be
-negative-tested (`internal/speclint/speclint.go:13-15`).
+- **thresholds carry the term that produced them**, next to the number rather
+  than in a commit message;
+- **exemptions are declared with a reason and printed on every run**, and the
+  reason is the value, so an entry cannot exist without one;
+- **one line per measured thing**, a leading `FAIL` on the ones that failed,
+  and a summary naming the number that was missed;
+- **a gate that measured nothing fails** rather than passing green.
 
-`internal/benchcheck` takes covercheck's location and speclint's arrangement. It
-is `package main`, so `go run ./internal/benchcheck` is the command, and every
-comparison lives in a function that takes a decoded record and returns findings.
-`main` reads the flags, calls one of them and sets the exit status, which is the
-`cmdBench(args, stdout, stderr) error` shape `cmd/tgo/bench.go:136` already
-uses. **It takes no entry in covercheck's `exempt` map**: `main` itself is the
-only part unreachable from a test, and the 90% floor is per package.
+Those four are `ci-gate`'s
+[`specs/001-gate-principles.md`](https://github.com/latere-ai/ci-gate/blob/main/specs/001-gate-principles.md)
+D3 and D4, so `benchcheck` inherits them rather than restating them, and the
+thresholds and exemptions live in this repository's `.lateregate.yaml` the way
+every other gate's do. That is D2, and it is the reason the checker can be
+shared while the numbers stay tgo's.
 
-Its failure message is covercheck's, with the axis in place of the package. The
+What does not carry over is the old note about `main`. The question it settled
+-- whether the checks live in `main` where a test cannot reach them, or in
+functions the coverage gate measures -- is settled for every `ci-gate`
+subcommand already: the logic is in a package, `main` is flag parsing, and
+[`CONTRIBUTING.md`](../CONTRIBUTING.md)'s requirement that a checker be
+negative-tested is met there rather than argued for here.
+
+What is still tgo's, and is the reason this spec exists rather than an issue on
+`ci-gate`: the axes, the baseline format, and the tolerances. A throughput
+regression is a claim about this engine on a stated device, and no shared tool
+can hold that.
+
+Its failure message is the coverage gate's, with the axis in place of the package. The
 shape is the point below and the numbers are not a measurement: some are
 [017 §4.1](017-benchmarks.md)'s and the rest are invented to show the columns.
 
@@ -232,9 +239,10 @@ commit replaces it with the measured number and records both in its message.
 ## 6. Accepting a deliberate loss
 
 A trade recorded in a spec must not be blocked by a lint. The mechanism is
-covercheck's: a map in the checker's source, keyed by axis, valued by the
-reason, printed on every run whether or not it fired
-(`internal/covercheck/main.go:39-56`, `internal/covercheck/main.go:143`).
+the coverage gate's: a map keyed by axis and valued by the reason, printed on
+every run whether or not it fired. It lives in `.lateregate.yaml` rather than
+in the checker's source, for the reason `ci-gate`'s D2 gives -- the numbers are
+tgo's and the checker is shared.
 
 ```go
 // accepted maps a gated axis to the decision that traded it away.
@@ -248,8 +256,8 @@ var accepted = map[string]string{
 
 **The reason must name a decision id.** The checker refuses an entry whose
 reason contains no `NNN-D<n>`, which is what turns "recorded in a spec" from a
-convention into something a program checks. It is the same shape
-`internal/speclint/speclint.go:266` uses on the decision tables themselves.
+convention into something a program checks. It is the same shape the spec linter's
+`scoped_ids` rule uses on the decision tables themselves.
 
 Rejected: a command-line flag such as `-allow=decode_tokens_per_second`. A flag
 lives in a workflow file or in one person's shell history and leaves no record
@@ -258,8 +266,8 @@ generated output, and a policy written into generated output is a policy that
 the next run overwrites.
 
 The vacuity guard comes across unchanged. If every gated axis is exempt or
-absent, the run gated nothing and **that is a failure, not a green build**
-(`internal/covercheck/main.go:160-170`). It is the shape this repository was in
+absent, the run gated nothing and **that is a failure, not a green build**;
+it is `ci-gate`'s D4. It is the shape this repository was in
 at M0 and the shape a half-updated axis list produces.
 
 ## 7. What the checker refuses to compare
@@ -374,8 +382,8 @@ promising a backend it does not use.
 **An empty `bench/baseline` fails.** Between the commit that lands the checker
 and the commit that lands the first baseline, the directory has no records, and
 a check over no records gated nothing. That is §6's vacuity guard at the
-directory level and it is a failure rather than a green build
-(`internal/covercheck/main.go:160-170`). It is also what keeps the two commits
+directory level and it is a failure rather than a green build,
+which is `ci-gate`'s D4 again. It is also what keeps the two commits
 close together, since the second one is what turns the build green.
 
 What this catches is the failure §7 describes arriving silently: the record
@@ -451,7 +459,7 @@ baseline.
 
 | id | decision | rejected | consequence |
 | --- | --- | --- | --- |
-| 028-D1 | `internal/benchcheck` is `package main`, and every comparison is a function over a decoded record that `main` only calls | covercheck's arrangement, where `main` does the work and the package exempts itself from the coverage floor (`internal/covercheck/main.go:40`) | the checker is measured by the 90% floor and negative-tested, which is `internal/speclint/speclint.go:13-15`'s reasoning applied again. No new entry in covercheck's `exempt` map |
+| 028-D1 | `benchcheck` is a `ci-gate` subcommand whose comparisons are functions over a decoded record, which `main` only calls | a program in this repository, the way the coverage gate was before the gates moved out | the checker is measured by the 90% floor and negative-tested where it lives, and tgo's `.lateregate.yaml` holds the axes and tolerances. **Amended 2026-08-30:** the original said `internal/benchcheck`; that home no longer exists |
 | 028-D2 | the baseline is a committed JSON record under `bench/baseline/` | a CI artifact from the last green run on main; a released record | the gate needs a deliberate update commit and the baseline drifts with the machine, and both are visible in a diff. The artifact's failure mode is a red build caused by retention, and the release's is a wave of change reported as one regression |
 | 028-D3 | an axis gates only when its sample count clears `minSamples = 20`, and a share never gates | a hand-written list of gating axes | `report.ttft.n` is 1 today (`cmd/tgo/bench.go:221`), so a single draw cannot fail a build, and spec 027's batched path makes it gate with no code change |
 | 028-D4 | the tolerance is the measured five-run spread on the release machine, clamped to [3%, 25%], and past the ceiling an axis loses its gate | a fixed number chosen so the current run passes; widening a band when a run fails | a tolerance is transcribed from `-spread` rather than argued, and the pressure when a gate fails goes to [011 §5](011-sequencing.md) as a finding, per [010-D3](010-conformance.md) |

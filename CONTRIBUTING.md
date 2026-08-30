@@ -38,10 +38,13 @@ amending the decision record **in place**, with the new reasoning, rather than
 deleting the old row. The value of a decision record is that a later reader can
 see what was considered.
 
-`go test ./internal/speclint/` checks the tree: frontmatter, dependency edges,
-acyclicity, blocked specs naming what blocks them, a decision record in every
-spec, an index that cannot go stale, and no citation of a register row that does
-not exist.
+`make spec-lint` checks the tree: frontmatter, the closed status and layer
+vocabularies, dependency edges, acyclicity, blocked specs naming what blocks
+them with a durable upstream reference, a decision record in every spec, an
+`Outcome` section once a spec claims to be built, decision ids that carry their
+own spec's number, tables whose rows match their header, and an index that
+cannot go stale. The rules are in `.lateregate.yaml`; the checker is
+`latere.ai/x/ci-gate`, pinned in `go.mod`.
 
 ## Tests
 
@@ -85,7 +88,8 @@ not exist.
 
 The coverage floor is 90% per package, not per repository — an average lets a
 well-tested package carry an untested one. Exemptions live in
-`internal/covercheck` with a reason attached.
+`.lateregate.yaml` with a reason attached: the value in the map *is* the
+reason, and an empty one fails the gate rather than warning.
 
 ## Running the gates locally
 
@@ -106,18 +110,24 @@ go test ./... > /tmp/t.log; echo "exit=$?"; grep -E "^(FAIL|--- FAIL)" /tmp/t.lo
 ```
 
 ```sh
-gofmt -l .
-go build ./...
-go vet ./...
-go test ./internal/speclint/
-go run ./internal/depcheck
-go test ./...
-go test -coverprofile=cover.out -coverpkg=./... ./... && go run ./internal/covercheck -profile=cover.out
-CGO_ENABLED=1 go test -race -count=1 -timeout 45m ./...
+make fmt-check       # gofmt over the tree
+make build
+make test            # go vet + go test ./...
+make spec-lint       # the spec tree against .lateregate.yaml
+make deps            # what the server's and tokenizer's builds may reach
+make cover           # 90% per package, not per repository
+make test-hermetic   # the suite with only the toolchain on PATH
+make test-race       # CGO_ENABLED=1, 45m budget
 ```
 
-CI runs all of these plus a cgo-free grep and a cross-compile across ten
-GOOS/GOARCH pairs.
+CI runs all of these plus `make cgo-free`, `make fuzz` and `make dist`, which
+cross-compiles the ten GOOS/GOARCH pairs. `make validate` is the three of them
+that defend a promise most repos do not make.
+
+Every gate is a make target, and every target runs the same on your machine as
+on a runner: the checks live in `latere.ai/x/ci-gate`, pinned in `go.mod`, so
+they need nothing checked out but this repository. That is deliberate — a gate
+you can only run in CI tells you too late.
 
 **Before you push, build a clean clone.** Every gate above reads your working
 tree; CI reads what you committed. A file you forgot to stage passes locally and
