@@ -163,7 +163,14 @@ func fields(raw json.RawMessage, path string) ([]string, map[string]json.RawMess
 		if err != nil {
 			return nil, nil, &SchemaError{Path: path, Reason: fmt.Sprintf("malformed object: %v", err)}
 		}
-		k := kt.(string)
+		// Inside an object with More() true the next token is a key, so this
+		// holds. It is checked anyway because every other malformed input in
+		// this parser comes back as a SchemaError, and one that panicked
+		// instead would be the one shape a caller cannot handle.
+		k, ok := kt.(string)
+		if !ok {
+			return nil, nil, &SchemaError{Path: path, Reason: fmt.Sprintf("object key is %T, not a string", kt)}
+		}
 		var v json.RawMessage
 		if err := dec.Decode(&v); err != nil {
 			return nil, nil, &SchemaError{Path: path, Reason: fmt.Sprintf("malformed value for %q: %v", k, err)}
