@@ -469,9 +469,6 @@ func TestC23AQueryRowPastTheExtentsIsInert(t *testing.T) {
 	padded := in
 	padded.q = append(append([]float32(nil), in.q...),
 		spread(2*sh.qHeads*sh.headDim, 61)...)
-	pc := c
-	pc.seqs = append([]seq(nil), c.seqs...)
-	padded.c = pc
 
 	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c23-padded"})
 	shape := tensor.Shape{c.cacheRows(sh), sh.kvHeads, sh.headDim}
