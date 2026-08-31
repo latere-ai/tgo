@@ -181,8 +181,9 @@ func TestAutoNeverPrefersInt4ToInt8(t *testing.T) {
 		t.Fatalf("auto chose int4 for a model that fits at %v; narrowing is a last "+
 			"resort and int4 is not uniformly more accurate than int8", got)
 	}
-	if _, err := weights.Precision(0).String(), error(nil); err != nil {
-		t.Fatal(err)
+	// Precision(0) is Inherit; naming it is what the String method is for.
+	if got := weights.Precision(0).String(); got != "inherit" {
+		t.Errorf("weights.Precision(0) names itself %q, want \"inherit\"", got)
 	}
 	if got := weights.Int4.String(); !strings.Contains(got, "int4") {
 		t.Errorf("weights.Int4 names itself %q", got)

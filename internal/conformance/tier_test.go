@@ -106,8 +106,9 @@ func TestDeviceAtTier1(t *testing.T) {
 	if dev == nil {
 		t.Fatal("Device(t, Tier1) returned nil; the CPU backend is always available")
 	}
-	if _, err := dev.Queue(), error(nil); err != nil {
-		t.Fatalf("queue: %v", err)
+	if dev.Queue() == nil {
+		t.Error("the tier 1 device has no queue; a device that cannot be " +
+			"submitted to is not usable")
 	}
 }
 
