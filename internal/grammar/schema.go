@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -214,7 +216,7 @@ func (c *compiler) value(raw json.RawMessage, path string) frag {
 	// shape is examined. Otherwise {"oneOf": [...]} -- which has no "type" --
 	// would come back as "a schema with no type", which is true and useless:
 	// the caller wrote oneOf and needs to be told about oneOf.
-	for _, k := range sortedKeys(m) {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		if why, known := unsupported[k]; known {
 			return c.fail(path, strconv.Quote(k), why)
 		}
@@ -307,7 +309,7 @@ func (c *compiler) checkKeywords(m map[string]json.RawMessage, allow []string, p
 	}
 	// Sorted so the refusal is the same one on every run: a map's iteration
 	// order would make which keyword gets named depend on the process.
-	for _, k := range sortedKeys(m) {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		if ok[k] || annotations[k] {
 			continue
 		}
@@ -319,14 +321,6 @@ func (c *compiler) checkKeywords(m map[string]json.RawMessage, allow []string, p
 			`it is not a keyword this front end consumes, and 015-D4 refuses rather than ignores: a keyword dropped here enforces a schema the caller did not write`), true
 	}
 	return frag{}, false
-}
-
-func sortedKeys(m map[string]json.RawMessage) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return sortedUnique(out)
 }
 
 // ref inlines a non-recursive reference.

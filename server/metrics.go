@@ -6,8 +6,9 @@ package server
 import (
 	"fmt"
 	"io"
+	"maps"
 	"math"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -158,7 +159,7 @@ func (m *metrics) write(w io.Writer) {
 
 	_, _ = fmt.Fprint(w, "# HELP tgo_requests_in_flight Requests generating right now.\n")
 	_, _ = fmt.Fprint(w, "# TYPE tgo_requests_in_flight gauge\n")
-	for _, d := range sortedKeys(m.inFlight) {
+	for _, d := range slices.Sorted(maps.Keys(m.inFlight)) {
 		_, _ = fmt.Fprintf(w, "tgo_requests_in_flight{dialect=\"%s\"} %d\n", escape(d), m.inFlight[d])
 	}
 
@@ -181,24 +182,15 @@ func (m *metrics) write(w io.Writer) {
 
 	_, _ = fmt.Fprint(w, "# HELP tgo_request_loss_total Advisory fields accepted and not acted on.\n")
 	_, _ = fmt.Fprint(w, "# TYPE tgo_request_loss_total counter\n")
-	for _, f := range sortedKeys(m.loss) {
+	for _, f := range slices.Sorted(maps.Keys(m.loss)) {
 		_, _ = fmt.Fprintf(w, "tgo_request_loss_total{field=\"%s\"} %d\n", escape(f), m.loss[f])
 	}
 
 	_, _ = fmt.Fprint(w, "# HELP tgo_sessions_rejected_total Requests refused rather than run.\n")
 	_, _ = fmt.Fprint(w, "# TYPE tgo_sessions_rejected_total counter\n")
-	for _, r := range sortedKeys(m.rejected) {
+	for _, r := range slices.Sorted(maps.Keys(m.rejected)) {
 		_, _ = fmt.Fprintf(w, "tgo_sessions_rejected_total{reason=\"%s\"} %d\n", escape(r), m.rejected[r])
 	}
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // labelEscaper covers the three characters the exposition format reserves in a
