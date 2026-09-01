@@ -12,6 +12,7 @@ import (
 
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/sample"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // recordSchema names the shape of the JSON record.
@@ -294,9 +295,9 @@ func renderMarkdown(w io.Writer, r benchRecord) {
 		c.Model.Heads, c.Model.KVHeads, c.Model.HeadDim)
 	row("precision", "**%s** — %s", c.Precision.Chosen, c.Precision.Why)
 	row("context", "%d positions, kv cache %s (%s)", c.Memory.Context,
-		humanBytes(c.Memory.KVBytes), c.Memory.CacheDType)
+		weights.HumanBytes(c.Memory.KVBytes), c.Memory.CacheDType)
 	row("resident", "%s (weights %s plus cache; activations and host heap excluded)",
-		humanBytes(c.Memory.ResidentBytes), humanBytes(c.Memory.WeightBytes))
+		weights.HumanBytes(c.Memory.ResidentBytes), weights.HumanBytes(c.Memory.WeightBytes))
 	row("hardware", "%s — %s (%s), software=%t, unified memory=%t, %d cpus",
 		c.Hardware.Backend, c.Hardware.Device, c.Hardware.Vendor,
 		c.Hardware.Software, c.Hardware.UnifiedMemory, c.Hardware.CPUs)

@@ -257,15 +257,15 @@ func choosePrecision(policy weights.Precision, f16Bytes, int8Bytes, int4Bytes, b
 		case f16Bytes <= budget:
 			p.Chosen = weights.F16.String()
 			p.Why = fmt.Sprintf("auto: f16 needs %s, which fits the %s budget",
-				humanBytes(f16Bytes), humanBytes(budget))
+				weights.HumanBytes(f16Bytes), weights.HumanBytes(budget))
 		case int8Bytes <= budget:
 			p.Chosen = weights.Int8.String()
 			p.Why = fmt.Sprintf("auto: f16 needs %s, which is more than the %s budget, so int8 at %s",
-				humanBytes(f16Bytes), humanBytes(budget), humanBytes(int8Bytes))
+				weights.HumanBytes(f16Bytes), weights.HumanBytes(budget), weights.HumanBytes(int8Bytes))
 		default:
 			p.Chosen = weights.Int4.String()
 			p.Why = fmt.Sprintf("auto: int8 needs %s, which is more than the %s budget, so int4 at %s",
-				humanBytes(int8Bytes), humanBytes(budget), humanBytes(int4Bytes))
+				weights.HumanBytes(int8Bytes), weights.HumanBytes(budget), weights.HumanBytes(int4Bytes))
 		}
 	default:
 		return precisionFacts{}, fmt.Errorf("%w: precision policy %v is not f16, int8, int4 or auto",
@@ -278,7 +278,7 @@ func choosePrecision(policy weights.Precision, f16Bytes, int8Bytes, int4Bytes, b
 		if p.Chosen == c.name && c.bytes > budget {
 			return precisionFacts{}, fmt.Errorf("the model needs %s at %s, which is more than "+
 				"the %s budget; no supported precision fits",
-				humanBytes(c.bytes), c.name, humanBytes(budget))
+				weights.HumanBytes(c.bytes), c.name, weights.HumanBytes(budget))
 		}
 	}
 	return p, nil
@@ -368,7 +368,7 @@ func cacheWidth(m modelFacts, cacheBytes int64, context int, predicted string) (
 	if elements <= 0 || cacheBytes%elements != 0 {
 		return cacheBytes / max(int64(context), 1), 0,
 			fmt.Sprintf("unknown: %s over %d positions is not 2 · %d · C · %d · %d elements of a whole number of bytes",
-				humanBytes(cacheBytes), context, cached, m.KVHeads, m.HeadDim)
+				weights.HumanBytes(cacheBytes), context, cached, m.KVHeads, m.HeadDim)
 	}
 	width = cacheBytes / elements
 	dtype = predicted
@@ -466,28 +466,28 @@ func renderInfo(w io.Writer, r modelReport) {
 
 	_, _ = fmt.Fprintf(w, "\nprecision  %s\n", p.Chosen)
 	_, _ = fmt.Fprintf(w, "  why               %s\n", p.Why)
-	_, _ = fmt.Fprintf(w, "  f16 footprint     %s\n", humanBytes(p.F16Bytes))
-	_, _ = fmt.Fprintf(w, "  int8 footprint    %s\n", humanBytes(p.Int8Bytes))
-	_, _ = fmt.Fprintf(w, "  int4 footprint    %s\n", humanBytes(p.Int4Bytes))
-	_, _ = fmt.Fprintf(w, "  budget            %s\n", humanBytes(p.Budget))
+	_, _ = fmt.Fprintf(w, "  f16 footprint     %s\n", weights.HumanBytes(p.F16Bytes))
+	_, _ = fmt.Fprintf(w, "  int8 footprint    %s\n", weights.HumanBytes(p.Int8Bytes))
+	_, _ = fmt.Fprintf(w, "  int4 footprint    %s\n", weights.HumanBytes(p.Int4Bytes))
+	_, _ = fmt.Fprintf(w, "  budget            %s\n", weights.HumanBytes(p.Budget))
 	if m.TiedEmbeddings {
 		_, _ = fmt.Fprintf(w, "  note              the footprints cover %s device elements: a tied checkpoint\n"+
 			"                    uploads the embedding table twice, once per layout (004-D7)\n", humanCount(m.Planes))
 	}
 
 	_, _ = fmt.Fprintf(w, "\nmemory     at %d positions of context\n", mem.Context)
-	_, _ = fmt.Fprintf(w, "  weights           %s at %s\n", humanBytes(mem.WeightBytes), p.Chosen)
+	_, _ = fmt.Fprintf(w, "  weights           %s at %s\n", weights.HumanBytes(mem.WeightBytes), p.Chosen)
 	_, _ = fmt.Fprintf(w, "  kv cache          %s = 2 · %d layers · %d positions · %d kv heads · %d head_dim · %d bytes (%s)\n",
-		humanBytes(mem.KVBytes), m.Layers, mem.Context, m.KVHeads, m.HeadDim, mem.CacheElementBytes, mem.CacheDType)
-	_, _ = fmt.Fprintf(w, "  per position      %s\n", humanBytes(mem.KVBytesPerPosition))
+		weights.HumanBytes(mem.KVBytes), m.Layers, mem.Context, m.KVHeads, m.HeadDim, mem.CacheElementBytes, mem.CacheDType)
+	_, _ = fmt.Fprintf(w, "  per position      %s\n", weights.HumanBytes(mem.KVBytesPerPosition))
 	_, _ = fmt.Fprintf(w, "  resident          %s (weights plus cache; excludes activations and the host heap)\n",
-		humanBytes(mem.ResidentBytes))
+		weights.HumanBytes(mem.ResidentBytes))
 
 	_, _ = fmt.Fprintf(w, "\ndevice     %s\n", r.Hardware.Backend)
 	_, _ = fmt.Fprintf(w, "  name              %s (%s)\n", r.Hardware.Device, r.Hardware.Vendor)
 	_, _ = fmt.Fprintf(w, "  software          %t\n", r.Hardware.Software)
 	_, _ = fmt.Fprintf(w, "  unified memory    %t\n", r.Hardware.UnifiedMemory)
-	_, _ = fmt.Fprintf(w, "  max pool          %s\n", humanBytes(r.Hardware.MaxPoolBytes))
+	_, _ = fmt.Fprintf(w, "  max pool          %s\n", weights.HumanBytes(r.Hardware.MaxPoolBytes))
 	_, _ = fmt.Fprintf(w, "  build             %s %s/%s, accel %s\n",
 		r.Environment.Go, r.Environment.GOOS, r.Environment.GOARCH, r.Environment.Accel)
 }

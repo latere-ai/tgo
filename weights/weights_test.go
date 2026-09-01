@@ -734,8 +734,8 @@ func TestPrecisionStringAndHumanBytes(t *testing.T) {
 	for n, want := range map[int64]string{
 		512: "512 B", 2048: "2.00 KiB", 3 << 20: "3.00 MiB", 5 << 30: "5.00 GiB", 2 << 40: "2.00 TiB",
 	} {
-		if got := humanBytes(n); got != want {
-			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		if got := HumanBytes(n); got != want {
+			t.Errorf("HumanBytes(%d) = %q, want %q", n, got, want)
 		}
 	}
 }

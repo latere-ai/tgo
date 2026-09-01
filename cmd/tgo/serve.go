@@ -19,6 +19,7 @@ import (
 
 	tgo "github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/server"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // shutdownGrace is how long a graceful stop waits for in-flight requests.
@@ -521,15 +522,15 @@ func kvAdmission(pool, weightBytes, perSession int64, want int,
 	switch {
 	case perSession <= 0:
 		return admission{}, fmt.Errorf("the model reports a key/value cache of %s per session, "+
-			"so no admission limit can be computed from memory", humanBytes(perSession))
+			"so no admission limit can be computed from memory", weights.HumanBytes(perSession))
 	case a.Budget <= 0:
 		return admission{}, fmt.Errorf("the weights take %s of the device's %s, leaving nothing "+
 			"for a key/value cache; load at a narrower --precision or on another --device",
-			humanBytes(weightBytes), humanBytes(pool))
+			weights.HumanBytes(weightBytes), weights.HumanBytes(pool))
 	case a.Budget < perSession:
 		return admission{}, fmt.Errorf("%s is left after the weights and one session's cache is %s "+
 			"at the requested context; lower --context, which is what a session reserves",
-			humanBytes(a.Budget), humanBytes(perSession))
+			weights.HumanBytes(a.Budget), weights.HumanBytes(perSession))
 	}
 	a.Fits = int(a.Budget / perSession)
 	if shape.Positions > 0 {
@@ -542,7 +543,7 @@ func kvAdmission(pool, weightBytes, perSession int64, want int,
 			return admission{}, fmt.Errorf("--kv %d positions reserves %s of key/value "+
 				"cache and %s is left after the weights, which holds %d positions at "+
 				"this context; lower --kv or --context", shape.Positions,
-				humanBytes(a.Reserved), humanBytes(a.Budget),
+				weights.HumanBytes(a.Reserved), weights.HumanBytes(a.Budget),
 				a.Budget*int64(shape.Context)/perSession)
 		}
 		a.Sessions = want
@@ -557,8 +558,8 @@ func kvAdmission(pool, weightBytes, perSession int64, want int,
 	case want > a.Fits:
 		return admission{}, fmt.Errorf("%s %d reserves %s of key/value cache and %s "+
 			"is left after the weights, which holds %d session(s) at %s each; lower "+
-			"%s or --context", shape.Flag, want, humanBytes(int64(want)*perSession),
-			humanBytes(a.Budget), a.Fits, humanBytes(perSession), shape.Flag)
+			"%s or --context", shape.Flag, want, weights.HumanBytes(int64(want)*perSession),
+			weights.HumanBytes(a.Budget), a.Fits, weights.HumanBytes(perSession), shape.Flag)
 	default:
 		a.Sessions = want
 	}
@@ -739,7 +740,7 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 		_, _ = fmt.Fprintf(w, "\nslots      %d, and every in-flight request is in one forward pass\n",
 			srv.Concurrency())
 		_, _ = fmt.Fprintf(w, "  reserved          %s = one shared pool of %d positions at %d "+
-			"positions of context\n", humanBytes(adm.Reserved), adm.Positions,
+			"positions of context\n", weights.HumanBytes(adm.Reserved), adm.Positions,
 			rep.Memory.Context)
 		_, _ = fmt.Fprintf(w, "  chunk and reserve %d prompt tokens a step, and %d positions held "+
 			"beyond a prompt at admission\n", tgo.DefaultChunk,
@@ -748,11 +749,11 @@ func renderServe(w io.Writer, rep modelReport, o serveOptions, srv *server.Serve
 		_, _ = fmt.Fprintf(w, "\nslots      %d pooled sessions, reserved now and held until this "+
 			"process exits\n", srv.Concurrency())
 		_, _ = fmt.Fprintf(w, "  reserved          %s = %d x %s at %d positions of context\n",
-			humanBytes(adm.Reserved), adm.Sessions, humanBytes(adm.PerSession),
+			weights.HumanBytes(adm.Reserved), adm.Sessions, weights.HumanBytes(adm.PerSession),
 			rep.Memory.Context)
 	}
 	_, _ = fmt.Fprintf(w, "  kv budget         %s = %s device pool - %s weights, which holds %d\n",
-		humanBytes(adm.Budget), humanBytes(adm.Pool), humanBytes(adm.Weights), adm.Fits)
+		weights.HumanBytes(adm.Budget), weights.HumanBytes(adm.Pool), weights.HumanBytes(adm.Weights), adm.Fits)
 	_, _ = fmt.Fprintf(w, "  admission         %d generating at once, %d waiting, refused with 429 after %s\n",
 		srv.Concurrency(), server.DefaultQueue, humanDuration(server.DefaultQueueWait))
 	_, _ = fmt.Fprintf(w, "  prefix cache      %s\n", prefixCacheLine(o.Engine.PrefixCache))

@@ -409,8 +409,8 @@ func Load(dev *accel.Device, repo *safetensors.Repo, decls []Tensor, opts Option
 	set.report.Mapped = set.arena.mapped()
 	_, _ = fmt.Fprintf(log, "weights: %s, %d tensors, f16 %s, int8 %s, budget %s, %s\n",
 		plan.report.Chosen, len(decls),
-		humanBytes(plan.report.F16Bytes), humanBytes(plan.report.Int8Bytes),
-		humanBytes(plan.report.Budget), mappedNote(set.arena.mapped()))
+		HumanBytes(plan.report.F16Bytes), HumanBytes(plan.report.Int8Bytes),
+		HumanBytes(plan.report.Budget), mappedNote(set.arena.mapped()))
 
 	for i, d := range decls {
 		v, err := convertOne(set.arena, repo, d, plan.precision[i], maxSat)
@@ -530,7 +530,7 @@ func planLoad(repo *safetensors.Repo, decls []Tensor, policy Precision, budget i
 		if got := map[Precision]int64{Int8: rep.Int8Bytes, Int4: rep.Int4Bytes}[want]; got > budget {
 			return loadPlan{}, fmt.Errorf("weights: the model needs %s at %v, which is more "+
 				"than the %s budget; no supported precision fits",
-				humanBytes(got), want, humanBytes(budget))
+				HumanBytes(got), want, HumanBytes(budget))
 		}
 	}
 
@@ -779,9 +779,14 @@ func mappedNote(mapped bool) string {
 	return "staged through the queue"
 }
 
-// humanBytes formats a byte count for the load report.
-func humanBytes(n int64) string {
+// HumanBytes formats a byte count in binary units, for the load report and
+// for `tgo info`. Both must print the same digits for the same footprint, so
+// there is one spelling.
+func HumanBytes(n int64) string {
 	const unit = 1024
+	if n < 0 {
+		return "-" + HumanBytes(-n)
+	}
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}

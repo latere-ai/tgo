@@ -150,7 +150,7 @@ func TestRealCheckpoint(t *testing.T) {
 		t.Errorf("Bytes = %d, want %d", rep.Bytes, elements*2)
 	}
 	t.Logf("%d tensors, %s parameters, %s resident at f16, mapped=%v",
-		len(want), humanCount(elements), humanBytes(rep.Bytes), rep.Mapped)
+		len(want), humanCount(elements), HumanBytes(rep.Bytes), rep.Mapped)
 }
 
 func humanCount(n int64) string { return fmt.Sprintf("%.2fe9", float64(n)/1e9) }

@@ -8,28 +8,6 @@ import (
 	"time"
 )
 
-// humanBytes formats a byte count in binary units.
-//
-// It is spelled the way weights.humanBytes is, to the digit, because `tgo info`
-// and the loader's own log line report the same footprints and a user reading
-// both must not have to decide whether "1.40 GiB" and "1.4GB" are the same
-// number.
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < 0 {
-		return "-" + humanBytes(-n)
-	}
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit && exp < 3; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %ciB", float64(n)/float64(div), "KMGT"[exp])
-}
-
 // humanCount formats a parameter count in decimal units, which is the unit a
 // model card uses: 0.6B is a name, not a measurement in mebibytes.
 func humanCount(n int64) string {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/latere-ai/tgo/internal/hub"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // hfTokenEnv are the environment variables a Hugging Face token is read from
@@ -130,7 +131,7 @@ func cmdPull(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("%w: %s at %s lists %d files and none of them is a safetensors checkpoint "+
 			"tgo can load", hub.ErrNoFiles, o.Ref.ID(), shortSHA(rev.SHA), len(rev.Files))
 	}
-	_, _ = fmt.Fprintf(stderr, "%s at %s: %d files, %s\n", o.Ref.ID(), shortSHA(rev.SHA), len(files), humanBytes(total))
+	_, _ = fmt.Fprintf(stderr, "%s at %s: %d files, %s\n", o.Ref.ID(), shortSHA(rev.SHA), len(files), weights.HumanBytes(total))
 	pr.start(len(files), total)
 
 	dir, err := c.Fetch(ctx, o.Ref)
@@ -251,7 +252,7 @@ func (p *progress) Event(e hub.Event) {
 			if e.Resumed {
 				how = "resumed"
 			}
-			p.line(fmt.Sprintf("%s %s (%s)\n", how, e.Path, humanBytes(e.Done)))
+			p.line(fmt.Sprintf("%s %s (%s)\n", how, e.Path, weights.HumanBytes(e.Done)))
 		}
 		return
 	}
@@ -284,16 +285,16 @@ func (p *progress) paint() {
 	}
 	var b strings.Builder
 	if p.total > 0 {
-		fmt.Fprintf(&b, "%5.1f%%  %s of %s", 100*float64(got)/float64(p.total), humanBytes(got), humanBytes(p.total))
+		fmt.Fprintf(&b, "%5.1f%%  %s of %s", 100*float64(got)/float64(p.total), weights.HumanBytes(got), weights.HumanBytes(p.total))
 	} else {
 		// The API published no size. Bytes without a share, because a
 		// percentage of an unknown total is a number somebody would read.
-		fmt.Fprintf(&b, "%s of an unpublished total", humanBytes(got))
+		fmt.Fprintf(&b, "%s of an unpublished total", weights.HumanBytes(got))
 	}
 	fmt.Fprintf(&b, ", %d/%d files", p.complete, p.files)
 	if elapsed := time.Since(p.begun); elapsed > 0 && got > 0 {
 		rate := float64(got) / elapsed.Seconds()
-		fmt.Fprintf(&b, ", %s/s", humanBytes(int64(rate)))
+		fmt.Fprintf(&b, ", %s/s", weights.HumanBytes(int64(rate)))
 		if left := p.total - got; left > 0 && rate > 0 {
 			fmt.Fprintf(&b, ", %s left", humanDuration(time.Duration(float64(left)/rate*float64(time.Second))))
 		}

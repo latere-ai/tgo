@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/latere-ai/tgo/sample"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // defaultPrompt is what `tgo run` sends when the user gives no --prompt. It is
@@ -145,7 +146,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) error {
 	// in its conditions table; this is the same rule on the one number
 	// `tgo run` prints.
 	_, _ = fmt.Fprintf(stderr, "model %s, %s, %s at %d positions of context (%s)\n",
-		rep.Model.Architecture, rep.Precision.Why, humanBytes(rep.Memory.ResidentBytes),
+		rep.Model.Architecture, rep.Precision.Why, weights.HumanBytes(rep.Memory.ResidentBytes),
 		rep.Memory.Context, rep.Hardware.Backend)
 	_, _ = fmt.Fprintf(stderr, "sampling %s\n", describePolicy(samplingOf(o.Policy, o.Seed, o.MaxTokens)))
 

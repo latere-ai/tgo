@@ -13,6 +13,7 @@ import (
 
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/sample"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // syntheticReport builds a bench.Report from steps whose four terms are known,
@@ -266,8 +267,8 @@ func TestHumanFormats(t *testing.T) {
 		in   int64
 		want string
 	}{{0, "0 B"}, {512, "512 B"}, {1024, "1.00 KiB"}, {1 << 30, "1.00 GiB"}, {-2048, "-2.00 KiB"}} {
-		if got := humanBytes(tc.in); got != tc.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		if got := weights.HumanBytes(tc.in); got != tc.want {
+			t.Errorf("weights.HumanBytes(%d) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 	for _, tc := range []struct {

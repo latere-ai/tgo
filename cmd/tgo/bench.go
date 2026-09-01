@@ -14,6 +14,7 @@ import (
 
 	"github.com/latere-ai/tgo/bench"
 	"github.com/latere-ai/tgo/sample"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // benchOptions is `tgo bench`'s command line, parsed.
@@ -160,7 +161,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) error {
 	if err := os.WriteFile(o.JSON, b, 0o644); err != nil {
 		return fmt.Errorf("writing the benchmark record: %w", err)
 	}
-	_, _ = fmt.Fprintf(stderr, "\nwrote %s (%s, schema %s)\n", o.JSON, humanBytes(int64(len(b))), recordSchema)
+	_, _ = fmt.Fprintf(stderr, "\nwrote %s (%s, schema %s)\n", o.JSON, weights.HumanBytes(int64(len(b))), recordSchema)
 	return nil
 }
 

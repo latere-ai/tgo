@@ -71,13 +71,13 @@ func TestDescribeAgreesWithTheLoadedModel(t *testing.T) {
 	// the model (004-D7).
 	if got.WeightBytes != predicted.Memory.WeightBytes {
 		t.Errorf("weights: the model holds %s and info printed %s",
-			humanBytes(got.WeightBytes), humanBytes(predicted.Memory.WeightBytes))
+			weights.HumanBytes(got.WeightBytes), weights.HumanBytes(predicted.Memory.WeightBytes))
 	}
 	// specs/005-kv-cache.md §3's M_kv, computed twice.
 	if got.CacheBytesPerSession != predicted.Memory.KVBytes {
 		t.Errorf("kv cache at %d positions: the model reserves %s and info printed %s; "+
 			"one of the two implementations of 005 §3 is wrong, or the cache width moved",
-			context, humanBytes(got.CacheBytesPerSession), humanBytes(predicted.Memory.KVBytes))
+			context, weights.HumanBytes(got.CacheBytesPerSession), weights.HumanBytes(predicted.Memory.KVBytes))
 	}
 	if got.Precision.String() != predicted.Precision.Chosen {
 		t.Errorf("precision: the model resolved %s and info printed %s",
@@ -148,13 +148,13 @@ func TestLiveEngineOpensTheRealCheckpoint(t *testing.T) {
 	// specs/004-model-graph.md §3 declares.
 	if got.WeightBytes != predicted.Memory.WeightBytes {
 		t.Errorf("weights: the engine holds %s and info printed %s",
-			humanBytes(got.WeightBytes), humanBytes(predicted.Memory.WeightBytes))
+			weights.HumanBytes(got.WeightBytes), weights.HumanBytes(predicted.Memory.WeightBytes))
 	}
 	// specs/005-kv-cache.md §3's M_kv, computed twice.
 	if got.CacheBytesPerSession != predicted.Memory.KVBytes {
 		t.Errorf("kv cache at %d positions: the engine reserves %s and info printed %s; "+
 			"one of the two implementations of 005 §3 is wrong, or the cache width moved",
-			context, humanBytes(got.CacheBytesPerSession), humanBytes(predicted.Memory.KVBytes))
+			context, weights.HumanBytes(got.CacheBytesPerSession), weights.HumanBytes(predicted.Memory.KVBytes))
 	}
 	// And the fold that puts the resolved numbers in front of a reader agrees
 	// with the prediction, so no disagreement is announced that did not happen.
@@ -166,8 +166,8 @@ func TestLiveEngineOpensTheRealCheckpoint(t *testing.T) {
 		t.Errorf("resident = %d, want the engine's weights plus its cache", folded.Memory.ResidentBytes)
 	}
 	t.Logf("resolved %s, weights %s, cache %s at %d positions, resident %s",
-		got.Precision, humanBytes(got.WeightBytes), humanBytes(got.CacheBytesPerSession),
-		context, humanBytes(folded.Memory.ResidentBytes))
+		got.Precision, weights.HumanBytes(got.WeightBytes), weights.HumanBytes(got.CacheBytesPerSession),
+		context, weights.HumanBytes(folded.Memory.ResidentBytes))
 }
 
 // TestOpenEngineRefusesADirectoryThatIsNotAModel walks the live path far enough

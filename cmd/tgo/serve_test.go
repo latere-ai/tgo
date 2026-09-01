@@ -20,6 +20,7 @@ import (
 
 	tgo "github.com/latere-ai/tgo"
 	"github.com/latere-ai/tgo/server"
+	"github.com/latere-ai/tgo/weights"
 )
 
 // fakeServerEngine is a model as [server.Engine] sees one.
@@ -320,8 +321,8 @@ func TestServeReportsWhatAnOperatorGot(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("%d pooled", sv.srv.Concurrency()),
 		"held until this process exits",
-		humanBytes(fakeWeightBytes) + " weights",
-		humanBytes(fakeCacheBytes) + " at 1024 positions",
+		weights.HumanBytes(fakeWeightBytes) + " weights",
+		weights.HumanBytes(fakeCacheBytes) + " at 1024 positions",
 		// The default is off, and the line says what turning it on buys.
 		"--prefix-cache",
 	} {
@@ -899,7 +900,7 @@ func TestServeReportsThePoolAndWhatItReuses(t *testing.T) {
 		}},
 		{"a pool of one", []string{"--sessions", "1"}, []string{
 			"1 pooled",
-			"1 x " + humanBytes(fakeCacheBytes),
+			"1 x " + weights.HumanBytes(fakeCacheBytes),
 		}},
 		// The two lines that stop being true under a batch: what the number
 		// counts, and what concurrency buys.

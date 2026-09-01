@@ -206,7 +206,7 @@ func TestCmdRunPrintsTheResolvedPrecisionNotThePredictedOne(t *testing.T) {
 	if !strings.Contains(out, "resolved int8") {
 		t.Errorf("the header does not say the loader chose int8:\n%s", out)
 	}
-	if !strings.Contains(out, humanBytes(4096+8192)) {
+	if !strings.Contains(out, weights.HumanBytes(4096+8192)) {
 		t.Errorf("the header does not carry the resolved footprint:\n%s", out)
 	}
 }
