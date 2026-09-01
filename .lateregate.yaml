@@ -37,7 +37,10 @@ modernize:
 
 spec:
   dir: specs
-  status: [drafted, validated, dispatched, implemented, complete, blocked, deferred, record]
+  # `archived` is the terminal status and the only one that leaves the queue.
+  # `complete` means nothing in the spec's own scope is open, and those stay at
+  # the root: 011-sequencing links them as the record of what happened.
+  status: [drafted, validated, dispatched, implemented, complete, blocked, deferred, record, archived]
   require: [title, status]
   index: specs/README.md
   tables: true
@@ -78,6 +81,9 @@ spec:
     cite: '010 (C\d+)|\b(C\d+)\]\(010-conformance\.md\)'
     sequential: true
     prefix: C
+  archive:
+    dir: .archive
+    statuses: [archived]
 
 depcheck:
   platforms:
