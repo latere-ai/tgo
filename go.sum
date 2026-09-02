@@ -6,9 +6,7 @@ golang.design/x/accel v0.0.0-20260827130011-b99f0cfd4576 h1:tj9iKvd5poU3KgXRv44b
 golang.design/x/accel v0.0.0-20260827130011-b99f0cfd4576/go.mod h1:eLMrBJbg3V0yKC5qnnSpMyU0Dt1059gmXEGVCYBVjRA=
 golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
 golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
-latere.ai/x/ci-gate v0.25.2 h1:T9Iv+Nd84XWYqIdr+A385C19GaQoBprYN8PyJbspS9Y=
-latere.ai/x/ci-gate v0.25.2/go.mod h1:Iw6RuLhPgpP+hRfVTb0UxnygMyZIi1U7E0/iM5fbAhA=
 latere.ai/x/ci-gate v0.27.0 h1:hmaWc7QHTCeIsI/794PpQrTcad53H3vPCphsRml/xLs=
 latere.ai/x/ci-gate v0.27.0/go.mod h1:q2A9P8rq93BL+RO/JHxpXwnTuP2pb9xFoGo5jFVxUYk=
-latere.ai/x/pkg v0.41.0 h1:MeXiO6vxBLniOVxbQgWrGckFbZLg249ElYj1ifmcMS4=
-latere.ai/x/pkg v0.41.0/go.mod h1:xP+/sQTNm74Tv4eCSYyqqyXU7x9LhBDrJ9BrlMelo7w=
+latere.ai/x/pkg v0.50.0 h1:SwzOz+rawDgedmE8LtYDJT/l5IbCB26JVDVFuyB4XRk=
+latere.ai/x/pkg v0.50.0/go.mod h1:bb5bOZNIH1LUGie0l09SFKwA1JOFNaIzTFy9pK2akQY=
