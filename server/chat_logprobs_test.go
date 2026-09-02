@@ -1,5 +1,5 @@
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
 
 package server
 
@@ -97,7 +97,7 @@ func TestChatCompletionsStreamTheSameLogProbs(t *testing.T) {
 	w := post(t, s, "/v1/chat/completions", inject(t, routes[0].body(""), `,"stream":true,"logprobs":true,"top_logprobs":2`))
 	wantStatus(t, w, http.StatusOK)
 	var found *chatLogProbs
-	for _, line := range strings.Split(w.Body.String(), "\n") {
+	for line := range strings.SplitSeq(w.Body.String(), "\n") {
 		if !strings.HasPrefix(line, "data: ") || strings.HasSuffix(line, "[DONE]") {
 			continue
 		}
