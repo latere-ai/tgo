@@ -150,7 +150,7 @@ where the code is, what diverged, and what is open.
 | [022](022-batched-serving.md) | implemented | the server drives a scheduler; batched serving becomes the default | §14's pass 3: the default flip, which waits on 020's checkpoint |
 | [023](023-cache-kinds.md) | implemented | three state shapes in one forward pass, and what a block reserves | §10's six rows that need a stack running all three kinds, which is 024's graph |
 | [024](024-qwen3-5-architecture.md) | implemented | the `qwen3_5` config, weight map and hybrid graph | §11's sub-scope A, small and unblocked, and sub-scope C, blocked on accel#27 |
-| [030](030-logprobs.md) | implemented | reporting the distribution a token was drawn from | the three `llmdialect` routes, whose IR has no field for a logprob |
+| [030](030-logprobs.md) | complete | reporting the distribution a token was drawn from | — |
 
 **What is next.** Six specs, each scoped to be finished in one pass. Two are the
 residue of a spec above that was scoped too large: 008 shed three, of which
@@ -337,6 +337,21 @@ serve, and tgo has none of it.
 **LoRA adapters.** [016](016-prefix-cache.md) §10.3 records that an adapter must
 reach the prefix cache key, which is what makes this more than a weight sum. It
 should be written `deferred` with its trigger, the way [014](014-jinja.md) is.
+
+**A second GPU backend.** [Issue #2](https://github.com/latere-ai/tgo/issues/2)
+is the one open issue, and its design lives in accel, as
+[060](https://github.com/golang-design/accel/blob/main/specs/060-cuda-bringup.md)
+and [061](https://github.com/golang-design/accel/blob/main/specs/061-ptx-target.md),
+because tgo authors no kernels. What is tgo's is three call sites that spell
+"GPU" as Metal — `model.go:374`, `cmd/tgo/env.go:111` and
+`internal/conformance/tier.go:164`, each `Prefer: []accel.Backend{accel.BackendMetal}` —
+plus `tier.go:120`, which reads the backend back by name, and `options.go`'s
+`Device` kind, whose `Metal` member is the value all three switch on. The fix
+is not a CUDA arm in three switches: `Device` names a kind and the preference
+is a list, so it becomes a spec once accel 060 has a device to open. It also
+inherits one budget hazard 060 §6 measured: on a unified-memory part
+`Limits.MaxPoolBytes` is host RAM, and `weights/device.go:55` picks the
+precision and `cmd/tgo/serve.go:635` sizes KV admission from it.
 
 **Multi-device.** A permanent scope boundary rather than unwritten work. It
 belongs in [000](000-decisions.md) as a decision with its rejected alternative,
