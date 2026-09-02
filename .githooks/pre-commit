@@ -1,0 +1,5 @@
+#!/bin/sh
+# pre-commit: the staged Go files are gofmt-formatted and hold no code the
+# standard library already covers. The checks live in lateregate; this file
+# only calls it. Install with: git config core.hooksPath .githooks
+exec go tool lateregate hook

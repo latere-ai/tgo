@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Latere AI
+# SPDX-License-Identifier: Apache-2.0
+
 GO ?= go
 
 # CGO_ENABLED=0 is the default for every target here. specs/000-decisions.md
@@ -12,9 +15,8 @@ export CGO_ENABLED = 0
 build:
 	$(GO) build ./...
 
-test: lint-config
-	$(GO) vet ./...
-	$(GO) test ./...
+test:
+	@go tool lateregate test
 
 # Per package, not one repository average: an average lets a well-tested
 # package carry an untested one and reports a number nobody can act on. The
@@ -29,15 +31,10 @@ cover:
 test-hermetic:
 	@$(GO) tool lateregate hermetic
 
-# The timeout is a budget, not a guard against a hung test. The root package
-# runs a synthetic model's forward pass on the CPU and the race detector costs
-# roughly an order of magnitude on exactly that arithmetic: 2547s of CPU as of
-# 2026-08-27, with a shared block pool exercised by real forward passes in two
-# packages. CONTRIBUTING tracks that as a 3500s budget rather than a line to
-# move again -- past it the answer is a cheaper suite, because no single test
-# here is large and the growth is the suite doing more each wave.
+# The detector's budget for this suite is race.timeout in .lateregate.yaml,
+# where the reason for it is recorded.
 test-race:
-	CGO_ENABLED=1 $(GO) test -race -timeout 45m ./...
+	@go tool lateregate race
 
 fmt:
 	gofmt -w .
@@ -55,13 +52,9 @@ lint-modernize:
 lint-config:
 	@$(GO) tool lateregate golangci
 
-# Runs the linter the CI lint job runs, against the config lint-config renders.
-# Without this the only machine that ever lints this repo is a runner, which is
-# the shape these gates exist to avoid.
-GOLANGCI_VERSION ?= v2.13.1
-
-lint: lint-config
-	@$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run ./...
+# golangci-lint at the version lateregate pins, against the config it renders.
+lint:
+	@go tool lateregate lint
 
 # specs/README.md documents a lifecycle and a frontmatter shape. A spec tree
 # nobody checks drifts from the code within a milestone. The vocabulary, the
@@ -104,3 +97,9 @@ dist:
 	  echo "--- $$pair"; \
 	  GOOS=$${pair%/*} GOARCH=$${pair#*/} $(GO) build ./...; \
 	done
+
+# The whole shared bar. Every gate lives in lateregate, pinned as a tool in
+# go.mod; this target is a name for `go tool lateregate` and nothing else.
+# The plan: `go tool lateregate list`. One gate: `go tool lateregate <gate>`.
+check:
+	@go tool lateregate

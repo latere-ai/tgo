@@ -31,4 +31,4 @@ permissions:
 
 jobs:
   verify:
-    uses: latere-ai/ci/.github/workflows/go-verify.yml@v1
+    uses: latere-ai/ci/.github/workflows/lateregate.yml@v1

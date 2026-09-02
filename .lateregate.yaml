@@ -3,10 +3,6 @@
 # as it does on a runner.
 
 cover:
-  # Ninety, because specs/000-decisions.md decision 8 puts the pure logic --
-  # tokenizer, safetensors, templates, sampling -- in packages with no device
-  # and no network, which makes the number reachable rather than aspirational.
-  threshold: 90.0
   trim_prefix: github.com/latere-ai/tgo/
   exempt:
     # A short list on purpose. Every entry is a promise that the package is
@@ -22,27 +18,25 @@ cover:
       Metal; this gate does not, and a mock device here would cover the
       statements and prove nothing about accel
 
+race:
+  # A budget, not a guard against a hung test. The root package runs a
+  # synthetic model's forward pass on the CPU and the race detector costs
+  # roughly an order of magnitude on exactly that arithmetic: 2547s of CPU as
+  # of 2026-08-27, with a shared block pool exercised by real forward passes
+  # in two packages. CONTRIBUTING tracks that as a 3500s budget rather than a
+  # line to move again; past it the answer is a cheaper suite.
+  timeout: 45m
+
 hermetic:
   # Nothing besides the toolchain. tgo's tests reach no system binary, and the
   # empty list is what keeps that true.
   allow: []
 
-modernize:
-  # newexpr rewrites pointer helpers to new(v) and inlines call sites unevenly;
-  # errorsastype rewrites errors.As to a form whose type parameter a local
-  # non-error interface target does not satisfy. Both for the reasons llmops
-  # records. lateregate checks each still exists, because `go fix` rejects an
-  # unknown -name=false and the gate would then pass silently.
-  disable: [newexpr, errorsastype]
-
 spec:
-  dir: specs
   # `archived` is the terminal status and the only one that leaves the queue.
   # `complete` means nothing in the spec's own scope is open, and those stay at
   # the root: 011-sequencing links them as the record of what happened.
   status: [drafted, validated, dispatched, implemented, complete, blocked, deferred, record, archived]
-  require: [title, status]
-  index: specs/README.md
   tables: true
   vocabulary:
     layer: [load, text, graph, engine, api, all]
@@ -109,3 +103,12 @@ depcheck:
       decision: 002-D10
       allow:
         golang.org/x/text: Unicode normalisation, 002-D10; pure Go, so 000 D2 holds
+
+license:
+  # The identifier every source file carries and the holder it names. There
+  # is no default: this is the decision the gate checks the tree against.
+  # `go tool lateregate license -w` writes the notice where it is missing.
+  spdx: Apache-2.0
+  holder: Latere AI
+  extensions: ['.go']
+  names: [Makefile]

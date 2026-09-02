@@ -11,7 +11,7 @@ require (
 require (
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	latere.ai/x/ci-gate v0.25.2 // indirect
+	latere.ai/x/ci-gate v0.27.0 // indirect
 )
 
 tool latere.ai/x/ci-gate/cmd/lateregate
