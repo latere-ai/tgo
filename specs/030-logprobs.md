@@ -1,6 +1,6 @@
 ---
 title: "Logprobs: reporting the distribution a token was drawn from"
-status: implemented
+status: complete
 layer: engine
 depends_on:
   - 000-decisions.md
@@ -234,6 +234,10 @@ routes while adding the loss on the Responses route, whose frontend reads
 `/v1/responses` keep the loss entry, because their wire has no member for a
 logprob. `server/chat_logprobs_test.go` pins the shape, the stream, and the
 null answer for a caller that did not ask.
+
+**Not built.** Nothing this spec designs. The two routes §4 named both serve
+logprobs. `/v1/messages` and `/v1/responses` report a loss because their wire
+has no member for one, which is a dialect's shape and not tgo's work.
 
 **Filed as [latere-ai/pkg#7](https://github.com/latere-ai/pkg/issues/7)** on
 2026-08-28, with the shape that would close it and the two details that bit tgo:

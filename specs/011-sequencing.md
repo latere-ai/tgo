@@ -635,6 +635,12 @@ member to a body tgo did not write, which is 000 D1's sequence with
 day. It is the first gap this project has filed against an upstream other than
 accel, and the rule needed no amendment to cover it.
 
+[latere-ai/pkg#7](https://github.com/latere-ai/pkg/issues/7) closed on
+2026-09-02: `llmdialect`'s IR carries the logprobs shape, and
+`/v1/chat/completions` serves them ([030-D6](030-logprobs.md)). That is both
+routes the draft named, so [030](030-logprobs.md) is complete. The two routes
+whose wire has no logprob member keep reporting a loss, which is theirs.
+
 Two of the tests the spec's own §6 table asked for did not discriminate, which
 is worth recording because it is the second time this wave: a sampled draw's
 top-*k* weights sum to one whether `Probs` runs before the draw or after it,
