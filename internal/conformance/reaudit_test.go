@@ -278,15 +278,22 @@ func TestInt4MatMulIsInsideAccelsOwnBound(t *testing.T) {
 			// product only where the caller says which group each term came
 			// from -- accel's own precondition, and the reason the bound takes
 			// the inputs rather than being a constant.
+			// The bound is over the *stored* f16 scale and zero of each
+			// term's group since accel 2026-09-02 (its specs/048): the exact
+			// range over thirty was not a bound, because the step actually
+			// used is the rounded one.
 			x := make([]float32, k)
-			ranges := make([]float32, k)
+			termScales := make([]accel.Float16, k)
+			termZeros := make([]accel.Float16, k)
 			for p := range k {
 				acc += float64(a[i*k+p]) * float64(w[p*n+j])
 				x[p] = a[i*k+p]
-				ranges[p] = groupRange(w, (p*n+j)/quant.Int4Group)
+				g := (p*n + j) / quant.Int4Group
+				termScales[p] = scales[g]
+				termZeros[p] = zeros[g]
 			}
 			want[i*n+j] = acc
-			if b := quant.Int4ErrorBound(x, ranges); b > worst {
+			if b := quant.Int4ErrorBound(x, termScales, termZeros); b > worst {
 				worst = b
 			}
 		}
@@ -337,23 +344,6 @@ func TestInt4MatMulIsInsideAccelsOwnBound(t *testing.T) {
 			"the bound at every one of %d elements; a bound nothing violates is a "+
 			"bound this test cannot fail", len(want))
 	}
-}
-
-// groupRange is max-min over the group a weight index falls in, which is what
-// [quant.Int4ErrorBound] means by a term's range.
-func groupRange(w []float32, group int) float32 {
-	lo, hi := group*quant.Int4Group, (group+1)*quant.Int4Group
-	if hi > len(w) {
-		hi = len(w)
-	}
-	if lo >= hi {
-		return 0
-	}
-	mn, mx := w[lo], w[lo]
-	for _, x := range w[lo:hi] {
-		mn, mx = min(mn, x), max(mx, x)
-	}
-	return mx - mn
 }
 
 // TestC24APagedPrefillReadsAnF16Cache closes C24, which blocked the f16 block

@@ -366,7 +366,7 @@ func Register() []Row {
 		Cannot: "a gated delta layer whose **decay is per head**",
 		Specs:  []string{"047", "043"},
 		Issue:  27,
-		State:  Open,
+		State:  Closed,
 		Cost: "**48 dispatches per layer where one would do, or the wrong model.** " +
 			"`LinearOptions.Alpha` and `.Beta` are one f32 per token, while the " +
 			"state is `[slots, heads, valueDim, keyDim]` and the recurrence runs " +

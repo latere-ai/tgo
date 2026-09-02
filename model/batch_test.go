@@ -118,13 +118,34 @@ func TestABatchProducesWhatTheSameStepsProduceApart(t *testing.T) {
 		alone.pagedStep(c, ids, mem.First, mem.Pages, block, maxPages)
 		want := alone.submit(c)
 
+		// Within a relative budget rather than bit for bit, since accel
+		// 2026-09-02: a step alone is M=1 and takes the matrix-vector kernel,
+		// whose lanes fold K in sixteen phases and sum the partials, while the
+		// batch is M>1 and takes the tile, which folds K in order. The same
+		// products in a different order, through 28 layers, move a logit by a
+		// few parts in a million; 1e-5 relative is well above what was seen
+		// (13 ULP at 1.96) and well below anything a sampler could tell
+		// apart. What says a batched step is the steps it batches is the
+		// argmax, which is checked exactly.
+		const relative = 1e-5
 		got := together[i*c.VocabSize : (i+1)*c.VocabSize]
+		argGot, argWant := 0, 0
 		for j := range want {
-			if got[j] != want[j] {
+			if math.Abs(float64(got[j]-want[j])) > relative*math.Max(1, math.Abs(float64(want[j]))) {
 				t.Fatalf("sequence %d logit %d is %v in a batch of %d and %v on its "+
 					"own; a batched step is the steps it batches",
 					i, j, got[j], len(members), want[j])
 			}
+			if got[j] > got[argGot] {
+				argGot = j
+			}
+			if want[j] > want[argWant] {
+				argWant = j
+			}
+		}
+		if argGot != argWant {
+			t.Fatalf("sequence %d picks token %d in a batch of %d and %d on its own",
+				i, argGot, len(members), argWant)
 		}
 	}
 

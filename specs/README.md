@@ -248,21 +248,22 @@ int4 storage shipped, so the footprint is 13.4 GiB, and `nn.LinearAttention` and
 `nn.DepthwiseCausalConv` both exist with value tests that pass. Most of what is
 left is a graph tgo has not written.
 
-**One upstream gap comes first, it is reported, and it is now confirmed
-blocking.** Writing [024](024-qwen3-5-architecture.md) found that accel's
-`tensor.LinearAttention` takes one gate per token with no head axis, while a
-gated delta network gives each value head its own decay. accel refuses the
-per-head shape rather than broadcasting it, which is the good answer — but it
-leaves the layer inexpressible. Filed as [C27](010-conformance.md) /
+**One upstream gap came first, was reported, and is closed.** Writing
+[024](024-qwen3-5-architecture.md) found that accel's `tensor.LinearAttention`
+took one gate per token with no head axis, while a gated delta network gives
+each value head its own decay. Filed as [C27](010-conformance.md) /
 [accel#27](https://github.com/golang-design/accel/issues/27) with a skipping
-probe.
+probe; accel shipped the `[tokens, heads]` gate on 2026-08-27 (its
+`tensor/linear.go`), and this register was corrected on 2026-09-02, having
+still called the row open. Item 3 of 024 is unblocked.
 
 024 §4.4 left one half open — whether the gates are per head at all — and
 priced it as a safetensors header read on a checkpoint nobody has. **The
 checkpoint is public and the header was read on 2026-08-29**, over HTTP and
 without a weight: `Qwen/Qwen3.5-27B` ships `in_proj_b` and `in_proj_a` at
-`[48, 5120]` each, and $H_v = 48$. The gates are per head, and C27 blocks item 3
-rather than being moot. Nothing below reorders: the block waits on accel.
+`[48, 5120]` each, and $H_v = 48$. The gates are per head, so C27 was a real
+block on item 3 rather than moot -- and it is lifted: nothing below waits on
+accel.
 
 An earlier note here cited ollama's `in_proj_ba` permutation as the evidence.
 The conclusion was right and the artifact was a sibling's — `qwen3_5` has no
@@ -298,7 +299,7 @@ do not close the same row.
 
 ```mermaid
 flowchart LR
-  G["accel#27 per-head gate<br/>blocked upstream"] --> A["3 024 qwen3_5 graph"]
+  G["accel#27 per-head gate<br/>closed upstream 2026-08-27"] --> A["3 024 qwen3_5 graph"]
   R["1 rotary width, output gate"] --> A
   K["2 023 cache kinds"] --> A
   K --> N["4 025 snapshot/restore"]

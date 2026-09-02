@@ -272,20 +272,14 @@ func TestTheGatedDeltaStateAxesAreNotInterchangeable(t *testing.T) {
 	}
 }
 
-// TestTheGatedDeltaGateHasNoHeadAxis is C27's probe.
+// The gated delta gate takes a head axis, since accel 2026-08-27.
 //
-// The gate accel takes is one f32 per token: LinearOptions documents Alpha and
-// Beta as "one entry per token, in the flat order q is in", and the kernel
-// reads alpha[tok] with no head term. A model that gives each value head its
-// own decay is therefore inexpressible — every head of a token shares one
-// alpha and one beta.
-//
-// This asks the question by value rather than by reading the comment, because
-// the answer that matters is not "does it refuse" but "what does it do". A
-// refusal is a gap tgo can report and wait on. An accept-and-broadcast is the
-// class [010 §5](../../specs/010-conformance.md) exists for: 48 layers of a
-// 27B model computing a plausible wrong answer, with nothing red.
-func TestTheGatedDeltaGateHasNoHeadAxis(t *testing.T) {
+// This was the C27 probe: it asserted accel refused a [tokens, heads] gate,
+// which was the good answer while the per-head shape was unbuilt, because a
+// refusal is not a wrong decay computed quietly. accel accepts the shape now
+// (its tensor/linear.go), so the probe is the acceptance: the per-head gate
+// records, and the register row is closed.
+func TestTheGatedDeltaGateTakesAHeadAxis(t *testing.T) {
 	in := newLinearInputs(linShape, linExtents)
 	sh := in.sh
 	r := New(t, Tier1, Options{Eps: 1e-6, Label: "c27-per-head-gate"})
@@ -296,21 +290,13 @@ func TestTheGatedDeltaGateHasNoHeadAxis(t *testing.T) {
 	k := r.Input("k", accel.F32, tensor.Shape{in.tokens(), sh.heads, sh.keyDim})
 	v := r.Input("v", accel.F32, tensor.Shape{in.tokens(), sh.heads, sh.valueDim})
 	extents := r.Input("extents", accel.U32, tensor.Shape{len(linExtents)})
-
-	// [tokens, heads] rather than [tokens]: a decay per head per token, which
-	// is the shape a Qwen3.5 `in_proj_ba` of width 2*valueHeads would produce.
 	alpha := r.Input("alpha", accel.F32, tensor.Shape{in.tokens(), sh.heads})
 	beta := r.Input("beta", accel.F32, tensor.Shape{in.tokens(), sh.heads})
 
 	tensor.LinearAttention(r.G.B, q, k, v, s, tensor.LinearOptions{
 		Alpha: alpha, Beta: beta, QueryExtents: extents,
 	})
-	if err := r.G.Err(); err == nil {
-		t.Fatal("a per-head gate recorded; accel would then be reading the first " +
-			"heads-worth of a [tokens, heads] gate as though it were [tokens], " +
-			"which is a wrong decay on every head but the first and produces no " +
-			"error anywhere")
-	} else {
-		t.Logf("refused, which is the good answer: %v", err)
+	if err := r.G.Err(); err != nil {
+		t.Fatalf("a per-head gate was refused: %v", err)
 	}
 }

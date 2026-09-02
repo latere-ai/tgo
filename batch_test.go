@@ -5,6 +5,7 @@ package tgo
 
 import (
 	"errors"
+	"math"
 
 	"strings"
 	"testing"
@@ -141,11 +142,29 @@ func compareLogits(t *testing.T, phase string, slot int, got, want []float32) {
 	if len(got) != len(want) {
 		t.Fatalf("%s slot %d: %d logits against %d", phase, slot, len(got), len(want))
 	}
+	// Within a relative budget rather than bit for bit, since accel
+	// 2026-09-02: a session's step is M=1 and takes the matrix-vector kernel,
+	// whose lanes fold K in sixteen phases and sum the partials, while a batch
+	// is M>1 and takes the tile, which folds K in order. The same products in
+	// a different order, through every layer, move a logit by a few parts in
+	// a million. What says a batched step is the steps it batches is the
+	// argmax, which is checked exactly.
+	const relative = 1e-5
+	argGot, argWant := 0, 0
 	for i := range want {
-		if got[i] != want[i] {
+		if math.Abs(float64(got[i]-want[i])) > relative*math.Max(1, math.Abs(float64(want[i]))) {
 			t.Fatalf("%s slot %d logit %d is %v in a batch and %v in a session; a "+
 				"batched step is the steps it batches", phase, slot, i, got[i], want[i])
 		}
+		if got[i] > got[argGot] {
+			argGot = i
+		}
+		if want[i] > want[argWant] {
+			argWant = i
+		}
+	}
+	if argGot != argWant {
+		t.Fatalf("%s slot %d picks token %d in a batch and %d in a session", phase, slot, argGot, argWant)
 	}
 }
 

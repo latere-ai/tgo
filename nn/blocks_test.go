@@ -88,12 +88,12 @@ func TestLinearMultipliesF32ActivationsByF16Weights(t *testing.T) {
 }
 
 // A decode step is M=1, and specs/004-model-graph.md section 2.1 says MatMul
-// selects the matrix-vector kernel there. It does not, for the widths a
-// transformer actually has: accel's matrix-vector kernel reads f16 on *both*
-// operands and tgo's activations are f32, so an f16 weight takes the tile and
-// the selection says how many of its rows are idle. Asserted here because the
-// spec's claim is the one a reader would rely on.
-func TestLinearAtOneRowTakesTheTileForF16Weights(t *testing.T) {
+// selects the matrix-vector kernel there. Since accel's 2026-09-02 kernels it
+// does for the widths a transformer actually has: f32 activations against f16
+// weights take MatVecF32F16, and the selection says the tile was rejected for
+// its idle rows. Asserted here because the spec's claim is the one a reader
+// would rely on, and because until then it was false.
+func TestLinearAtOneRowTakesTheMatrixVectorKernelForF16Weights(t *testing.T) {
 	r := newRig(t, 1e-6)
 	x := r.input("x", accel.F32, tensor.Shape{1, 3})
 	r.f32("x", linX[:3])
@@ -103,10 +103,16 @@ func TestLinearAtOneRowTakesTheTileForF16Weights(t *testing.T) {
 	got, plan := r.run(nn.Linear(r.g, x, w))
 
 	closeTo(t, got, matmul(f64s(linX[:3]), f64s(linW), 1, 3, 4), 1e-6, "linear")
+	// accel 2026-09-02: the mixed pair has its own matrix-vector kernel, so
+	// M=1 over f32 activations and f16 weights takes it and the tile is what
+	// the selection rejects. Before that the tile ran with seven rows idle
+	// and the matrix-vector kernel appeared as rejected.
 	sel := selected(t, plan, "MatMul")
-	if len(sel.Rejected) == 0 || !strings.Contains(strings.Join(sel.Rejected, " "), "matrix-vector") {
-		t.Fatalf("MatMul at M=1 became %q rejecting %v; the matrix-vector kernel should "+
-			"appear as rejected", sel.Kernel, sel.Rejected)
+	if sel.Kernel != "MatVecF32F16" {
+		t.Fatalf("MatMul at M=1 became %q; the mixed matrix-vector kernel should run", sel.Kernel)
+	}
+	if len(sel.Rejected) == 0 || !strings.Contains(strings.Join(sel.Rejected, " "), "tile") {
+		t.Fatalf("MatMul at M=1 rejected %v; the tile should appear as rejected", sel.Rejected)
 	}
 }
 
