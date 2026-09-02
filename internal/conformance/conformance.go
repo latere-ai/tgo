@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Package conformance is the machinery of specs/010-conformance.md: the tier
 // rule every parity test in the tree runs under, the derived tolerance every
 // comparison is judged by, and the generator that emits the register.

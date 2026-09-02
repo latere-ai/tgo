@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Command gen writes tokenizer/testdata/synthetic.json, the small checked-in
 // tokenizer specs/002-tokenizer.md section 7 asks the suite to run on.
 //

@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Package tokenizer turns text into the token ids a model was trained on, and
 // turns ids back into text.
 //

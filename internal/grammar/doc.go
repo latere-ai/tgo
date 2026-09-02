@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Package grammar compiles a JSON Schema into a per-step mask over a
 // tokenizer's vocabulary, so that a constrained generation parses by
 // construction.

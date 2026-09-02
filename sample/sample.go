@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Package sample turns a row of logits into a token id, on the host.
 //
 // accel puts argmax, categorical sampling and top-k/top-p truncation on the

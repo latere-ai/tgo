@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Command tgo runs a model, measures it, and reports what it is.
 //
 //	tgo run   [--prompt P] [--max-tokens N] [--temp T] [--seed S] [--precision f16|int8|auto] <model-dir>

@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Package weights turns a checkpoint tensor into device memory.
 //
 // A safetensors plane and an accel buffer are four conversions apart, and

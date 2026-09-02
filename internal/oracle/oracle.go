@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Latere AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Copyright 2026 Latere AI.
-// Licensed under the Apache License, Version 2.0.
-
 // Package oracle is a host-side float64 implementation of a transformer
 // forward pass, written from the mathematics rather than from tgo's graph.
 //
