@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 The tgo Authors. All rights reserved.
 
 package nn_test

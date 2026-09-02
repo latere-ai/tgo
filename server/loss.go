@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -51,13 +54,12 @@ var honoured = map[string][]string{
 	"MaxTokens":         {"max_tokens", "max_completion_tokens", "max_output_tokens"},
 	"Stop":              {"stop", "stop_sequences"},
 	"Schema":            {"response_format", "output_format", "text"},
-	// Both reached by one member, and it is not top_logprobs. specs/030-logprobs.md
-	// §4: the only route that can encode a logprob is /v1/completions, whose
-	// member is `logprobs` and whose value *is* the count of alternatives.
-	// `top_logprobs` belongs to /v1/chat/completions, which llmdialect's ir
-	// cannot express, so it reaches no output and stays a loss everywhere.
+	// specs/030-logprobs.md §4: /v1/chat/completions asks with a bool
+	// `logprobs` and a `top_logprobs` count; /v1/completions spells the count
+	// in `logprobs` itself. Both surfaces reach both fields, so the count has
+	// two wire names.
 	"LogProbs":    {"logprobs"},
-	"TopLogProbs": {"logprobs"},
+	"TopLogProbs": {"logprobs", "top_logprobs"},
 }
 
 // honouredSession are the wire names that configure the *session* rather than
@@ -112,18 +114,18 @@ var honouredEverywhere = []string{
 // the union would report a schema as enforced on the three routes that never
 // saw one.
 var honouredHere = map[ir.Dialect][]string{
-	ir.DialectOpenAIChat:        {"max_tokens", "max_completion_tokens", "stop", "response_format"},
+	// specs/030-logprobs.md §4: two routes serve logprobs. This one carries
+	// them through llmdialect's ir, on the response and on each text delta.
+	ir.DialectOpenAIChat: {"max_tokens", "max_completion_tokens", "stop", "response_format",
+		"logprobs", "top_logprobs"},
+	// The Anthropic and Responses surfaces have no member for a logprob, so
+	// the ask stays a loss there whatever tgo could compute.
 	ir.DialectAnthropicMessages: {"max_tokens", "stop_sequences", "output_format"},
 	ir.DialectOpenAIResponses:   {"max_output_tokens", "text"},
-	// specs/030-logprobs.md §4: one route serves logprobs and it is this one,
-	// because it is the only Frontend tgo wrote. llmdialect's ir carries no
-	// logprobs shape at all, so the three dialects it encodes cannot express
-	// one whatever tgo computes -- 030-D5 reports that rather than reaching
-	// past the codec to append a member to a body it did not write.
-	//
-	// top_logprobs is not here: this surface has no such member, and its
-	// logprobs is itself the count.
-	dialectLegacy: {"max_tokens", "stop", "logprobs"},
+	// The other route that serves them, through tgo's own codec. Its
+	// `logprobs` member is itself the count; [parseExtras] reads a
+	// top_logprobs beside it from any body, so that spelling applies here too.
+	dialectLegacy: {"max_tokens", "stop", "logprobs", "top_logprobs"},
 }
 
 // honouredOn is what the subtraction reads: for one dialect, the wire names a
@@ -181,6 +183,17 @@ func lossReport(d ir.Dialect, req *ir.Request, raw map[string]bool) []string {
 	}
 	for _, f := range dropped(req, raw) {
 		out.Add(f)
+	}
+	// A logprobs ask llmdialect represented but this route cannot answer. The
+	// Responses frontend reads top_logprobs into ir.Request and files no
+	// loss, because its IR carries it; tgo serves it only where the encoder
+	// can (specs/030-logprobs.md §4), so the ask is reported here on the
+	// routes that cannot.
+	if req.LogProbs && !honours["logprobs"] {
+		out.Add(ir.LossLogProbs)
+	}
+	if req.TopLogProbs > 0 && !honours["top_logprobs"] {
+		out.Add(ir.LossTopLogProbs)
 	}
 	return out.Strings()
 }

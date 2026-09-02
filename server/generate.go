@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -127,16 +130,19 @@ func (s *Server) stream(w http.ResponseWriter, ctx context.Context, front llmdia
 	enc := front.NewEventEncoder(w)
 	id := requestID(req.dialect)
 
-	// probs is the tokens the step that produced the pending event reported,
-	// and it is nil on every route but /v1/completions -- [mapPolicy] does not
-	// ask the engine for work no encoder can carry (specs/030-logprobs.md §4).
-	// A streaming request must serve them wherever the whole-body one does, or
-	// a caller gets a number that depends on a flag about delivery.
+	// probs is the tokens the step that produced the pending event reported.
+	// It is nil unless the request asked and the route can carry them:
+	// [mapPolicy] does not ask the engine for work no encoder can use
+	// (specs/030-logprobs.md §4). A streaming request must serve them wherever
+	// the whole-body one does, or a caller gets a number that depends on a
+	// flag about delivery.
 	var probs []tgo.TokenProb
 	emit := func(ev ir.Event) bool {
-		err := encodeEvent(enc, ev, probs)
+		if ev.Type == ir.EventTextDelta {
+			ev.LogProbs = irLogProbs(probs)
+		}
 		probs = nil
-		if err != nil {
+		if err := enc.Encode(ev); err != nil {
 			s.notice("tgo: encoding a %s event: %v", ev.Type, err)
 			return false
 		}
@@ -240,7 +246,8 @@ func (s *Server) whole(w http.ResponseWriter, ctx context.Context, front llmdial
 		StopSequence: st.StopSequence(),
 		Usage:        *usageOf(st.Usage()),
 	}
-	body, err := encodeResponse(front, resp, probs)
+	resp.LogProbs = irLogProbs(probs)
+	body, err := front.EncodeResponse(resp)
 	if err != nil {
 		s.fail(w, req.dialect, &apiError{kind: errInternal, reason: "internal",
 			msg: fmt.Sprintf("tgo: encoding the response: %v", err)})
@@ -312,41 +319,22 @@ func irBlockType(t chat.BlockType) ir.BlockType {
 	return ir.BlockText
 }
 
-// logProbEncoder is the half of a Frontend that can carry per-token
-// probabilities. Only tgo's own /v1/completions codec implements it.
-//
-// An optional interface rather than a field on ir.Response, because the IR is
-// llmdialect's and has no logprobs shape: specs/030-logprobs.md 030-D5 reports
-// that gap rather than reaching past the codec to append a member to a body
-// tgo did not write, which is what 009-D10 exists to prevent.
-type logProbEncoder interface {
-	EncodeResponseWithLogProbs(*ir.Response, []tgo.TokenProb) ([]byte, error)
-}
-
-// encodeResponse hands the probabilities to a Frontend that can carry them, and
-// encodes normally otherwise.
-//
-// probs is empty on the three routes that cannot serve them, because
-// [mapPolicy] does not ask the engine for work no encoder can use.
-func encodeResponse(front llmdialect.Frontend, resp *ir.Response, probs []tgo.TokenProb) ([]byte, error) {
-	if e, ok := front.(logProbEncoder); ok && len(probs) > 0 {
-		return e.EncodeResponseWithLogProbs(resp, probs)
+// irLogProbs converts the engine's per-token report into the IR's shape, so
+// every Frontend, tgo's own and llmdialect's alike, reads logprobs from the
+// response or event it encodes. nil in, nil out: a choice that did not ask
+// answers `logprobs: null` on both surfaces.
+func irLogProbs(probs []tgo.TokenProb) []ir.TokenLogProb {
+	if len(probs) == 0 {
+		return nil
 	}
-	return front.EncodeResponse(resp)
-}
-
-// logProbEventEncoder is the streaming half of [logProbEncoder].
-type logProbEventEncoder interface {
-	EncodeWithLogProbs(ir.Event, []tgo.TokenProb) error
-}
-
-// encodeEvent writes one SSE frame, carrying the step's probabilities where the
-// encoder can hold them.
-func encodeEvent(enc llmdialect.EventEncoder, ev ir.Event, probs []tgo.TokenProb) error {
-	if e, ok := enc.(logProbEventEncoder); ok && len(probs) > 0 {
-		return e.EncodeWithLogProbs(ev, probs)
+	out := make([]ir.TokenLogProb, len(probs))
+	for i, tp := range probs {
+		out[i] = ir.TokenLogProb{Token: tp.Text, Bytes: []byte(tp.Text), LogProb: ir.LogProb(tp.LogProb)}
+		if len(tp.Top) > 0 {
+			out[i].Top = irLogProbs(tp.Top)
+		}
 	}
-	return enc.Encode(ev)
+	return out
 }
 
 // usageOf converts one request's token counts.

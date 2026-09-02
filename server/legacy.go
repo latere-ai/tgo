@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -11,8 +14,6 @@ import (
 	"strings"
 
 	"latere.ai/x/pkg/llmdialect/ir"
-
-	tgo "github.com/latere-ai/tgo"
 )
 
 // The legacy completions surface, which llmdialect does not carry.
@@ -185,23 +186,7 @@ func (*legacyFrontend) finish(top map[string]json.RawMessage, out *request) *api
 // Every block's text is concatenated, thinking included: this route ran no
 // template, so what the model produced is the completion the caller asked for
 // and there is no turn structure to separate it from.
-func (f *legacyFrontend) EncodeResponse(resp *ir.Response) ([]byte, error) {
-	return f.encodeResponse(resp, nil)
-}
-
-// EncodeResponseWithLogProbs is [legacyFrontend.EncodeResponse] carrying
-// specs/030-logprobs.md's per-token numbers.
-//
-// It is a second method rather than a field on ir.Response because the IR is
-// llmdialect's and carries no logprobs shape at all -- which is why this is the
-// only one of the four routes that can answer them (030 §4). The handler
-// reaches it through an optional interface, so the three dialects llmdialect
-// encodes are untouched.
-func (f *legacyFrontend) EncodeResponseWithLogProbs(resp *ir.Response, probs []tgo.TokenProb) ([]byte, error) {
-	return f.encodeResponse(resp, probs)
-}
-
-func (*legacyFrontend) encodeResponse(resp *ir.Response, probs []tgo.TokenProb) ([]byte, error) {
+func (*legacyFrontend) EncodeResponse(resp *ir.Response) ([]byte, error) {
 	var text strings.Builder
 	for _, b := range resp.Blocks {
 		text.WriteString(b.Text)
@@ -209,7 +194,7 @@ func (*legacyFrontend) encodeResponse(resp *ir.Response, probs []tgo.TokenProb) 
 	return json.Marshal(map[string]any{
 		"id": resp.ID, "object": "text_completion", "created": 0, "model": resp.Model,
 		"choices": []map[string]any{{
-			"text": text.String(), "index": 0, "logprobs": legacyLogProbs(probs),
+			"text": text.String(), "index": 0, "logprobs": legacyLogProbs(resp.LogProbs),
 			"finish_reason": legacyFinish(resp.StopReason),
 		}},
 		"usage": legacyUsage(resp.Usage),
@@ -225,7 +210,7 @@ func (*legacyFrontend) encodeResponse(resp *ir.Response, probs []tgo.TokenProb) 
 // A -Inf becomes JSON null inside token_logprobs (030-D3). Not a large negative
 // number, which a consumer averages, and not "-Infinity", which is not JSON.
 // The arrays stay parallel either way, which is what the shape promises.
-func legacyLogProbs(probs []tgo.TokenProb) any {
+func legacyLogProbs(probs []ir.TokenLogProb) any {
 	if len(probs) == 0 {
 		return nil
 	}
@@ -233,8 +218,8 @@ func legacyLogProbs(probs []tgo.TokenProb) any {
 	lps := make([]any, len(probs))
 	top := make([]any, len(probs))
 	for i, tp := range probs {
-		tokens[i] = tp.Text
-		lps[i] = finiteOrNull(tp.LogProb)
+		tokens[i] = tp.Token
+		lps[i] = finiteOrNull(float64(tp.LogProb))
 		if len(tp.Top) == 0 {
 			// null and not {}: this step reported no alternatives, which is a
 			// different statement from "the alternatives are none".
@@ -243,7 +228,7 @@ func legacyLogProbs(probs []tgo.TokenProb) any {
 		}
 		alts := make(map[string]any, len(tp.Top))
 		for _, alt := range tp.Top {
-			alts[alt.Text] = finiteOrNull(alt.LogProb)
+			alts[alt.Token] = finiteOrNull(float64(alt.LogProb))
 		}
 		top[i] = alts
 	}
@@ -266,12 +251,12 @@ func finiteOrNull(v float64) any {
 }
 
 // textOffsets is the byte offset each token starts at within the completion.
-func textOffsets(probs []tgo.TokenProb) []int {
+func textOffsets(probs []ir.TokenLogProb) []int {
 	out := make([]int, len(probs))
 	at := 0
 	for i, tp := range probs {
 		out[i] = at
-		at += len(tp.Text)
+		at += len(tp.Token)
 	}
 	return out
 }
@@ -307,27 +292,19 @@ type legacyEventEncoder struct {
 }
 
 // Encode writes the SSE frame for one IR event.
-func (e *legacyEventEncoder) Encode(ev ir.Event) error { return e.encode(ev, nil) }
 
-// EncodeWithLogProbs is [legacyEventEncoder.Encode] carrying the step's
-// per-token numbers, for the same reason EncodeResponseWithLogProbs exists:
-// ir.Event has no shape for one, and this is the only encoder tgo wrote.
-//
-// A streaming request must answer what a whole-body one does. Serving logprobs
-// only when `stream` is false would make a number depend on how the caller
-// asked for delivery, and the loss report would call it honoured either way.
-func (e *legacyEventEncoder) EncodeWithLogProbs(ev ir.Event, probs []tgo.TokenProb) error {
-	return e.encode(ev, probs)
-}
-
-func (e *legacyEventEncoder) encode(ev ir.Event, probs []tgo.TokenProb) error {
+// Encode writes one frame. A text delta carries the tokens it decodes from
+// when the request asked, read from the event like every other encoder does:
+// a streaming request answers what a whole-body one does, so a number never
+// depends on how the caller asked for delivery.
+func (e *legacyEventEncoder) Encode(ev ir.Event) error {
 	switch ev.Type {
 	case ir.EventMessageStart:
 		e.id = ev.ID
 		e.model = ev.Model
 		return nil
 	case ir.EventTextDelta, ir.EventThinkingDelta, ir.EventArgsDelta:
-		return e.chunk(ev.Delta, nil, nil, probs)
+		return e.chunk(ev.Delta, nil, nil, ev.LogProbs)
 	case ir.EventBlockStart, ir.EventBlockStop, ir.EventSignatureDelta:
 		// The legacy format has no block structure: a completion is one run of
 		// text, which is the whole difference between this route and the
@@ -349,7 +326,7 @@ func (e *legacyEventEncoder) encode(ev ir.Event, probs []tgo.TokenProb) error {
 }
 
 func (e *legacyEventEncoder) chunk(text string, finish *string, usage map[string]any,
-	probs []tgo.TokenProb) error {
+	probs []ir.TokenLogProb) error {
 
 	choice := map[string]any{"text": text, "index": 0,
 		"logprobs": legacyLogProbs(probs), "finish_reason": nil}

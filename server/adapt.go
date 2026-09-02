@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -290,12 +293,13 @@ func mapPolicy(d ir.Dialect, req *ir.Request, ex extras, vocab int) (tgo.Policy,
 		// surfaces the IR never sees one and the raw body is the only source.
 		p.TopK = *ex.topK
 	}
-	// specs/030-logprobs.md §4, and the dialect is why this is not just
-	// `p.LogProbs = ex.logProbs`. Only /v1/completions can encode a logprob,
-	// because llmdialect's ir carries no shape for one, so asking the engine
-	// for them on any other route would run a whole-vocabulary exp per step
-	// and throw the answer away -- which is the cost 030-D4 turns off by
-	// default. The member is reported as a loss on those routes instead.
+	// specs/030-logprobs.md §4: the engine is asked for logprobs only on a
+	// route whose encoder can carry them, because computing them runs a
+	// whole-vocabulary exp per step (030-D4). Two routes can: /v1/completions
+	// through tgo's own codec, and /v1/chat/completions through llmdialect's,
+	// whose ir carries them on the response and on each text delta. The
+	// Anthropic and Responses surfaces have no member for them, so the ask
+	// stays a loss there.
 	//
 	// The count is bounded here rather than in Policy.check because the
 	// ceiling is the wire's: OpenAI documents top_logprobs at 20, and a caller
@@ -304,7 +308,7 @@ func mapPolicy(d ir.Dialect, req *ir.Request, ex extras, vocab int) (tgo.Policy,
 		return p, badRequest("tgo: top_logprobs is %d and the maximum is %d",
 			ex.topLogProbs, maxTopLogProbs)
 	}
-	if d == dialectLegacy {
+	if d == dialectLegacy || d == ir.DialectOpenAIChat {
 		p.LogProbs, p.TopLogProbs = ex.logProbs, ex.topLogProbs
 	}
 	if req.MaxTokens != nil {

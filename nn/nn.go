@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Package nn is the library of composites a transformer is made of.
 //
 // A block takes tensors and returns tensors. It holds no state, no device and

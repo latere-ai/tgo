@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -46,7 +49,7 @@ var byteToRune [256]rune
 
 func init() {
 	next := 0
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		if (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || b >= 174 {
 			byteToRune[b] = rune(b)
 			continue
@@ -89,7 +92,7 @@ func main() {
 	merges := train()
 	vocab := map[string]int{}
 	next := 0
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		vocab[string(byteToRune[b])] = next
 		next++
 	}

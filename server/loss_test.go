@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -42,13 +45,19 @@ type honourCase struct {
 // max_output_tokens and max_completion_tokens are different bugs from
 // max_tokens.
 var honourCases = []honourCase{
-	// specs/030-logprobs.md §4: one member, two Policy fields, one route.
-	// /v1/completions spells the count in `logprobs` itself, and it is the only
-	// surface whose encoder can carry the answer -- llmdialect's ir has no
-	// logprobs shape, so the other three drop it and say so.
-	{field: "LogProbs", wire: "logprobs", route: 3, extra: `,"logprobs":3`,
+	// specs/030-logprobs.md §4: two routes serve logprobs, /v1/chat/completions
+	// through llmdialect's ir and /v1/completions through tgo's own codec. The
+	// bool `logprobs` and the `top_logprobs` count parse on every route, which
+	// is what lets the matrix below send them everywhere; the legacy count
+	// spelled as a number in `logprobs` is that route's own and is exercised
+	// in legacy_test.go.
+	{field: "LogProbs", wire: "logprobs", route: 0, extra: `,"logprobs":true`,
 		got: func(p tgo.Policy) any { return p.LogProbs }, want: true},
-	{field: "TopLogProbs", wire: "logprobs", route: 3, extra: `,"logprobs":3`,
+	{field: "TopLogProbs", wire: "top_logprobs", route: 0, extra: `,"top_logprobs":3`,
+		got: func(p tgo.Policy) any { return p.TopLogProbs }, want: 3},
+	{field: "LogProbs", wire: "logprobs", route: 3, extra: `,"logprobs":true`,
+		got: func(p tgo.Policy) any { return p.LogProbs }, want: true},
+	{field: "TopLogProbs", wire: "top_logprobs", route: 3, extra: `,"top_logprobs":3`,
 		got: func(p tgo.Policy) any { return p.TopLogProbs }, want: 3},
 	{field: "Temperature", wire: "temperature", route: 0, extra: `,"temperature":0.25`,
 		got: func(p tgo.Policy) any { return p.Temperature }, want: float32(0.25)},
@@ -278,17 +287,11 @@ func TestAnAdvisoryFieldRunsAndIsReported(t *testing.T) {
 		{"metadata on responses", 2, `,"metadata":{"trace":"t-1"}`, "metadata"},
 		{"user on responses", 2, `,"user":"u-1"`, "user"},
 		{"metadata on anthropic", 1, `,"metadata":{"user_id":"u-1"}`, "metadata"},
-		{"logprobs", 0, `,"logprobs":true,"top_logprobs":3`, "logprobs"},
-		// The legacy route's codec is tgo's own, so a member it accepts and does
-		// not act on is one this package has to remember to report: it answers
-		// logprobs:null on every choice.
-		// logprobs is NOT here for route 3. specs/030-logprobs.md §4 serves it
-		// on /v1/completions, which is the only route whose encoder tgo wrote
-		// and therefore the only one that can carry the shape -- the case
-		// above keeps it as a loss on /v1/chat/completions, where
-		// llmdialect's ir has no field for it. The honourCases table holds
-		// the served half, so the two sides of the same member are asserted
-		// against each other.
+		// logprobs is not here for routes 0 and 3: specs/030-logprobs.md §4
+		// serves it on both, and honourCases holds that half. It stays a loss
+		// on the Anthropic and Responses routes, whose members cannot carry
+		// one; the frontends report it as an unknown field there.
+		{"logprobs on anthropic", 1, `,"logprobs":true`, "logprobs"},
 		{"user on completions", 3, `,"user":"u-1"`, "user"},
 		{"thinking budget", 1, `,"thinking":{"type":"enabled","budget_tokens":128}`,
 			"thinking.budget_tokens"},
