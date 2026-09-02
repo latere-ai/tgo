@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Latere AI
+// SPDX-License-Identifier: Apache-2.0
+
 // Copyright 2026 Latere AI.
 // Licensed under the Apache License, Version 2.0.
 
@@ -284,13 +287,4 @@ func (s *State) Advance(id int) error {
 		s.done = true
 	}
 	return nil
-}
-
-// sortedUnique orders and dedupes, so that a refusal naming one of several
-// offending keywords names the same one on every run. A map's iteration order
-// would make which keyword a caller sees depend on the process.
-func sortedUnique(in []string) []string {
-	out := slices.Clone(in)
-	slices.Sort(out)
-	return slices.Compact(out)
 }
