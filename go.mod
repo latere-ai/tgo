@@ -3,7 +3,7 @@ module github.com/latere-ai/tgo
 go 1.27.0
 
 require (
-	golang.design/x/accel v0.0.0-20260902174501-c02ae7e7f9ef
+	golang.design/x/accel v0.0.0-20260905175250-168f5ed9ae76
 	golang.org/x/text v0.41.0
 	latere.ai/x/pkg v0.50.0
 )
