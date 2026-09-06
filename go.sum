@@ -14,5 +14,7 @@ golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
 golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
 latere.ai/x/ci-gate v0.27.0 h1:hmaWc7QHTCeIsI/794PpQrTcad53H3vPCphsRml/xLs=
 latere.ai/x/ci-gate v0.27.0/go.mod h1:q2A9P8rq93BL+RO/JHxpXwnTuP2pb9xFoGo5jFVxUYk=
+latere.ai/x/ci-gate v0.29.1 h1:kUwv2uoVmo2UfxqaT/IlUm5GtGO+wevH93sM+pv3fYs=
+latere.ai/x/ci-gate v0.29.1/go.mod h1:q2A9P8rq93BL+RO/JHxpXwnTuP2pb9xFoGo5jFVxUYk=
 latere.ai/x/pkg v0.50.0 h1:SwzOz+rawDgedmE8LtYDJT/l5IbCB26JVDVFuyB4XRk=
 latere.ai/x/pkg v0.50.0/go.mod h1:bb5bOZNIH1LUGie0l09SFKwA1JOFNaIzTFy9pK2akQY=
