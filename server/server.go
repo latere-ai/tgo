@@ -10,9 +10,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
+	"latere.ai/x/pkg/health"
 	"latere.ai/x/pkg/llmdialect"
 	"latere.ai/x/pkg/llmdialect/anthropic"
 	"latere.ai/x/pkg/llmdialect/ir"
@@ -110,8 +112,21 @@ func New(eng Engine, opts ...Option) (*Server, error) {
 	s.mux.Handle("POST /v1/responses", s.dialect(openairesp.NewFrontend()))
 	s.mux.Handle("POST /v1/completions", s.dialect(newLegacyFrontend()))
 	s.mux.HandleFunc("GET /v1/models", s.models)
+	// The probes are the fleet's four paths (pkg/health), mounted path by
+	// path because they share the mux with the dialects. A loaded engine
+	// is a ready one, so readiness is the process answering. /healthz is
+	// /livez under its old name and /health keeps its old body, both for
+	// one release while callers move, then both go.
+	v := buildIdentity()
+	probes := health.Handler(health.Options{
+		Metrics: http.HandlerFunc(s.exposeMetrics),
+		Version: v.Version, Commit: v.Commit, BuildTime: v.BuildTime,
+		LegacyHealthz: true,
+	})
+	for _, p := range []string{"GET /livez", "GET /readyz", "GET /version", "GET /metrics", "GET /healthz"} {
+		s.mux.Handle(p, probes)
+	}
 	s.mux.HandleFunc("GET /health", s.health)
-	s.mux.HandleFunc("GET /metrics", s.exposeMetrics)
 	return s, nil
 }
 
@@ -230,7 +245,29 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// health says the process is up and which model it holds. It allocates
+// buildIdentity is what /version reports: the main module's version and the
+// VCS revision and time the toolchain stamped. tgo links no build flags, so
+// the build info is the only record of what a binary is.
+func buildIdentity() health.Build {
+	var b health.Build
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return b
+	}
+	b.Version = info.Main.Version
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			b.Commit = s.Value
+		case "vcs.time":
+			b.BuildTime = s.Value
+		}
+	}
+	return b
+}
+
+// health is the probe path before pkg/health, kept with its body for one
+// release. It says the process is up and which model it holds. It allocates
 // nothing and touches no device, so it stays honest while the device is busy.
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{

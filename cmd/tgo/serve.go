@@ -46,7 +46,9 @@ var serveRoutes = []struct{ Method, Path, What string }{
 	{"POST", "/v1/responses", "OpenAI Responses"},
 	{"POST", "/v1/completions", "OpenAI legacy completions: raw text, no chat template"},
 	{"GET", "/v1/models", "the one model id this process serves"},
-	{"GET", "/health", "liveness"},
+	{"GET", "/livez", "liveness"},
+	{"GET", "/readyz", "readiness"},
+	{"GET", "/version", "the build identity"},
 	{"GET", "/metrics", "Prometheus text exposition"},
 }
 

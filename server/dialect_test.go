@@ -385,6 +385,36 @@ func TestModelsListsTheOneModel(t *testing.T) {
 	}
 }
 
+// TestProbesAreTheFleetsFour: /livez, /readyz, /version and /metrics come
+// from pkg/health, and /healthz still answers 200 while the alias is on.
+func TestProbesAreTheFleetsFour(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, &fakeEngine{})
+	for _, p := range []string{"/livez", "/readyz", "/healthz"} {
+		w := get(t, s, p)
+		wantStatus(t, w, http.StatusOK)
+		if w.Body.String() != "ok\n" {
+			t.Errorf("%s body %q, want ok", p, w.Body.String())
+		}
+	}
+	w := get(t, s, "/version")
+	wantStatus(t, w, http.StatusOK)
+	var build struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &build); err != nil {
+		t.Fatalf("/version is not the build identity: %v: %s", err, w.Body.String())
+	}
+	w = get(t, s, "/metrics")
+	wantStatus(t, w, http.StatusOK)
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain; version=0.0.4") {
+		t.Errorf("/metrics Content-Type %q, want the Prometheus text exposition", ct)
+	}
+}
+
+// TestHealthNamesTheModelAndTheLimit holds /health, the probe path before
+// pkg/health, to its body for the release it stays.
 func TestHealthNamesTheModelAndTheLimit(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t, &fakeEngine{}, WithConcurrency(3))

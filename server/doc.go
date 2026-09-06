@@ -8,7 +8,8 @@
 //	POST /v1/messages           Anthropic Messages
 //	POST /v1/responses          OpenAI Responses
 //	POST /v1/completions        OpenAI legacy, raw text, no template
-//	GET  /v1/models, /health, /metrics
+//	GET  /v1/models
+//	GET  /livez, /readyz, /version, /metrics   the probes, pkg/health's four
 //
 // The three chat dialects reach one neutral request through
 // [latere.ai/x/pkg/llmdialect]'s Frontend half: a Frontend decodes what the

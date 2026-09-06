@@ -752,13 +752,13 @@ func TestCmdServeServesUntilInterrupted(t *testing.T) {
 	// sleep: what is under test is that the server answers, and a duration
 	// asserted here would be a duration measured on Windows.
 	addr := awaitAddr(t, stdout)
-	resp, err := http.Get("http://" + addr + "/health")
+	resp, err := http.Get("http://" + addr + "/livez")
 	if err != nil {
-		t.Fatalf("GET /health: %v", err)
+		t.Fatalf("GET /livez: %v", err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/health answered %d, want 200", resp.StatusCode)
+		t.Errorf("/livez answered %d, want 200", resp.StatusCode)
 	}
 
 	interrupt()
@@ -770,7 +770,7 @@ func TestCmdServeServesUntilInterrupted(t *testing.T) {
 	}
 	// And the model was released: a served model holds device memory, and a
 	// command that returned without freeing it leaks the whole checkpoint.
-	if resp, err := http.Get("http://" + addr + "/health"); err == nil {
+	if resp, err := http.Get("http://" + addr + "/livez"); err == nil {
 		_ = resp.Body.Close()
 		t.Error("the listener is still answering after the command returned")
 	}
