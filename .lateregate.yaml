@@ -98,6 +98,7 @@ depcheck:
         golang.design/x/accel: the compute layer; 000 D1 makes every package here reach it
         golang.org/x/text: Unicode normalisation for the tokenizer, 002-D10
         latere.ai/x/pkg/llmdialect: the three wire dialects, 009-D10; this is the one 009-D14 exists to watch
+        latere.ai/x/pkg/health: the fleet's probe surface, /livez /readyz /version /metrics; pure Go, stdlib only
         github.com/ebitengine/purego: accel's cgo-free dynamic loading of Metal, reached through accel on darwin only
     github.com/latere-ai/tgo/tokenizer:
       decision: 002-D10
