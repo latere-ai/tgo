@@ -113,3 +113,7 @@ license:
   holder: Latere AI
   extensions: ['.go']
   names: [Makefile]
+
+# The identity shape of the family: specs/infrastructure/identity.md in latere-ai/specs
+identity:
+  role: none
